@@ -64,29 +64,39 @@ No manual saves. No handoff scripts. No lost sessions. The superhero never sleep
 
 ## Quick Start
 
-### Option 1: Install Script
+### Option 1: pip install (recommended)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GuyMannDude/mnemo-cortex/main/install.sh | bash
-nano ~/.config/agentb/agentb.yaml   # pick your providers
-agentb                               # start the superhero
+pip install mnemo-cortex
+mnemo-cortex init          # interactive wizard — pick providers, enter keys, done
+mnemo-cortex start         # server starts in background
+mnemo-cortex status        # verify everything is green
 ```
 
 ### Option 2: Docker
 ```bash
-git clone https://github.com/GuyMannDude/mnemo-cortex.git
-cd mnemo-cortex
-cp agentb.yaml.example agentb.yaml
-docker compose up -d
+docker run -p 50001:50001 ghcr.io/guymanndude/mnemo-cortex
 ```
 
-### Option 3: Manual
+### Option 3: From source
 ```bash
 git clone https://github.com/GuyMannDude/mnemo-cortex.git
 cd mnemo-cortex
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-cp agentb.yaml.example agentb.yaml
-python -m agentb.server
+pip install -e ".[dev]"
+mnemo-cortex init
+mnemo-cortex start
+```
+
+## CLI Commands
+
+```bash
+mnemo-cortex init      # Interactive setup wizard
+mnemo-cortex start     # Start server (background)
+mnemo-cortex start -f  # Start in foreground
+mnemo-cortex stop      # Stop server
+mnemo-cortex status    # Health check + session stats
+mnemo-cortex logs      # View server logs
+mnemo-cortex logs -f   # Follow logs live
+mnemo-cortex test      # Quick connectivity test
 ```
 
 ## Configuration
@@ -217,11 +227,17 @@ If Ollama hangs, Mnemo Cortex silently falls through the chain. The `/health` en
 ## Testing
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 PYTHONPATH=. pytest tests/ -v
 ```
 
-44 tests covering circuit breaker, provider fallbacks, cache hierarchy, multi-tenant isolation, persona modes, and config loading.
+56 tests covering circuit breaker, provider fallbacks, cache hierarchy, multi-tenant isolation, persona modes, session lifecycle, crash safety, and config loading.
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+Adding a new provider is as easy as implementing two methods (`generate`/`embed` + `health_check`) and adding it to the provider map. Framework adapters are even simpler — just a config file and some docs.
 
 ## Roadmap
 

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "mnemo-cortex"
+version = "0.4.0"
+description = "Drop-in memory superhero for AI agents. Total recall in four endpoints."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Guy Hoffman", email = "guy@projectsparks.ai"},
+]
+keywords = ["ai", "agents", "memory", "openclaw", "llm", "coprocessor", "semantic-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "httpx>=0.25.0",
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/GuyMannDude/mnemo-cortex"
+Documentation = "https://github.com/GuyMannDude/mnemo-cortex#readme"
+Repository = "https://github.com/GuyMannDude/mnemo-cortex"
+Issues = "https://github.com/GuyMannDude/mnemo-cortex/issues"
+
+[project.scripts]
+mnemo-cortex = "agentb.cli:main"
+mnemo = "agentb.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agentb*"]
