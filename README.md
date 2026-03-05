@@ -37,6 +37,31 @@ AI agents forget everything between sessions. Mnemo Cortex gives them a brain th
 - **Framework adapters.** OpenClaw hook, Agent Zero skill, or raw HTTP from anything.
 - **Zero cloud lock-in.** Runs fully local with Ollama, or use any API provider.
 
+## The Live Wire (`/ingest`)
+
+This is the feature that changes everything. Rocky calls `/ingest` after every single exchange with you. If Anthropic pulls the plug, if the server crashes, if the power goes out — every conversation up to the last exchange is already on disk.
+
+```bash
+# Rocky calls this after every prompt/response pair
+curl -X POST http://localhost:50001/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What was our Easter pricing?",
+    "response": "Easter gnomes were $20-30 each",
+    "agent_id": "rocky"
+  }'
+# Response: {"status": "captured", "session_id": "2026-03-05_143022_a1b2c3", "entry_number": 7}
+```
+
+**Session Lifecycle:**
+| Tier | Age | Storage | Search Speed | What Happens |
+|------|-----|---------|-------------|--------------|
+| **HOT** | Days 1-3 | Raw JSONL | Instant (keyword) | Every exchange, as it happens |
+| **WARM** | Days 4-30 | Summarized + compressed | Fast (L2 semantic) | Auto-summarized, embedded, indexed |
+| **COLD** | Day 30+ | Compressed archive | Slow (L3 scan) | Deep storage, still searchable |
+
+No manual saves. No handoff scripts. No lost sessions. The superhero never sleeps.
+
 ## Quick Start
 
 ### Option 1: Install Script
@@ -202,8 +227,9 @@ PYTHONPATH=. pytest tests/ -v
 
 - [x] v0.2.0 — Core server, pluggable providers, framework adapters
 - [x] v0.3.0 — Multi-tenant isolation, circuit breaker fallbacks, persona modes
-- [ ] v0.4.0 — `/metrics` (Prometheus), `/session` (proactive pre-caching)
-- [ ] v0.5.0 — SQLite + sqlite-vec storage backend, admin dashboard
+- [x] v0.4.0 — Live Wire (`/ingest`), hot/warm/cold session lifecycle, `/sessions` API
+- [ ] v0.5.0 — `/metrics` (Prometheus), proactive session pre-caching
+- [ ] v0.6.0 — SQLite + sqlite-vec storage backend, admin dashboard
 - [ ] v1.0.0 — Postgres + pgvector, pip installable, production hardened
 
 ## Created By

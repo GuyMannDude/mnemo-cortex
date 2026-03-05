@@ -587,3 +587,127 @@ class TestServerSmoke:
         assert "/context" in routes
         assert "/preflight" in routes
         assert "/writeback" in routes
+        assert "/ingest" in routes
+        assert "/sessions" in routes
+
+
+# ─────────────────────────────────────────────
+#  Session Manager Tests
+# ─────────────────────────────────────────────
+
+class TestSessionManager:
+    def test_ingest_creates_session(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        result = sm.ingest("What's the weather?", "It's sunny today!")
+        assert result["session_id"]
+        assert result["entry_number"] == 1
+        assert sm.stats["hot_sessions"] == 1
+
+    def test_ingest_appends_to_same_session(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        r1 = sm.ingest("Hello", "Hi there!")
+        r2 = sm.ingest("How are you?", "I'm great!")
+        assert r1["session_id"] == r2["session_id"]
+        assert r2["entry_number"] == 2
+
+    def test_new_session_after_gap(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig(max_session_gap_minutes=0))
+        r1 = sm.ingest("First", "Response 1")
+        time.sleep(0.05)
+        # Force gap detection
+        sm._last_ingest_time = time.time() - 120
+        r2 = sm.ingest("Second", "Response 2")
+        assert r1["session_id"] != r2["session_id"]
+
+    def test_search_hot(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        sm.ingest("Tell me about Easter bunnies", "Easter bunnies are $20-30 each")
+        sm.ingest("What about Shopify?", "Shopify orders are up 15%")
+        results = sm.search_hot("Easter")
+        assert len(results) >= 1
+        assert "Easter" in results[0]["prompt"] or "Easter" in results[0]["response"]
+
+    def test_search_hot_no_cross_contamination(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        sm.ingest("Secret agent stuff", "Classified response")
+        results = sm.search_hot("Shopify")
+        assert len(results) == 0
+
+    def test_get_recent_context(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        sm.ingest("First question", "First answer")
+        sm.ingest("Second question", "Second answer")
+        context = sm.get_recent_context(n_exchanges=5)
+        assert "First question" in context
+        assert "Second answer" in context
+
+    def test_transcript_retrieval(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        result = sm.ingest("Hello", "World")
+        transcript = sm.get_session_transcript(result["session_id"])
+        exchanges = [e for e in transcript if e.get("_type") == "exchange"]
+        assert len(exchanges) == 1
+        assert exchanges[0]["prompt"] == "Hello"
+
+    def test_hot_session_listing(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        sm.ingest("Test", "Response")
+        sessions = sm.get_hot_sessions()
+        assert len(sessions) == 1
+        assert sessions[0]["tier"] == "hot"
+        assert sessions[0]["entries"] == 1
+
+    def test_archival_respects_hot_days(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig(hot_days=0))
+        sm.ingest("Old data", "Old response")
+        # Force session to not be current
+        old_file = sm._current_session_file
+        sm._current_session_id = None
+        sm._current_session_file = None
+        time.sleep(0.05)
+        archived = sm.archive_hot_sessions()
+        assert len(archived) == 1
+        assert sm.stats["hot_sessions"] == 0
+
+    def test_stats_complete(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        sm.ingest("Test", "Response")
+        stats = sm.stats
+        assert "hot_sessions" in stats
+        assert "warm_sessions" in stats
+        assert "cold_sessions" in stats
+        assert "current_session" in stats
+        assert stats["current_entries"] == 1
+
+    def test_safety_cap_starts_new_session(self, tmp_data_dir):
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig(max_hot_entries=2))
+        r1 = sm.ingest("One", "A1")
+        r2 = sm.ingest("Two", "A2")
+        r3 = sm.ingest("Three", "A3")  # exceeds cap, new session
+        assert r1["session_id"] == r2["session_id"]
+        assert r2["session_id"] != r3["session_id"]
+
+    def test_crash_safe_append(self, tmp_data_dir):
+        """After ingest, data is on disk even without explicit close."""
+        from agentb.sessions import SessionManager, SessionConfig
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        result = sm.ingest("Critical data", "Must not be lost")
+        session_file = sm._current_session_file
+
+        # Simulate crash — create new manager, read the file
+        sm2 = SessionManager(tmp_data_dir, SessionConfig())
+        transcript = sm2.get_session_transcript(result["session_id"])
+        exchanges = [e for e in transcript if e.get("_type") == "exchange"]
+        assert len(exchanges) == 1
+        assert exchanges[0]["prompt"] == "Critical data"

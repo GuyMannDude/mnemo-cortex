@@ -93,3 +93,13 @@ agents:
   # shared:
   #   data_dir: ~/.agentb/shared
   #   read_only: true    # agents can read, writeback blocked
+
+# ── Session Capture (The Live Wire) ──
+# Sessions are captured automatically via /ingest.
+# These settings control the lifecycle:
+# sessions:
+#   hot_days: 3              # days in hot storage (instant search)
+#   warm_days: 30            # days in warm storage (summarized, indexed)
+#   max_session_gap_minutes: 60  # start new session after this gap
+#   auto_summarize: true     # summarize sessions on archival
+#   max_hot_entries: 500     # safety cap per session file

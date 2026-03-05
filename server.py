@@ -1,13 +1,14 @@
 """
-Mnemo Cortex v0.3.0 — Drop-in Memory Superhero for AI Agents
+Mnemo Cortex v0.4.0 — Drop-in Memory Superhero for AI Agents
 =============================================================
 Every AI agent has amnesia. Mnemo Cortex is the cure.
-Four endpoints. Any LLM. Total recall.
+Five endpoints. Any LLM. Total recall.
 
-  /health      → System status + provider failover state
-  /context     → Persona-aware L1/L2/L3 memory retrieval
+  /health      → System status + provider failover state + session stats
+  /context     → Persona-aware L1/L2/L3 + hot session search
   /preflight   → Persona-aware PASS / ENRICH / WARN / BLOCK
-  /writeback   → Agent-isolated session archiving
+  /ingest      → Live wire: capture every prompt/response as it happens
+  /writeback   → Curated session archiving (still works, complementary)
 
 https://github.com/GuyMannDude/mnemo-cortex
 """
@@ -30,6 +31,7 @@ from agentb.config import (
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding
 from agentb.cache import L1Cache, L2Index, l3_scan, ContextChunk
+from agentb.sessions import SessionManager, SessionConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +53,21 @@ class HealthResponse(BaseModel):
     embedding: dict
     agents_configured: list[str]
     default_persona: str
+    sessions: dict
+
+
+class IngestRequest(BaseModel):
+    prompt: str = Field(..., description="The user's prompt")
+    response: str = Field(..., description="The agent's response")
+    agent_id: Optional[str] = Field(None, description="Agent ID for tenant isolation")
+    metadata: Optional[dict] = Field(None, description="Optional metadata (images, tool calls, etc)")
+
+
+class IngestResponse(BaseModel):
+    status: str
+    session_id: str
+    entry_number: int
+    agent_id: Optional[str]
 
 
 class ContextRequest(BaseModel):
@@ -117,14 +134,14 @@ class WritebackResponse(BaseModel):
 # ─────────────────────────────────────────────
 
 class TenantManager:
-    """Manages isolated L1/L2 caches and memory dirs per agent_id."""
+    """Manages isolated L1/L2 caches, memory dirs, and session managers per agent_id."""
 
     def __init__(self, config: AgentBConfig):
         self.config = config
         self._tenants: dict[str, dict] = {}
 
     def get(self, agent_id: Optional[str] = None) -> dict:
-        """Get or create isolated cache/memory for an agent."""
+        """Get or create isolated cache/memory/sessions for an agent."""
         key = agent_id or "default"
         if key in self._tenants:
             return self._tenants[key]
@@ -137,11 +154,18 @@ class TenantManager:
         for d in [memory_dir, l1_dir, l2_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
+        # Session config from agent settings or defaults
+        session_cfg = SessionConfig()
+        if agent_id and agent_id in self.config.agents:
+            # Could extend AgentConfig with session settings later
+            pass
+
         tenant = {
             "data_dir": data_dir,
             "memory_dir": memory_dir,
             "l1": L1Cache(l1_dir, self.config.cache),
             "l2": L2Index(l2_dir, self.config.cache),
+            "sessions": SessionManager(data_dir, session_cfg),
         }
         self._tenants[key] = tenant
         log.info(f"Tenant '{key}' initialized at {data_dir}")
@@ -203,7 +227,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     for agent_name in config.agents:
         tenants.get(agent_name)
 
-    app = FastAPI(title="Mnemo Cortex", description="Drop-in memory superhero for AI agents", version="0.3.0")
+    app = FastAPI(title="Mnemo Cortex", description="Drop-in memory superhero for AI agents", version="0.4.0")
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -224,14 +248,24 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     async def health():
         r_ok = await reasoner.health_check()
         e_ok = await embedder.health_check()
+
+        # Aggregate session stats across all tenants
+        total_sessions = {"hot": 0, "warm": 0, "cold": 0}
+        for t in tenants._tenants.values():
+            s = t["sessions"].stats
+            total_sessions["hot"] += s["hot_sessions"]
+            total_sessions["warm"] += s["warm_sessions"]
+            total_sessions["cold"] += s["cold_sessions"]
+
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="0.3.0",
+            version="0.4.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
             agents_configured=list(config.agents.keys()) + tenants.active_tenants,
             default_persona="default",
+            sessions=total_sessions,
         )
 
     # ── Context ──
@@ -242,9 +276,21 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         tenant = tenants.get(req.agent_id)
         l1, l2 = tenant["l1"], tenant["l2"]
         memory_dir = tenant["memory_dir"]
+        sessions = tenant["sessions"]
 
-        cache_hits = {"L1": 0, "L2": 0, "L3": 0}
+        cache_hits = {"HOT": 0, "L1": 0, "L2": 0, "L3": 0}
         all_chunks: list[ContextChunk] = []
+
+        # HOT: Search recent session logs first (fastest, keyword matching)
+        hot_results = sessions.search_hot(req.prompt, max_results=min(3, req.max_results))
+        for hr in hot_results:
+            all_chunks.append(ContextChunk(
+                content=f"[{hr['timestamp'][:16]}] User: {hr['prompt']}\nAgent: {hr['response']}",
+                source=f"hot-session:{hr['session_id']}",
+                relevance=0.95,  # hot data is highly relevant by recency
+                cache_tier="HOT",
+            ))
+        cache_hits["HOT"] = len(hot_results)
 
         try:
             query_embedding = await embedder.embed(req.prompt)
@@ -252,9 +298,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             raise HTTPException(503, f"Embedding unavailable: {e}")
 
         # L1
-        l1_results = l1.search(query_embedding, top_k=req.max_results, persona=persona)
-        all_chunks.extend(l1_results)
-        cache_hits["L1"] = len(l1_results)
+        remaining = req.max_results - len(all_chunks)
+        if remaining > 0:
+            l1_results = l1.search(query_embedding, top_k=remaining, persona=persona)
+            all_chunks.extend(l1_results)
+            cache_hits["L1"] = len(l1_results)
 
         # L2
         remaining = req.max_results - len(all_chunks)
@@ -387,11 +435,81 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             message=f"Session {req.session_id} archived for agent '{req.agent_id or 'default'}'. {l1_updated} L1 bundles updated.",
         )
 
-    # ── Background precache ──
-    async def precache_loop():
+    # ── Ingest (The Live Wire) ──
+    @app.post("/ingest", response_model=IngestResponse)
+    async def ingest(req: IngestRequest):
+        """
+        The Live Wire — capture every prompt/response as it happens.
+        Call this after every exchange. Fast (<5ms), append-only, crash-safe.
+        If the plug gets pulled, everything up to the last ingest is on disk.
+        """
+        # Check read-only
+        if req.agent_id and req.agent_id in config.agents:
+            if config.agents[req.agent_id].read_only:
+                raise HTTPException(403, f"Agent '{req.agent_id}' is read-only")
+
+        tenant = tenants.get(req.agent_id)
+        sessions = tenant["sessions"]
+
+        result = sessions.ingest(
+            prompt=req.prompt,
+            response=req.response,
+            metadata=req.metadata,
+        )
+
+        return IngestResponse(
+            status="captured",
+            session_id=result["session_id"],
+            entry_number=result["entry_number"],
+            agent_id=req.agent_id,
+        )
+
+    # ── Session Info ──
+    @app.get("/sessions")
+    async def list_sessions(agent_id: Optional[str] = None):
+        """List all sessions across tiers for an agent."""
+        tenant = tenants.get(agent_id)
+        sessions = tenant["sessions"]
+        return {
+            "agent_id": agent_id or "default",
+            "hot": sessions.get_hot_sessions(),
+            "warm": sessions.get_warm_sessions(),
+            "stats": sessions.stats,
+        }
+
+    @app.get("/sessions/{session_id}/transcript")
+    async def get_transcript(session_id: str, agent_id: Optional[str] = None):
+        """Get full transcript of a specific session."""
+        tenant = tenants.get(agent_id)
+        sessions = tenant["sessions"]
+        entries = sessions.get_session_transcript(session_id)
+        if not entries:
+            raise HTTPException(404, "Session not found")
+        exchanges = [e for e in entries if e.get("_type") == "exchange"]
+        return {
+            "session_id": session_id,
+            "agent_id": agent_id or "default",
+            "exchanges": len(exchanges),
+            "transcript": entries,
+        }
+
+    @app.get("/sessions/recent")
+    async def recent_context(agent_id: Optional[str] = None, n: int = 20):
+        """Get most recent exchanges as plain text (for bootstrap injection)."""
+        tenant = tenants.get(agent_id)
+        sessions = tenant["sessions"]
+        return {
+            "agent_id": agent_id or "default",
+            "context": sessions.get_recent_context(n),
+        }
+
+    # ── Background: precache + session archival ──
+    async def maintenance_loop():
         while True:
-            await asyncio.sleep(300)
+            await asyncio.sleep(300)  # every 5 minutes
+
             for tenant_key, tenant in tenants._tenants.items():
+                # Precache L1 bundles
                 try:
                     memory_dir = tenant["memory_dir"]
                     l1 = tenant["l1"]
@@ -407,17 +525,47 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         embedding = await embedder.embed(content)
                         await l1.add(content, f"precache:{mem.get('id', mem_file.stem)}", embedding)
                 except Exception as e:
-                    log.warning(f"Precache error for tenant '{tenant_key}': {e}")
+                    log.warning(f"Precache error for '{tenant_key}': {e}")
+
+                # Archive expired hot sessions → warm
+                try:
+                    sessions = tenant["sessions"]
+                    archived = sessions.archive_hot_sessions()
+                    if archived:
+                        log.info(f"Archived {len(archived)} hot sessions for '{tenant_key}'")
+                        # Index archived summaries into L2
+                        for arch in archived:
+                            if arch.get("summary"):
+                                try:
+                                    emb = await embedder.embed(arch["summary"])
+                                    l2 = tenant["l2"]
+                                    await l2.add(arch["summary"],
+                                                f"archived-session:{arch['session_id']}",
+                                                emb,
+                                                metadata={"key_facts": arch.get("key_facts", [])})
+                                except Exception as e:
+                                    log.warning(f"Failed to index archived session: {e}")
+                except Exception as e:
+                    log.warning(f"Session archival error for '{tenant_key}': {e}")
+
+                # Move expired warm → cold
+                try:
+                    moved = sessions.archive_warm_to_cold()
+                    if moved:
+                        log.info(f"Cold-archived {len(moved)} sessions for '{tenant_key}'")
+                except Exception as e:
+                    log.warning(f"Cold archival error for '{tenant_key}': {e}")
 
     @app.on_event("startup")
     async def startup():
-        log.info(f"⚡ Mnemo Cortex v0.3.0 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v0.4.0 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")
         log.info(f"  Agents:    {list(config.agents.keys()) or ['default']}")
         log.info(f"  Personas:  {list(config.personas.keys())}")
-        asyncio.create_task(precache_loop())
+        log.info(f"  Live Wire: /ingest endpoint active — every exchange captured")
+        asyncio.create_task(maintenance_loop())
 
     return app
 
