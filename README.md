@@ -179,6 +179,8 @@ If Ollama hangs, Mnemo Cortex silently falls through the chain. The `/health` en
 
 ### OpenClaw (full integration)
 
+> 💡 **New to OpenClaw?** Check out our [Paste-and-Go OpenClaw Setup Guide](docs/openclaw-setup-guide.md) to get your agent running in 10 minutes.
+
 Two daemons that work together:
 
 | Component | What it does | Run it via |
