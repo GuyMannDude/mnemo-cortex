@@ -1,5 +1,5 @@
 """
-Mnemo Cortex v0.4.0 — Drop-in Memory Superhero for AI Agents
+Mnemo Cortex v0.5.0 — Drop-in Memory Superhero for AI Agents
 =============================================================
 Every AI agent has amnesia. Mnemo Cortex is the cure.
 Five endpoints. Any LLM. Total recall.
@@ -227,7 +227,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     for agent_name in config.agents:
         tenants.get(agent_name)
 
-    app = FastAPI(title="Mnemo Cortex", description="Drop-in memory superhero for AI agents", version="0.4.0")
+    app = FastAPI(title="Mnemo Cortex", description="Drop-in memory superhero for AI agents", version="0.5.0")
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -259,7 +259,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="0.4.0",
+            version="0.5.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -566,7 +566,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
-        log.info(f"⚡ Mnemo Cortex v0.4.0 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v0.5.0 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")

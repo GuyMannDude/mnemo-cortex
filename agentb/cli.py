@@ -3,12 +3,14 @@ Mnemo Cortex CLI
 ================
 The command-line interface for managing Mnemo Cortex.
 
-  mnemo-cortex init     → Interactive setup wizard
-  mnemo-cortex start    → Start the server
-  mnemo-cortex stop     → Stop the server
-  mnemo-cortex status   → Check health + session stats
-  mnemo-cortex logs     → Tail the server logs
-  mnemo-cortex test     → Quick connectivity test
+  mnemo-cortex init      → Interactive setup wizard
+  mnemo-cortex start     → Start the server
+  mnemo-cortex stop      → Stop the server
+  mnemo-cortex status    → Check health + session stats
+  mnemo-cortex watch     → Auto-capture sessions TO Mnemo
+  mnemo-cortex refresh   → Write Mnemo context to workspace (FROM Mnemo)
+  mnemo-cortex logs      → Tail the server logs
+  mnemo-cortex test      → Quick connectivity test
 
 https://github.com/GuyMannDude/mnemo-cortex
 """
@@ -47,12 +49,12 @@ BANNER = """[bold yellow]
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="0.4.0", prog_name="mnemo-cortex")
+@click.version_option(version="0.5.0", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
         console.print(BANNER)
-        console.print("  Commands: [bold]init[/] · [bold]start[/] · [bold]stop[/] · [bold]status[/] · [bold]watch[/] · [bold]logs[/] · [bold]test[/]")
+        console.print("  Commands: [bold]init[/] · [bold]start[/] · [bold]stop[/] · [bold]status[/] · [bold]watch[/] · [bold]refresh[/] · [bold]logs[/] · [bold]test[/]")
         console.print()
         if not CONFIG_FILE.exists():
             console.print("  [yellow]→ Run [bold]mnemo-cortex init[/bold] to get started![/]")
@@ -406,6 +408,12 @@ def status():
         else:
             console.print(f"  Watcher:    [yellow]stopped[/] — run [bold]mnemo-cortex watch[/] to auto-capture")
 
+        # Refresh daemon
+        if _is_refresh_running():
+            console.print(f"  Refresh:    [green]running[/] (PID {_get_refresh_pid()}) — writing context to workspace")
+        else:
+            console.print(f"  Refresh:    [yellow]stopped[/] — run [bold]mnemo-cortex refresh --watch[/] to auto-inject")
+
         console.print()
 
     except Exception as e:
@@ -568,6 +576,227 @@ def unwatch():
     except ProcessLookupError:
         console.print("[yellow]Watcher process already gone.[/]")
     WATCHER_PID_FILE.unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────
+#  Refresh — Write Mnemo context to workspace
+# ─────────────────────────────────────────────
+
+REFRESH_PID_FILE = DATA_DIR / "refresh.pid"
+
+@main.command()
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace (auto-detects OpenClaw)")
+@click.option("--output", "-o", default="MNEMO-CONTEXT.md", help="Output filename")
+@click.option("--agent", "-a", default=None, help="Agent ID")
+@click.option("--watch", "watch_mode", is_flag=True, help="Keep refreshing every 60 seconds (daemon mode)")
+@click.option("--interval", default=60, help="Refresh interval in seconds (with --watch)")
+@click.option("--recent", "-n", default=15, help="Number of recent exchanges to include")
+@click.option("--foreground", "-f", is_flag=True, help="Run daemon in foreground")
+def refresh(workspace, output, agent, watch_mode, interval, recent, foreground):
+    """Write Mnemo memory context to your agent's workspace.
+
+    Creates a MNEMO-CONTEXT.md file that your agent reads at boot.
+    No hooks required — works with any agent framework that reads workspace files.
+
+    \b
+    Examples:
+      mnemo-cortex refresh                   # one-time write
+      mnemo-cortex refresh --watch           # keep refreshing every 60s
+      mnemo-cortex refresh --watch -f        # daemon in foreground
+      mnemo-cortex refresh -w /path/to/ws    # custom workspace path
+    """
+    console.print(BANNER)
+
+    # Auto-detect workspace
+    workspace_path = _detect_workspace(workspace)
+    if not workspace_path:
+        console.print("[red]Cannot find agent workspace.[/]")
+        console.print("  Specify with: [bold]mnemo-cortex refresh -w /path/to/workspace[/]")
+        return
+
+    # Detect Mnemo URL
+    import httpx
+    mnemo_url = os.environ.get("MNEMO_URL", "http://localhost:50001")
+    try:
+        health = httpx.get(f"{mnemo_url}/health", timeout=3).json()
+        if health.get("status") not in ("ok", "degraded"):
+            console.print(f"[red]Mnemo server unhealthy at {mnemo_url}[/]")
+            return
+    except Exception:
+        console.print(f"[red]Cannot reach Mnemo at {mnemo_url}[/]")
+        console.print("  Set MNEMO_URL environment variable or start the server.")
+        return
+
+    agent_id = agent or os.environ.get("MNEMO_AGENT_ID", "rocky")
+    output_path = workspace_path / output
+
+    if not watch_mode:
+        # One-time refresh
+        success = _do_refresh(mnemo_url, agent_id, recent, output_path)
+        if success:
+            console.print(f"[green]⚡ Context written to:[/] {output_path}")
+            console.print(f"  Agent: {agent_id}")
+            console.print(f"  Exchanges: up to {recent}")
+            console.print()
+            console.print("  [dim]Your agent will read this file at next boot.[/]")
+        else:
+            console.print("[yellow]No context available from Mnemo yet.[/]")
+        return
+
+    # Daemon mode
+    if _is_refresh_running():
+        console.print("[yellow]Refresh daemon is already running.[/]")
+        return
+
+    if foreground:
+        console.print(f"[yellow]Refreshing {output_path} every {interval}s... (Ctrl+C to stop)[/]")
+        try:
+            while True:
+                _do_refresh(mnemo_url, agent_id, recent, output_path)
+                console.print(f"  [dim]{time.strftime('%H:%M:%S')} — refreshed[/]")
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Refresh daemon stopped.[/]")
+    else:
+        # Background daemon
+        env = os.environ.copy()
+        env["MNEMO_URL"] = mnemo_url
+        env["MNEMO_AGENT_ID"] = agent_id
+
+        refresh_script = Path(__file__).parent / "refresher.py"
+        cmd = [
+            sys.executable, str(refresh_script),
+            str(workspace_path), output, str(recent), str(interval),
+        ]
+
+        log_file = DATA_DIR / "logs" / "refresh.log"
+        (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_file, "a")
+        proc = subprocess.Popen(
+            cmd, env=env,
+            stdout=log_fh, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        REFRESH_PID_FILE.write_text(str(proc.pid))
+
+        time.sleep(1)
+        if proc.poll() is None:
+            console.print(f"[green]⚡ Refresh daemon started![/]")
+            console.print(f"  PID: {proc.pid}")
+            console.print(f"  Output: {output_path}")
+            console.print(f"  Interval: every {interval}s")
+            console.print(f"  Log: {log_file}")
+            console.print()
+            console.print("  [dim]mnemo-cortex unrefresh — stop the daemon[/]")
+        else:
+            console.print("[red]Refresh daemon failed to start. Check logs.[/]")
+
+
+@main.command()
+def unrefresh():
+    """Stop the refresh daemon."""
+    if not _is_refresh_running():
+        console.print("[yellow]Refresh daemon is not running.[/]")
+        REFRESH_PID_FILE.unlink(missing_ok=True)
+        return
+
+    pid = _get_refresh_pid()
+    try:
+        os.kill(pid, signal.SIGTERM)
+        console.print(f"[green]Refresh daemon stopped (PID {pid})[/]")
+    except ProcessLookupError:
+        console.print("[yellow]Refresh daemon process already gone.[/]")
+    REFRESH_PID_FILE.unlink(missing_ok=True)
+
+
+def _do_refresh(mnemo_url: str, agent_id: str, recent: int, output_path: Path) -> bool:
+    """Fetch context from Mnemo and write to file. Returns True if context was written."""
+    import httpx
+    context_text = ""
+
+    # Try /sessions/recent first
+    try:
+        resp = httpx.get(
+            f"{mnemo_url}/sessions/recent",
+            params={"agent_id": agent_id, "n": recent},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            context_text = resp.json().get("context", "")
+    except Exception:
+        pass
+
+    # Fallback to /context search
+    if not context_text.strip():
+        try:
+            resp = httpx.post(
+                f"{mnemo_url}/context",
+                json={"prompt": "recent project status active tasks", "agent_id": agent_id, "max_results": 3},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                chunks = resp.json().get("chunks", [])
+                if chunks:
+                    context_text = "\n\n---\n\n".join(
+                        f"[{c.get('cache_tier', '?')}|{c.get('relevance', '?')}] {c.get('content', '')}"
+                        for c in chunks
+                    )
+        except Exception:
+            pass
+
+    if not context_text.strip():
+        return False
+
+    # Write the file
+    header = (
+        "# ⚡ Mnemo Cortex — Memory Context\n"
+        f"_Auto-refreshed at {time.strftime('%Y-%m-%d %H:%M:%S')}_\n"
+        f"_Agent: {agent_id} | Source: {mnemo_url}_\n\n"
+    )
+    output_path.write_text(header + context_text + "\n")
+    return True
+
+
+def _detect_workspace(explicit_path: str = None) -> Path:
+    """Detect the agent workspace directory."""
+    if explicit_path:
+        p = Path(explicit_path)
+        if p.exists():
+            return p
+        return None
+
+    # Try OpenClaw default
+    openclaw_ws = Path.home() / ".openclaw" / "workspace"
+    if openclaw_ws.exists():
+        return openclaw_ws
+
+    # Try Agent Zero
+    a0_ws = Path.home() / ".agent-zero" / "workspace"
+    if a0_ws.exists():
+        return a0_ws
+
+    # Current directory as fallback
+    return Path.cwd()
+
+
+def _get_refresh_pid() -> int:
+    try:
+        return int(REFRESH_PID_FILE.read_text().strip())
+    except Exception:
+        return 0
+
+
+def _is_refresh_running() -> bool:
+    pid = _get_refresh_pid()
+    if pid == 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def _get_watcher_pid() -> int:
