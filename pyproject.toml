@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "mnemo-cortex"
-version = "0.4.0"
+version = "0.5.0"
 description = "Drop-in memory superhero for AI agents. Total recall in four endpoints."
 readme = "README.md"
 license = {text = "MIT"}
