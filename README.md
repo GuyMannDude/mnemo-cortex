@@ -59,8 +59,8 @@ No manual saves. No handoff scripts. No lost sessions. The watcher never sleeps.
 pip install mnemo-cortex
 mnemo-cortex init          # interactive wizard — pick providers, enter keys, done
 mnemo-cortex start         # server starts in background
-mnemo-cortex watch --backfill # start the live watcher and ingest history
-mnemo-cortex status        # verify everything is green
+mnemo-cortex watch --backfill # captures TO Mnemo
+mnemo-cortex refresh --watch # writes FROM Mnemo to workspace
 ```
 
 ### Option 2: Docker
@@ -76,6 +76,7 @@ pip install -e ".[dev]"
 mnemo-cortex init
 mnemo-cortex start
 mnemo-cortex watch --backfill
+mnemo-cortex refresh --watch
 ```
 
 ## CLI Commands
@@ -87,6 +88,8 @@ mnemo-cortex start -f  # Start in foreground
 mnemo-cortex stop      # Stop server
 mnemo-cortex watch     # Start the session watcher (auto-capture)
 mnemo-cortex unwatch   # Stop the session watcher
+mnemo-cortex refresh   # Write MNEMO-CONTEXT.md to workspace
+mnemo-cortex unrefresh # Stop the refresh daemon
 mnemo-cortex status    # Health check + session stats + watcher status
 mnemo-cortex logs      # View server logs
 mnemo-cortex logs -f   # Follow logs live
@@ -176,14 +179,14 @@ If Ollama hangs, Mnemo Cortex silently falls through the chain. The `/health` en
 
 ### OpenClaw (full integration)
 
-Two hooks that work together:
+Two daemons that work together:
 
-| Hook | What it does | Event |
-|------|-------------|-------|
-| **mnemo-ingest** | Archives session on `/new`, injects context on bootstrap | `command:new`, `agent:bootstrap` |
-| **Watcher Daemon** | Silently pushes Live Wire tape state into Cortex. | Always active |
+| Component | What it does | Run it via |
+|-----------|-------------|------------|
+| **Watcher Daemon** | Silently pushes Live Wire tape state into Cortex. | `mnemo-cortex watch` |
+| **Refresh Daemon** | Writes `MNEMO-CONTEXT.md` to your workspace for context injection. | `mnemo-cortex refresh` |
 
-Your agent now captures every exchange automatically, gets memory context injected on startup, and archives sessions when you issue `/new`. Zero manual effort.
+Your agent now captures every exchange automatically and gets memory context injected. Zero manual effort, and absolutely zero OpenClaw hooks required.
 
 ### Other Frameworks
 
