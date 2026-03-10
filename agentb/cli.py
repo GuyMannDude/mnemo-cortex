@@ -9,6 +9,7 @@ The command-line interface for managing Mnemo Cortex.
   mnemo-cortex status    → Check health + session stats
   mnemo-cortex watch     → Auto-capture sessions TO Mnemo
   mnemo-cortex refresh   → Write Mnemo context to workspace (FROM Mnemo)
+  mnemo-cortex recall    → Exact-match memory search (SQLite FTS5)
   mnemo-cortex logs      → Tail the server logs
   mnemo-cortex test      → Quick connectivity test
 
@@ -49,12 +50,12 @@ BANNER = """[bold yellow]
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="0.5.0", prog_name="mnemo-cortex")
+@click.version_option(version="0.6.0", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
         console.print(BANNER)
-        console.print("  Commands: [bold]init[/] · [bold]start[/] · [bold]stop[/] · [bold]status[/] · [bold]watch[/] · [bold]refresh[/] · [bold]logs[/] · [bold]test[/]")
+        console.print("  Commands: [bold]init[/] · [bold]start[/] · [bold]stop[/] · [bold]status[/] · [bold]watch[/] · [bold]refresh[/] · [bold]recall[/] · [bold]logs[/] · [bold]test[/]")
         console.print()
         if not CONFIG_FILE.exists():
             console.print("  [yellow]→ Run [bold]mnemo-cortex init[/bold] to get started![/]")
@@ -841,6 +842,214 @@ def _is_running() -> bool:
         return False
     except PermissionError:
         return True  # exists but we can't signal it
+
+
+# ─────────────────────────────────────────────
+#  Recall — Exact-match memory (SQLite FTS5)
+# ─────────────────────────────────────────────
+
+@main.group()
+def recall():
+    """Exact-match memory search via SQLite FTS5.
+
+    Complements Mnemo's semantic search with precise keyword and entity recall.
+
+    \b
+    Commands:
+      mnemo-cortex recall init      — Initialize recall index
+      mnemo-cortex recall index     — Rebuild index from markdown files
+      mnemo-cortex recall search    — Search memories by keyword
+      mnemo-cortex recall remember  — Store a new memory
+      mnemo-cortex recall reflect   — Generate entity summary pages
+      mnemo-cortex recall pack      — Generate a memory pack for /new recovery
+    """
+    pass
+
+
+def _get_workspace(workspace: str = None) -> Path:
+    """Resolve workspace path."""
+    if workspace:
+        return Path(workspace).expanduser().resolve()
+    # Auto-detect OpenClaw workspace
+    default = Path.home() / ".openclaw" / "workspace"
+    if default.exists():
+        return default
+    return Path.cwd()
+
+
+@recall.command("init")
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace")
+def recall_init(workspace):
+    """Initialize the recall memory system in your workspace."""
+    from agentb.recall.parser import iter_records
+    from agentb.recall.store import connect, default_db_path, rebuild_index
+
+    ws = _get_workspace(workspace)
+
+    # Create standard directories
+    (ws / "memory").mkdir(parents=True, exist_ok=True)
+    (ws / "bank" / "entities").mkdir(parents=True, exist_ok=True)
+
+    # Seed files if they don't exist
+    seed_files = {
+        ws / "bank" / "world.md": "# World\n\n",
+        ws / "bank" / "experience.md": "# Experience\n\n",
+        ws / "bank" / "opinions.md": "# Opinions\n\n",
+    }
+    for path, body in seed_files.items():
+        if not path.exists():
+            path.write_text(body, encoding="utf-8")
+
+    conn = connect(default_db_path(ws))
+    count = rebuild_index(conn, iter_records(ws))
+    console.print(f"[green]⚡ Recall initialized![/] Indexed {count} memory records in {ws}")
+
+
+@recall.command("index")
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace")
+def recall_index(workspace):
+    """Rebuild the recall index from all markdown memory files."""
+    from agentb.recall.parser import iter_records
+    from agentb.recall.store import connect, default_db_path, rebuild_index
+
+    ws = _get_workspace(workspace)
+    conn = connect(default_db_path(ws))
+    count = rebuild_index(conn, iter_records(ws))
+    console.print(f"[green]Indexed {count} memory records[/] → {default_db_path(ws)}")
+
+
+@recall.command("search")
+@click.argument("query")
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace")
+@click.option("--limit", "-n", default=8, help="Max results")
+@click.option("--since", default=None, help="Filter by date (e.g., '14d' or '2026-03-01')")
+@click.option("--entity", "-e", default=None, help="Filter by entity name")
+@click.option("--json-output", "--json", "as_json", is_flag=True, help="Output as JSON")
+def recall_search(query, workspace, limit, since, entity, as_json):
+    """Search memories by keyword. Fast exact-match via SQLite FTS5."""
+    import json as json_mod
+    from agentb.recall.store import connect, default_db_path, search
+    from agentb.recall.utils import parse_since, relpath
+
+    ws = _get_workspace(workspace)
+    conn = connect(default_db_path(ws))
+    rows = search(conn, query, limit=limit, since=parse_since(since), entity=entity)
+
+    if not rows:
+        console.print("[yellow]No matches found.[/]")
+        return
+
+    if as_json:
+        payload = []
+        for row in rows:
+            payload.append({
+                "kind": row["kind"],
+                "date": row["date"],
+                "title": row["title"],
+                "text": row["text"],
+                "source": f"{relpath(Path(row['path']), ws)}#L{row['line_start']}-L{row['line_end']}",
+                "score": row["score"],
+            })
+        console.print(json_mod.dumps(payload, indent=2))
+        return
+
+    for i, row in enumerate(rows, start=1):
+        src = f"{relpath(Path(row['path']), ws)}#L{row['line_start']}-L{row['line_end']}"
+        stamp = f"{row['date']} " if row["date"] else ""
+        console.print(f"  [cyan][{i}][/] [bold]{row['kind']}[/] {stamp}")
+        console.print(f"      {row['text']}")
+        console.print(f"      [dim]source: {src}[/]")
+        console.print()
+
+
+@recall.command("remember")
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace")
+@click.option("--text", "-t", required=True, help="The memory to store")
+@click.option("--kind", "-k", default="fact", help="Memory kind (fact, decision, lesson, etc.)")
+@click.option("--entity", "-e", multiple=True, help="Associated entities (repeatable)")
+@click.option("--confidence", "-c", type=float, default=None, help="Confidence score 0.0-1.0")
+@click.option("--date", "-d", "rec_date", default=None, help="Override date (YYYY-MM-DD)")
+def recall_remember(workspace, text, kind, entity, confidence, rec_date):
+    """Store a new memory fact, decision, or lesson."""
+    from datetime import date as date_mod
+    from agentb.recall.models import MemoryRecord
+    from agentb.recall.store import connect, default_db_path, append_record
+
+    ws = _get_workspace(workspace)
+    stamp = rec_date or date_mod.today().isoformat()
+    daily_path = ws / "memory" / f"{stamp}.md"
+    daily_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not daily_path.exists():
+        daily_path.write_text(f"# {stamp}\n\n## Retain\n", encoding="utf-8")
+
+    # Build the bullet line
+    tags = " ".join(f"@{e}" for e in entity)
+    conf = f" c={confidence:.2f}" if confidence is not None else ""
+    spacer = " " if tags else ""
+    with daily_path.open("a", encoding="utf-8") as f:
+        f.write(f"- {kind}{conf} {tags}{spacer}{text}\n")
+
+    line_count = len(daily_path.read_text(encoding="utf-8").splitlines())
+
+    rec = MemoryRecord(
+        path=daily_path,
+        line_start=line_count,
+        line_end=line_count,
+        kind=kind,
+        text=text,
+        entities=list(entity),
+        confidence=confidence,
+        date=stamp,
+        title="Retain",
+    )
+
+    conn = connect(default_db_path(ws))
+    append_record(conn, rec)
+    console.print(f"[green]⚡ Remembered:[/] {kind} → {daily_path.name}")
+
+
+@recall.command("reflect")
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace")
+def recall_reflect(workspace):
+    """Rebuild index and generate per-entity summary pages."""
+    from agentb.recall.parser import iter_records
+    from agentb.recall.reflect import write_entity_pages
+    from agentb.recall.store import connect, default_db_path, rebuild_index
+
+    ws = _get_workspace(workspace)
+    conn = connect(default_db_path(ws))
+    indexed = rebuild_index(conn, iter_records(ws))
+    written = write_entity_pages(conn, ws)
+    console.print(f"[green]Reflected {indexed} records → {written} entity pages[/]")
+
+
+@recall.command("pack")
+@click.option("--workspace", "-w", default=None, help="Path to agent workspace")
+@click.option("--since", default="14d", help="How far back to include (e.g., '14d', '2026-03-01')")
+@click.option("--limit", "-n", default=12, help="Max memories in pack")
+def recall_pack(workspace, since, limit):
+    """Generate a memory pack for /new recovery.
+
+    Outputs recent memories as a markdown list that can be injected
+    into a new session's context.
+    """
+    from agentb.recall.store import connect, default_db_path, recent_pack
+    from agentb.recall.utils import parse_since, relpath
+
+    ws = _get_workspace(workspace)
+    conn = connect(default_db_path(ws))
+    rows = recent_pack(conn, since=parse_since(since), limit=limit)
+
+    if not rows:
+        console.print("[yellow]No recent memories found.[/]")
+        return
+
+    console.print("[bold]# Memory Pack[/]\n")
+    for row in rows:
+        src = f"{relpath(Path(row['path']), ws)}#L{row['line_start']}-L{row['line_end']}"
+        stamp = f"[{row['date']}] " if row["date"] else ""
+        console.print(f"- {stamp}{row['kind']}: {row['text']} [dim]_(source: {src})_[/]")
 
 
 if __name__ == "__main__":
