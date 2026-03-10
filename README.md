@@ -275,7 +275,7 @@ Adding a new provider is as easy as implementing two methods (`generate`/`embed`
 
 ## Created By
 
-Guy Hutchins, Rocky Moltman 🦞, and Opie (Claude) — built for [Project Sparks](https://projectsparks.ai).
+Guy Hutchins, Rocky Moltman 🦞, Opie (Claude), and AL (ChatGPT 5.4) — built for [Project Sparks](https://projectsparks.ai).
 
 *"I remember everything so your agent doesn't have to."*
 
