@@ -8,13 +8,13 @@ One command, ten checks, clear output.
 
 ```bash
 # Auto-detect URL from MNEMO_URL env var (or defaults to localhost:50001)
-mnemo-cortex-doctor
+mnemo-cortex doctor
 
 # Explicit URL
-mnemo-cortex-doctor http://your-server:50001
+mnemo-cortex doctor http://your-server:50001
 
 # Machine-readable JSON output (for automation)
-mnemo-cortex-doctor --json
+mnemo-cortex doctor --json
 ```
 
 What it checks:
@@ -96,7 +96,7 @@ What it checks (lightweight — four checks only):
 3. Both models (reasoning + embedding) are healthy
 4. A real recall query succeeds
 
-This is intentionally simple. For full diagnostics, use `mnemo-cortex-doctor`.
+This is intentionally simple. For full diagnostics, use `mnemo-cortex doctor`.
 
 ## Alerting Options
 
