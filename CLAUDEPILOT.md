@@ -1,10 +1,12 @@
-# Install Mnemo Cortex v2 with Claude as your guide
+# 🤖 ClaudePilot — AI-Guided Installation
 
-> **Copy this entire prompt into [claude.ai](https://claude.ai) and let Claude walk you through it. No experience needed.**
+> **Designed for Claude (free). Works with ChatGPT, Gemini, and others.**
+
+ClaudePilot is a ready-to-paste prompt that turns any AI assistant into your personal installation guide. Follow the guide below and paste it into [claude.ai](https://claude.ai) (or any AI chat). The AI walks you through every step with copy/paste terminal commands. No experience needed.
 
 ---
 
-Copy everything below this line and paste it into a new Claude conversation:
+Copy everything below this line and paste it into a new conversation:
 
 ---
 

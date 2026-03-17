@@ -2,6 +2,8 @@
 
 > **"Don't Fear the /new!"**
 
+🤖 **ClaudePilot Enabled** — [AI-guided installation](CLAUDEPILOT.md). Designed for Claude (free). Works with ChatGPT, Gemini, and others.
+
 Your AI agent forgets everything between sessions. Mnemo Cortex fixes that.
 Now proven on two live agents — Rocky with six weeks of recall, Alice with one.
 
@@ -43,7 +45,7 @@ Proven on two live OpenClaw agents:
 
 ## Install Guide
 
-> **New to the terminal?** Copy the prompt from [INSTALL-WITH-CLAUDE.md](INSTALL-WITH-CLAUDE.md) into [claude.ai](https://claude.ai) and let Claude walk you through every step. No experience needed.
+> 🤖 **ClaudePilot Enabled** — [Follow the guide in CLAUDEPILOT.md](CLAUDEPILOT.md) and paste it into [claude.ai](https://claude.ai). Claude becomes your personal installer. No experience needed. Works with ChatGPT, Gemini, and others.
 
 ### Prerequisites
 
