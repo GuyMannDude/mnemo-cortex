@@ -43,6 +43,8 @@ Proven on two live OpenClaw agents:
 
 ## Install Guide
 
+> **New to the terminal?** Copy the prompt from [INSTALL-WITH-CLAUDE.md](INSTALL-WITH-CLAUDE.md) into [claude.ai](https://claude.ai) and let Claude walk you through every step. No experience needed.
+
 ### Prerequisites
 
 - Python 3.11+
