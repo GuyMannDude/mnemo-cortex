@@ -3,7 +3,7 @@
 > **"Don't Fear the /new!"**
 
 Your AI agent forgets everything between sessions. Mnemo Cortex fixes that.
-Now proven on two live agents with six weeks of recall.
+Now proven on two live agents — Rocky with six weeks of recall, Alice with one.
 
 ```
 OpenClaw Agent ──writes──▶ Session Tape (disk)
@@ -38,7 +38,7 @@ Proven on two live OpenClaw agents:
 
 | Agent | Host | Messages | Summaries | Conversations | Recall |
 |-------|------|----------|-----------|---------------|--------|
-| **Alice** | THE VAULT (Threadripper) | 210+ | 18+ | 5 | 6 weeks |
+| **Alice** | THE VAULT (Threadripper) | 210+ | 18+ | 5 | 1 week |
 | **Rocky** | IGOR (laptop) | 3,000+ | 429+ | 20+ | 6 weeks |
 
 ## Install Guide
