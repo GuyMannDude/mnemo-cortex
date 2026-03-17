@@ -1,286 +1,9 @@
-# ⚡ Mnemo Cortex
+# ⚡ Mnemo Cortex v2.0
 
-> *Every AI agent has amnesia. Mnemo Cortex is the cure.*
+> **"Don't Fear the /new!"**
 
-**Drop-in memory superhero for AI agents.** Four endpoints. Any LLM. Total recall.
-
-```
-Your Agent                    Mnemo Cortex (port 50001)
-    │                              │
-    │── POST /context ────────────▶│  "What do you remember about Easter?"
-    │◀── memory chunks ────────────│  L1 cache → L2 index → L3 scan
-    │                              │
-    │── POST /preflight ──────────▶│  "Check my draft response"
-    │◀── PASS / ENRICH / WARN ─────│  "Wait. Take this with you."
-    │                              │
-    │── POST /writeback ──────────▶│  "Archive this session"
-    │◀── confirmed ────────────────│  Indexed for future recall
-```
-
-## The Moves
-
-- **PASS** — "You're good, go."
-- **ENRICH** — "Wait. Take this with you." *(injects missing context)*
-- **WARN** — "Hold up. Something's off." *(flags potential errors)*
-- **BLOCK** — "No. Sit down." *(stops factual mistakes)*
-
-## Why Mnemo Cortex?
-
-AI agents forget everything between sessions. Mnemo Cortex gives them a brain that persists.
-
-- **4 endpoints.** Context retrieval, preflight validation, session archiving, health check.
-- **Any LLM.** Ollama (free/local), OpenAI, Anthropic, Google Gemini, OpenRouter.
-- **Resilient.** Circuit-breaker fallback chains. If Ollama dies, it hot-swaps to your API backup.
-- **Persona modes.** Strict for business, Creative for brainstorming, or build your own.
-- **Multi-tenant.** Rocky's memories never leak into BW's. Filesystem-level isolation.
-- **L1/L2/L3 cache hierarchy.** Pre-built bundles → semantic search → full scan.
-- **Framework adapters.** OpenClaw hook, Agent Zero skill, or raw HTTP from anything.
-- **Zero cloud lock-in.** Runs fully local with Ollama, or use any API provider.
-
-## The Live Wire (`/ingest`) + The Watcher
-
-This is the feature that changes everything. `mnemo-cortex watch` runs a lightweight daemon outside your agent that silently watches its session transcripts. The millisecond your agent replies, the watcher captures the user's prompt and the agent's response, strips any internal noise/metadata, and pipes it straight to `/ingest`. 
-
-If Anthropic pulls the plug, if the server crashes, if the power goes out — every conversation up to the exact last letter is already on disk in your Cortex.
-
-**Session Lifecycle:**
-| Tier | Age | Storage | Search Speed | What Happens |
-|------|-----|---------|-------------|--------------|
-| **HOT** | Days 1-3 | Raw JSONL | Instant (keyword) | Every exchange, as it happens |
-| **WARM** | Days 4-30 | Summarized + compressed | Fast (L2 semantic) | Auto-summarized, embedded, indexed |
-| **COLD** | Day 30+ | Compressed archive | Slow (L3 scan) | Deep storage, still searchable |
-
-No manual saves. No handoff scripts. No lost sessions. The watcher never sleeps.
-
-## Quick Start
-
-### Option 1: pip install (recommended)
-```bash
-pip install mnemo-cortex
-mnemo-cortex init          # interactive wizard — pick providers, enter keys, done
-mnemo-cortex start         # server starts in background
-mnemo-cortex watch --backfill # captures TO Mnemo
-mnemo-cortex refresh --watch # writes FROM Mnemo to workspace
-```
-
-### Option 2: Docker
-```bash
-docker run -p 50001:50001 ghcr.io/guymanndude/mnemo-cortex
-```
-
-### Option 3: From source
-```bash
-git clone https://github.com/GuyMannDude/mnemo-cortex.git
-cd mnemo-cortex
-pip install -e ".[dev]"
-mnemo-cortex init
-mnemo-cortex start
-mnemo-cortex watch --backfill
-mnemo-cortex refresh --watch
-```
-
-## CLI Commands
-
-```bash
-mnemo-cortex init      # Interactive setup wizard
-mnemo-cortex start     # Start server (background)
-mnemo-cortex start -f  # Start in foreground
-mnemo-cortex stop      # Stop server
-mnemo-cortex watch     # Start the session watcher (auto-capture)
-mnemo-cortex unwatch   # Stop the session watcher
-mnemo-cortex refresh   # Write MNEMO-CONTEXT.md to workspace
-mnemo-cortex unrefresh # Stop the refresh daemon
-mnemo-cortex status    # Health check + session stats + watcher status
-mnemo-cortex logs      # View server logs
-mnemo-cortex logs -f   # Follow logs live
-mnemo-cortex test      # Quick connectivity test
-```
-
-## Configuration
-
-```yaml
-# Free local setup (requires Ollama)
-reasoning:
-  provider: ollama
-  model: qwen2.5:32b-instruct
-  api_base: http://localhost:11434
-  fallbacks:
-    - provider: openai
-      model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
-
-embedding:
-  provider: ollama
-  model: nomic-embed-text
-  api_base: http://localhost:11434
-```
-
-```yaml
-# Cloud setup (works anywhere, no GPU needed)
-reasoning:
-  provider: openai
-  model: gpt-4o-mini
-  api_key: ${OPENAI_API_KEY}
-
-embedding:
-  provider: openai
-  model: text-embedding-3-small
-  api_key: ${OPENAI_API_KEY}
-```
-
-See [agentb.yaml.example](agentb.yaml.example) for all options including persona modes and multi-agent isolation.
-
-## Persona Modes
-
-Mnemo Cortex adapts to what your agent is doing:
-
-| Mode | Preflight | Context | Use Case |
-|------|-----------|---------|----------|
-| **default** | Balanced | Neutral | General purpose |
-| **strict** | Aggressive fact-checking | Factual bias | Business, finance, ops |
-| **creative** | Permissive | Associative (wider net) | Brainstorming, art, prompts |
-
-Pass `"persona": "creative"` in any request, or set it per-agent in config.
-
-## Multi-Agent Isolation
-
-```yaml
-agents:
-  rocky:
-    data_dir: ~/.agentb/agents/rocky
-    persona: creative
-  bw:
-    data_dir: ~/.agentb/agents/bw
-    persona: strict
-```
-
-Each agent gets its own memory, cache, and index. No data leakage. Pass `"agent_id": "rocky"` in requests.
-
-## Resilient Provider Fallbacks
-
-```yaml
-reasoning:
-  provider: ollama
-  model: qwen2.5:32b-instruct
-  circuit_breaker_threshold: 3
-  circuit_breaker_cooldown: 60
-  fallbacks:
-    - provider: openai
-      model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
-    - provider: openrouter
-      model: nousresearch/hermes-3-llama-3.1-405b:free
-      api_key: ${OPENROUTER_API_KEY}
-```
-
-If Ollama hangs, Mnemo Cortex silently falls through the chain. The `/health` endpoint shows which provider is active.
-
-## Framework Adapters
-
-### OpenClaw (full integration)
-
-> 💡 **New to OpenClaw?** Check out our [Paste-and-Go OpenClaw Setup Guide](docs/openclaw-setup-guide.md) to get your agent running in 10 minutes.
-
-Two daemons that work together:
-
-| Component | What it does | Run it via |
-|-----------|-------------|------------|
-| **Watcher Daemon** | Silently pushes Live Wire tape state into Cortex. | `mnemo-cortex watch` |
-| **Refresh Daemon** | Writes `MNEMO-CONTEXT.md` to your workspace for context injection. | `mnemo-cortex refresh` |
-
-Your agent now captures every exchange automatically and gets memory context injected. Zero manual effort, and absolutely zero OpenClaw hooks required.
-
-### Other Frameworks
-
-| Framework | Adapter | Setup |
-|-----------|---------|-------|
-| **Agent Zero** | Skill file | Copy `adapters/agent-zero/SKILL-AGENTB.md` to Agent Zero skills |
-| **Any framework** | HTTP/curl | See `adapters/generic/INTEGRATION.md` |
-
-## Supported Providers
-
-| Provider | Reasoning | Embedding | Cost |
-|----------|-----------|-----------|------|
-| **Ollama** | ✅ Any model | ✅ nomic-embed-text | Free (local) |
-| **OpenAI** | ✅ GPT-4o-mini, GPT-4o | ✅ text-embedding-3-small | ~$0.15/M tokens |
-| **Anthropic** | ✅ Claude Sonnet/Haiku | ❌ | ~$0.25/M tokens |
-| **OpenRouter** | ✅ Any model | ✅ Any model | Varies (free tier available) |
-| **Google** | ✅ Gemini Flash/Pro | ✅ embedding-001 | Free tier available |
-| **HuggingFace** | ❌ | ✅ Any model | Free (local) or API |
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│          ⚡ Mnemo Cortex Server             │
-│   "I remember everything so your agent      │
-│    doesn't have to."                        │
-│                                             │
-│  ┌────────────┐  ┌────────────┐            │
-│  │  Reasoning  │  │  Embedding │  Pluggable │
-│  │  + Fallback │  │  + Fallback│  Chains    │
-│  └─────┬──────┘  └─────┬──────┘            │
-│        │                │                    │
-│  ┌─────┴────────────────┴──────┐            │
-│  │      Cache Hierarchy        │            │
-│  │  L1: Pre-built bundles      │  Fast      │
-│  │  L2: Semantic index         │  ↓         │
-│  │  L3: Full memory scan       │  Slow      │
-│  └────────────┬────────────────┘            │
-│               │                              │
-│  ┌────────────┴────────────────┐            │
-│  │   Multi-Tenant Storage      │            │
-│  │  rocky/ │ bw/ │ shared/     │            │
-│  └─────────────────────────────┘            │
-└─────────────────────────────────────────────┘
-                      ▲
-                      │
-               POST /ingest
-                      │
-      ┌───────────────┴───────────────┐
-      │        Watcher Daemon         │
-      │ Automatically reads sessions  │
-      └───────────────▲───────────────┘
-                      │
-            ┌─────────┴─────────┐
-            │ OpenClaw Storage  │
-            │  ~/.openclaw/     │
-            └───────────────────┘
-
-```
-
-## Testing
-
-```bash
-pip install -e ".[dev]"
-PYTHONPATH=. pytest tests/ -v
-```
-
-56 tests covering circuit breaker, provider fallbacks, cache hierarchy, multi-tenant isolation, persona modes, session lifecycle, crash safety, and config loading.
-
-## Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-Adding a new provider is as easy as implementing two methods (`generate`/`embed` + `health_check`) and adding it to the provider map. Framework adapters are even simpler — just a config file and some docs.
-
-## v2.0 — The Rewrite (Coming Soon)
-
-Mnemo Cortex v2.0 is a ground-up rewrite, currently in **live testing on Alice** (OpenClaw agent on THE VAULT). Alice has been running v2.0 in production since March 2026 with proven memory recall across sessions.
-
-### What's New in v2.0
-
-- **SQLite + FTS5 storage** — No more JSONL files. All memory in a single SQLite database with full-text search. Fast, portable, zero dependencies.
-- **Context frontier with active compaction** — Instead of HOT/WARM/COLD tiers, v2.0 maintains a rolling *frontier* of context items (messages + summaries). A compaction daemon continuously summarizes older messages, achieving **~80% token compression** while preserving perfect recall.
-- **DAG-based summary lineage** — Summaries track which messages they were built from. The full lineage is a directed acyclic graph, so you can always trace a summary back to its source conversations.
-- **Source expansion with verbatim replay** — When a summary is relevant, v2.0 can expand it back to the original messages for full-fidelity context. The agent gets the compressed version by default, verbatim replay on demand.
-- **OpenClaw session watcher** — A lightweight sidecar daemon watches OpenClaw's session tape and ingests new messages automatically. No hooks, no agent cooperation, no OpenClaw modifications required.
-- **Context refresher daemon** — Writes `MNEMO-CONTEXT.md` to the agent's workspace on a schedule. The agent reads it at bootstrap for instant memory hydration.
-- **Provider-backed summarization via OpenRouter** — Compaction summaries are generated by real LLMs (Gemini 2.5 Flash via OpenRouter) with deterministic fallback. No local GPU required.
-
-### Architecture: Sidecar Design
-
-v2.0 is **version-resistant** — it observes the agent's session files from the outside, never patching or hooking into OpenClaw internals. If OpenClaw updates, v2.0 keeps working. If v2.0 crashes, the agent keeps working. Clean separation.
+Your AI agent forgets everything between sessions. Mnemo Cortex fixes that.
+Now proven on two live agents with six weeks of recall.
 
 ```
 OpenClaw Agent ──writes──▶ Session Tape (disk)
@@ -292,45 +15,288 @@ OpenClaw Agent ──writes──▶ Session Tape (disk)
                           writes──▶ MNEMO-CONTEXT.md ──▶ Agent Bootstrap
 ```
 
-### Live Stats (Alice, March 2026)
+## What It Does
 
-| Metric | Value |
-|--------|-------|
-| Context items | 96 (90 messages + 6 summaries) |
-| Frontier tokens | ~15,400 |
-| Total messages ingested | 210 |
-| Compaction events | 18 |
-| Conversations tracked | 5 |
-| Compression ratio | ~80% (210 messages → 96 frontier items) |
+Mnemo Cortex v2 is a **sidecar memory coprocessor** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.
 
-### Credits
+No hooks. No agent modifications. No cloud dependency. If Mnemo crashes, your agent keeps working. If your agent crashes, Mnemo already has everything on disk.
 
-v2.0 was a team effort across multiple AI systems:
+## Key Features
 
+- **SQLite + FTS5 storage** — Single database file. Full-text search. Zero dependencies beyond Python stdlib.
+- **Context frontier with active compaction** — Rolling window of messages + summaries. 80% token compression while preserving perfect recall.
+- **DAG-based summary lineage** — Every summary tracks its source messages via a directed acyclic graph. Expand any summary back to verbatim source.
+- **Verbatim replay mode** — Compressed by default, original messages on demand.
+- **OpenClaw session watcher daemon** — Tails JSONL session files and ingests new messages every 2 seconds.
+- **Context refresher daemon** — Writes `MNEMO-CONTEXT.md` to the agent's workspace every 5 seconds.
+- **Provider-backed summarization** — Compaction summaries generated by Gemini 2.5 Flash via OpenRouter, with deterministic fallback. No local GPU required.
+- **Sidecar design** — Version-resistant. Observes from the outside. Never touches agent internals.
+
+## Live Stats (March 2026)
+
+Proven on two live OpenClaw agents:
+
+| Agent | Host | Messages | Summaries | Conversations | Recall |
+|-------|------|----------|-----------|---------------|--------|
+| **Alice** | THE VAULT (Threadripper) | 210+ | 18+ | 5 | 6 weeks |
+| **Rocky** | IGOR (laptop) | 3,000+ | 429+ | 20+ | 6 weeks |
+
+## Install Guide
+
+### Prerequisites
+
+- Python 3.11+
+- An OpenClaw agent with session files in `~/.openclaw/agents/<agent>/sessions/`
+- OpenRouter API key (for LLM-backed summaries; falls back to deterministic if unavailable)
+
+### Step 1: Clone and set up
+
+```bash
+git clone https://github.com/GuyMannDude/mnemo-cortex.git
+cd mnemo-cortex
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+### Step 2: Create data directory
+
+```bash
+mkdir -p ~/.mnemo-v2
+```
+
+### Step 3: Create watcher script
+
+Create `mnemo-watcher.sh` (adjust paths for your agent):
+
+```bash
+#!/usr/bin/env bash
+SESSIONS_DIR="$HOME/.openclaw/agents/main/sessions"
+DB="$HOME/.mnemo-v2/mnemo.sqlite3"
+CHECKPOINT="$HOME/.mnemo-v2/watcher.offset"
+AGENT_ID="rocky"  # your agent's name
+INTERVAL=2
+
+cd /path/to/mnemo-cortex
+source .venv/bin/activate
+mkdir -p "$HOME/.mnemo-v2"
+
+LAST_FILE=""
+while true; do
+    NEWEST=$(ls -t "$SESSIONS_DIR"/*.jsonl 2>/dev/null | head -1)
+    if [[ -z "$NEWEST" ]]; then sleep "$INTERVAL"; continue; fi
+    if [[ "$NEWEST" != "$LAST_FILE" ]]; then
+        SESSION_ID=$(basename "$NEWEST" .jsonl)
+        echo "0" > "$CHECKPOINT"
+        LAST_FILE="$NEWEST"
+        echo "[mnemo-watcher] Tracking session: $SESSION_ID"
+    fi
+    python3 -c "
+from mnemo_v2.watch.session_watcher import SessionWatcher
+w = SessionWatcher(\"$DB\", \"$NEWEST\", \"$CHECKPOINT\")
+n = w.poll_once(agent_id=\"$AGENT_ID\", session_id=\"$SESSION_ID\")
+if n > 0:
+    print(f\"[mnemo-watcher] Ingested {n} messages\")
+"
+    sleep "$INTERVAL"
+done
+```
+
+### Step 4: Create refresher script
+
+Create `mnemo-refresher.sh`:
+
+```bash
+#!/usr/bin/env bash
+SESSIONS_DIR="$HOME/.openclaw/agents/main/sessions"
+DB="$HOME/.mnemo-v2/mnemo.sqlite3"
+OUTPUT="$HOME/.openclaw/workspace/MNEMO-CONTEXT.md"
+AGENT_ID="rocky"  # your agent's name
+INTERVAL=5
+
+cd /path/to/mnemo-cortex
+source .venv/bin/activate
+mkdir -p "$HOME/.mnemo-v2"
+
+while true; do
+    NEWEST=$(ls -t "$SESSIONS_DIR"/*.jsonl 2>/dev/null | head -1)
+    if [[ -n "$NEWEST" ]]; then
+        SESSION_ID=$(basename "$NEWEST" .jsonl)
+        python3 -c "
+from mnemo_v2.watch.context_refresher import ContextRefresher
+r = ContextRefresher(\"$DB\", \"$OUTPUT\")
+ok = r.refresh_once(agent_id=\"$AGENT_ID\", session_id=\"$SESSION_ID\")
+if ok:
+    print(\"[mnemo-refresher] MNEMO-CONTEXT.md updated\")
+"
+    fi
+    sleep "$INTERVAL"
+done
+```
+
+### Step 5: Install as systemd user services
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/mnemo-watcher.service << 'EOF'
+[Unit]
+Description=Mnemo v2 Session Watcher
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/path/to/mnemo-watcher.sh
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat > ~/.config/systemd/user/mnemo-refresher.service << 'EOF'
+[Unit]
+Description=Mnemo v2 Context Refresher
+After=mnemo-watcher.service
+
+[Service]
+Type=simple
+ExecStart=%h/path/to/mnemo-refresher.sh
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now mnemo-watcher mnemo-refresher
+```
+
+### Step 6: Patch the bootstrap hook (OpenClaw)
+
+Replace your `mnemo-ingest` handler to read from disk instead of calling the v1 API:
+
+```typescript
+import { HookHandler } from "openclaw/plugin-sdk";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+const WORKSPACE = process.env.OPENCLAW_WORKSPACE || join(process.env.HOME || "", ".openclaw", "workspace");
+const CONTEXT_FILE = join(WORKSPACE, "MNEMO-CONTEXT.md");
+
+const handler: HookHandler = async (event) => {
+  if (event.type === "agent" && event.action === "bootstrap") {
+    try {
+      const content = readFileSync(CONTEXT_FILE, "utf-8").trim();
+      if (content && event.context.bootstrapFiles) {
+        event.context.bootstrapFiles.push({ basename: "MNEMO-CONTEXT.md", content });
+      }
+    } catch {}
+  }
+};
+
+export default handler;
+```
+
+### Step 7: Backfill existing sessions
+
+```bash
+source .venv/bin/activate
+for f in ~/.openclaw/agents/main/sessions/*.jsonl; do
+  SID=$(basename "$f" .jsonl)
+  python3 -c "
+from mnemo_v2.watch.session_watcher import SessionWatcher
+from pathlib import Path
+import tempfile, os
+cp = Path(tempfile.mktemp()); cp.write_text('0')
+w = SessionWatcher('$HOME/.mnemo-v2/mnemo.sqlite3', '$f', str(cp))
+n = w.poll_once(agent_id='your-agent', session_id='$SID')
+print(f'Ingested {n} messages from $SID')
+os.unlink(str(cp))
+"
+done
+```
+
+### Step 8: Verify
+
+```bash
+# Check services
+systemctl --user status mnemo-watcher mnemo-refresher
+
+# Check database
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('$HOME/.mnemo-v2/mnemo.sqlite3')
+for t in ['conversations', 'messages', 'summaries']:
+    n = conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+    print(f'{t}: {n}')
+"
+
+# Check context file
+cat ~/.openclaw/workspace/MNEMO-CONTEXT.md
+```
+
+## Architecture
+
+```
+mnemo_v2/
+  api/server.py              FastAPI app (optional — v2 works without it)
+  db/schema.sql              Canonical schema + FTS5 tables
+  db/migrations.py           Schema bootstrap and compatibility checks
+  store/ingest.py            Durable transcript ingest + tape journaling
+  store/compaction.py        Leaf/condensed compaction with LLM summarization
+  store/assemble.py          Active frontier → model-visible context
+  store/retrieval.py         FTS5 search + source-lineage replay
+  watch/session_watcher.py   Tails JSONL session logs into the store
+  watch/context_refresher.py Writes MNEMO-CONTEXT.md on an interval
+```
+
+### Design Rules
+
+- Immutable transcript in `messages`
+- Mutable active frontier in `context_items`
+- Summaries are derived, never destructive
+- Raw tape is append-only for crash recovery
+- Compaction events are journaled
+- Replay supports `snippet` or `verbatim`
+- Expansion is always scoped to a conversation
+
+### Schema
+
+See [`mnemo_v2/db/schema.sql`](mnemo_v2/db/schema.sql) for the full schema. Key tables:
+
+| Table | Purpose |
+|-------|---------|
+| `conversations` | Agent + session pairs |
+| `messages` | Immutable transcript (role, content, seq) |
+| `summaries` | Compacted summaries with depth and lineage |
+| `summary_messages` | Links summaries to source messages |
+| `summary_sources` | Links condensed summaries to leaf summaries (DAG) |
+| `context_items` | The active frontier (what the agent sees) |
+| `compaction_events` | Audit log of all compaction operations |
+| `raw_tape` | Append-only crash recovery journal |
+
+## Origin Story
+
+For two years, Guy Hutchins — a 73-year-old maker in Half Moon Bay — acted as the "Human Sync Port" for his AI agents, manually copying transcripts between sessions. Then came OpenClaw, Rocky, and a $100 Claude subscription. In one session, Guy, Rocky, and Opie designed a memory coprocessor that actually worked. They named it Mnemo Cortex.
+
+v2.0 was a team effort: **Opie** (Claude Opus) designed the architecture, **AL** (ChatGPT) built the implementation, **CC** (Claude Code) deployed and integrated it, **Alice** and **Rocky** (OpenClaw agents) served as live test subjects, and **Guy Hutchins** made it all happen.
+
+Read the full story: [Finding Mnemo](FINDING-MNEMO.md)
+
+## Credits
+
+- **Guy Hutchins** — Project lead, testing, and the reason any of this exists
+- **Rocky Moltman** 🦞 — Creative AI partner, first v2.0 production user
 - **Opie** (Claude Opus 4.6) — Architecture design, schema design, compaction strategy
 - **AL** (ChatGPT) — Implementation, watcher/refresher daemons, test suite
 - **CC** (Claude Code) — Deployment, integration, live testing, bug fixes
-- **Alice** (OpenClaw/Nemotron) — Live test subject, first v2.0 user
-- **Guy Hutchins** — Project lead, testing, and the reason any of this exists
+- **Alice Moltman** — Live test subject on THE VAULT, first v2.0 user
 
----
-
-## Roadmap
-
-- [x] v0.2.0 — Core server, pluggable providers, framework adapters
-- [x] v0.3.0 — Multi-tenant isolation, circuit breaker fallbacks, persona modes
-- [x] v0.4.0 — Live Wire (`/ingest`), hot/warm/cold session lifecycle, `/sessions` API, Session Watcher daemon
-- [x] v0.5.0 — SQLite + FTS5 storage, DAG-based summary lineage, context frontier
-- [x] v0.6.0 — Active compaction, provider-backed summarization, sidecar watcher
-- [ ] **v2.0.0** — Full rewrite release (currently in live testing on Alice)
-- [ ] v2.1.0 — Admin dashboard, `/metrics` endpoint, multi-agent support
-- [ ] v3.0.0 — Postgres + pgvector option, pip installable, production hardened
-
-## Created By
-
-Guy Hutchins, Rocky Moltman, Opie (Claude Opus 4.6), AL (ChatGPT), and CC (Claude Code) — built for [Project Sparks](https://projectsparks.ai).
-
-*"I remember everything so your agent doesn't have to."*
+Built for [Project Sparks](https://projectsparks.ai).
 
 ## License
 

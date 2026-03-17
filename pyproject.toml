@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnemo-cortex"
-version = "0.6.0"
-description = "Drop-in memory superhero for AI agents. Total recall in four endpoints."
+version = "2.0.0"
+description = "Don't Fear the /new! Memory coprocessor for AI agents. SQLite-backed total recall."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -26,14 +26,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi>=0.104.0",
-    "uvicorn>=0.24.0",
-    "httpx>=0.25.0",
-    "numpy>=1.24.0",
-    "pyyaml>=6.0",
-    "pydantic>=2.0",
-    "click>=8.0",
-    "rich>=13.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.8",
 ]
 
 [project.optional-dependencies]
@@ -53,4 +48,4 @@ mnemo-cortex = "agentb.cli:main"
 mnemo = "agentb.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["agentb*"]
+include = ["agentb*", "mnemo_v2*"]
