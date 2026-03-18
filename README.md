@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="docs/mnemo-mascot.png" alt="Mnemo Cortex Mascot" width="300">
+</p>
+
 # ⚡ Mnemo Cortex v2.0
+
+### *A Crustacean That Never Forgets* 🧠🦞
 
 > **"Don't Fear the /new!"**
 
