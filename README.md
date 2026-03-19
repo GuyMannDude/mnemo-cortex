@@ -308,6 +308,11 @@ Read the full story: [Finding Mnemo](FINDING-MNEMO.md)
 
 Built for [Project Sparks](https://projectsparks.ai).
 
+## Works Great With
+
+- **[Sparks Router](https://github.com/GuyMannDude/sparks-router)** — stop burning tokens on heartbeats. Smart model routing that sends each task to the right tier automatically.
+- **[ClaudePilot OpenClaw](https://github.com/GuyMannDude/claudepilot-openclaw)** — free AI-guided setup guide. Get an OpenClaw agent running with memory and routing in one afternoon.
+
 ## License
 
 MIT
