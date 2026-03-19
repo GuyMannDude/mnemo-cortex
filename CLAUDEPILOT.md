@@ -104,6 +104,20 @@ PHASE 10: CELEBRATE
 - Remind them the tagline: "Don't Fear the /new!"
 - Tell them where to get help: https://github.com/GuyMannDude/mnemo-cortex/issues
 
+## What's Next (Optional)
+
+Now that Mnemo Cortex is running, check out these companion tools — both optional, both free:
+
+### Sparks Router — Stop Burning Tokens
+Smart model routing for your agents. Heavy reasoning goes to Pro models. Quick lookups go to free models. Automatic.
+→ [github.com/GuyMannDude/sparks-router](https://github.com/GuyMannDude/sparks-router)
+
+### ClaudePilot OpenClaw — Free Claude Code Setup
+Get Claude Code running as your AI coding agent in 10 minutes. Free tier included.
+→ [github.com/GuyMannDude/claudepilot-openclaw](https://github.com/GuyMannDude/claudepilot-openclaw)
+
+Both were built by the same team because we needed them.
+
 IMPORTANT REFERENCE — here are the key Python imports and classes:
 
 Watcher:
