@@ -75,6 +75,33 @@ pip install -e .
 mkdir -p ~/.mnemo-v2
 ```
 
+### The Sparks Patch Method
+
+When editing config files (scripts, .env, openclaw.json, etc.), don't replace the whole file. Instead, show three things:
+
+**1. FIND THIS** — a few lines of the existing file so you can find the exact spot:
+```
+"settings": {
+  "model": "old-model-name",    ← this is what you're changing
+  "temperature": 0.7
+}
+```
+
+**2. CHANGE TO THIS** — just the line(s) that change:
+```
+  "model": "new-model-name",
+```
+
+**3. VERIFY** — the edited section with surrounding context so you can confirm it's right:
+```
+"settings": {
+  "model": "new-model-name",    ← changed
+  "temperature": 0.7
+}
+```
+
+Find the landmark, make the edit, visually confirm it matches. Use this method for every config file edit throughout the installation.
+
 ### Step 3: Create watcher script
 
 Create `mnemo-watcher.sh` (adjust paths for your agent):
