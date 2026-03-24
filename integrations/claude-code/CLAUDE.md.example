@@ -1,0 +1,9 @@
+## STARTUP — READ FIRST
+On every new session, BEFORE doing anything else:
+1. Run `~/.mnemo-cc/hooks/mnemo-startup.sh` — loads long-term memory from Mnemo Cortex
+
+## SESSION END
+Before ending any session:
+1. Run: `~/.mnemo-cc/hooks/mnemo-writeback.sh "summary of what happened" "key fact 1" "key fact 2"`
+   - Summarize what was done, decisions made, and anything future sessions should know
+   - This archives to Mnemo Cortex so you remember it next time
