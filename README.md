@@ -4,6 +4,9 @@
 
 # ⚡ Mnemo Cortex v2.0
 
+![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
+![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
+
 ## Deep Recall for Claude Code and OpenClaw.
 
 > Every AI agent has amnesia. Mnemo Cortex fixes that.
