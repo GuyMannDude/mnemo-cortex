@@ -4,13 +4,16 @@
 
 # ⚡ Mnemo Cortex v2.0
 
-**Deep Recall for Claude Code and OpenClaw.**
+## Deep Recall for Claude Code and OpenClaw.
 
 > Every AI agent has amnesia. Mnemo Cortex fixes that.
 > Persistent memory that survives across sessions, searches by meaning, and costs $0 to run.
 
-**→ [Claude Code users: 60-second install](integrations/claude-code/)**
-**→ [OpenClaw users: Full setup guide](docs/openclaw-setup-guide.md)**
+### 🚀 Get Started
+
+⌘ **[Claude Code → 60-second install](integrations/claude-code/)**
+
+⚡ **[OpenClaw → Full setup guide](docs/openclaw-setup-guide.md)**
 
 ---
 
