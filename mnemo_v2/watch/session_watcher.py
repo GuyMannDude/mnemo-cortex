@@ -61,7 +61,7 @@ class SessionWatcher:
 
                 # Only process message events — skip session headers,
                 # model_change, thinking_level_change, custom, etc.
-                if payload.get("type") != "message":
+                if payload.get("type") not in ("message", "user", "assistant"):
                     continue
 
                 # v3 format: role/content are nested inside payload["message"]
