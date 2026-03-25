@@ -4,14 +4,21 @@
 
 # ⚡ Mnemo Cortex v2.0
 
-### *A Crustacean That Never Forgets* 🧠🦞
+**Deep Recall for Claude Code and OpenClaw.**
 
-> **"Don't Fear the /new!"**
+> Every AI agent has amnesia. Mnemo Cortex fixes that.
+> Persistent memory that survives across sessions, searches by meaning, and costs $0 to run.
+
+**→ [Claude Code users: 60-second install](integrations/claude-code/)**
+**→ [OpenClaw users: Full setup guide](docs/openclaw-setup-guide.md)**
+
+---
+
+### *A Crustacean That Never Forgets* 🧠🦞
 
 🤖 **ClaudePilot Enabled** — [AI-guided installation](CLAUDEPILOT.md). Designed for Claude (free). Works with ChatGPT, Gemini, and others.
 
-Your AI agent forgets everything between sessions. Mnemo Cortex fixes that.
-Now proven on two live agents — Rocky with six weeks of recall, Alice with one.
+Proven on two live agents — Rocky with six weeks of recall, Alice with one.
 
 ```
 OpenClaw Agent ──writes──▶ Session Tape (disk)
