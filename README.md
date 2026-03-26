@@ -14,11 +14,11 @@
 
 ### 🚀 Get Started
 
-⌘ **[Claude Code → 60-second install](integrations/claude-code/)**
+⌘ **[Claude Code → 60-second install](integrations/claude-code/)** — Give CC Fluid Memory with Deep Recall
 
-🖥 **[Claude Desktop → MCP bridge](integrations/claude-desktop/)**
+🖥 **[Claude Desktop → MCP bridge](integrations/claude-desktop/)** — Opus 4.6 with Fluid Detailed Memories
 
-⚡ **[OpenClaw → Full setup guide](docs/openclaw-setup-guide.md)**
+🦞 **[OpenClaw → Full setup guide](docs/openclaw-setup-guide.md)** — Your ClawdBot with Fluid Deep Memory
 
 ---
 
