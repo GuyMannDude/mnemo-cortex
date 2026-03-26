@@ -56,6 +56,69 @@ Mnemo Cortex needs two models: one for embeddings (semantic search) and one for 
 
 Model configuration is done in Mnemo Cortex itself (see main README), not in these hooks.
 
+## Automatic Mode (Session Watcher)
+
+The hooks above require Claude Code to run the writeback manually at session end. For fully automatic ingestion, use the session watcher — it tails Claude Code's JSONL session files in real-time and ingests every message into Mnemo Cortex as it happens.
+
+### Setup
+
+1. Make sure Mnemo Cortex is installed and the venv is set up (see main README).
+
+2. Edit the variables in `mnemo-watcher-cc.sh` or set them as environment variables:
+
+```bash
+MNEMO_CC_SESSIONS_DIR="$HOME/.claude/projects"   # Where CC stores .jsonl files
+MNEMO_AGENT_ID="cc"                                # Your agent ID
+MNEMO_CORTEX_DIR="/path/to/mnemo-cortex"           # Repo root (has .venv/)
+```
+
+3. Test it:
+
+```bash
+bash integrations/claude-code/mnemo-watcher-cc.sh
+```
+
+You should see `[mnemo-watcher-cc] Tracking session: <uuid>` when a session is active.
+
+### Install as systemd service (Linux)
+
+```bash
+cat > ~/.config/systemd/user/mnemo-watcher-cc.service << EOF
+[Unit]
+Description=Mnemo v2 Session Watcher (Claude Code)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/path/to/mnemo-cortex/integrations/claude-code/mnemo-watcher-cc.sh
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=MNEMO_CORTEX_DIR=/path/to/mnemo-cortex
+Environment=MNEMO_CC_SESSIONS_DIR=%h/.claude/projects
+Environment=MNEMO_AGENT_ID=cc
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now mnemo-watcher-cc
+```
+
+Replace `/path/to/mnemo-cortex` with the actual path to your clone.
+
+### Hooks vs Watcher
+
+| | Hooks (manual) | Watcher (automatic) |
+|---|---|---|
+| **Ingestion** | On writeback only | Every message, real-time |
+| **Completeness** | Summary + key facts | Full transcript |
+| **Setup** | install.sh | systemd service |
+| **Overhead** | None between sessions | Daemon polls every 2s |
+
+You can run both — the watcher captures everything automatically, and the hooks add structured summaries at session boundaries.
+
 ## Files
 
 ```
