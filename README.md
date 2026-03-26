@@ -16,6 +16,8 @@
 
 ⌘ **[Claude Code → 60-second install](integrations/claude-code/)**
 
+🖥 **[Claude Desktop → MCP bridge](integrations/claude-desktop/)**
+
 ⚡ **[OpenClaw → Full setup guide](docs/openclaw-setup-guide.md)**
 
 ---

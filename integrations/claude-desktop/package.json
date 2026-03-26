@@ -1,0 +1,16 @@
+{
+  "name": "mnemo-cortex-mcp",
+  "version": "1.0.0",
+  "description": "MCP bridge connecting Claude Desktop to Mnemo Cortex",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["mcp", "claude-desktop", "mnemo-cortex", "memory", "ai-agents"],
+  "author": "Project Sparks",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0"
+  }
+}
