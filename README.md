@@ -348,6 +348,8 @@ Read the full story: [Finding Mnemo](FINDING-MNEMO.md)
 - **CC** (Claude Code) — Deployment, integration, live testing, bug fixes
 - **Alice Moltman** — Live test subject on THE VAULT, first v2.0 user
 
+Inspired in part by exploration of lossless conversation logging approaches, including [Lossless Claw](https://github.com/Martian-Engineering/lossless-claw) by Martian Engineering.
+
 Built for [Project Sparks](https://projectsparks.ai).
 
 ## Works Great With
