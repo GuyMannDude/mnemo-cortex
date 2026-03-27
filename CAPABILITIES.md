@@ -39,7 +39,7 @@ Built on SQLite + FTS5, running locally on your own hardware. Zero cloud depende
 
 ## What Improves Over Time
 
-**Context frontier compaction** — as memories accumulate, older sessions are automatically compressed into higher-level summaries (~80% size reduction) while preserving key facts and source lineage. Compaction runs locally via Ollama (qwen2.5:32b-instruct) on the host machine. Cost: $0.
+**Context frontier compaction** — as memories accumulate, older sessions are automatically compressed into higher-level summaries (~80% size reduction) while preserving key facts and source lineage. Compaction runs via any LLM — local (Ollama, llama.cpp, etc.) or API (OpenRouter, Anthropic, Google, OpenAI, etc.). Our setup uses local Ollama at $0 cost, but that's a configuration choice, not a requirement.
 
 **Agent specialization** — because each agent has its own memory lane, their accumulated experience diverges naturally. Rocky gets better at testing. CC gets better at wiring. Opie gets better at architecture. The memory system doesn't homogenize them — it lets each agent deepen in their own lane.
 
@@ -113,7 +113,7 @@ Most AI memory systems today are single-agent, cloud-hosted, and keyword-based. 
 
 **Compaction with lineage** — old memories get compressed, but you can always trace back to the source. Nothing is truly deleted — it's summarized with provenance.
 
-**Zero cost at runtime** — compaction runs local Ollama. Recall is SQLite queries. The ongoing cost of remembering is $0.
+**Zero cost at runtime** — compaction can run on any LLM (local Ollama for $0, or any API provider). Recall is SQLite queries. With a local model, the ongoing cost of remembering is $0.
 
 ---
 
