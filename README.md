@@ -20,6 +20,8 @@
 
 🦞 **[OpenClaw → Full setup guide](docs/openclaw-setup-guide.md)** — Your ClawdBot with Fluid Deep Memory
 
+📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
+
 ---
 
 ### *A Crustacean That Never Forgets* 🧠🦞
