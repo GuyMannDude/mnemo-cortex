@@ -12,24 +12,9 @@ from typing import Iterable
 from .common import dumps, estimate_tokens, normalize_whitespace, renumber_context_ordinals
 from .ingest import journal_compaction_message
 
-_OPENROUTER_MODEL = os.environ.get("MNEMO_SUMMARY_MODEL", "google/gemini-2.5-flash")
-_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+_SUMMARY_MODEL = os.environ.get("MNEMO_SUMMARY_MODEL", "qwen2.5:32b-instruct")
+_SUMMARY_URL = os.environ.get("MNEMO_SUMMARY_URL", "http://localhost:11434/v1/chat/completions")
 
-
-def _load_openrouter_key() -> str | None:
-    """Load OpenRouter API key from env or openclaw.json."""
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if key:
-        return key
-    config_path = Path.home() / ".openclaw" / "openclaw.json"
-    if config_path.exists():
-        try:
-            with config_path.open() as f:
-                config = json.load(f)
-            return config.get("models", {}).get("providers", {}).get("openrouter", {}).get("apiKey")
-        except (json.JSONDecodeError, KeyError):
-            pass
-    return None
 
 
 def deterministic_summary(rows: Iterable[sqlite3.Row], *, max_chars: int = 900) -> str:
@@ -76,14 +61,10 @@ def _build_prompt(rows: list[sqlite3.Row], kind: str) -> str:
 
 
 def llm_summary(rows: list[sqlite3.Row], *, kind: str = "leaf") -> str:
-    """Summarize using OpenRouter API. Falls back to deterministic_summary on failure."""
-    api_key = _load_openrouter_key()
-    if not api_key:
-        return deterministic_summary(rows)
-
+    """Summarize using local Ollama. Falls back to deterministic_summary on failure."""
     prompt = _build_prompt(rows, kind)
     payload = json.dumps({
-        "model": _OPENROUTER_MODEL,
+        "model": _SUMMARY_MODEL,
         "messages": [
             {"role": "user", "content": prompt},
         ],
@@ -92,13 +73,10 @@ def llm_summary(rows: list[sqlite3.Row], *, kind: str = "leaf") -> str:
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        _OPENROUTER_URL,
+        _SUMMARY_URL,
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://projectsparks.ai",
-            "X-Title": "Mnemo Cortex v2",
         },
         method="POST",
     )
