@@ -53,7 +53,7 @@ Built on SQLite + FTS5, running locally on your own hardware. Zero cloud depende
 |-------------|--------|--------------|
 | **Claude Code** | Shell hooks (mnemo-startup.sh, mnemo-writeback.sh) + systemd watcher | 60 seconds |
 | **Claude Desktop** | MCP bridge (server.js via stdio transport) | 5 minutes |
-| **OpenClaw** | Native agentb_bridge on THE VAULT | Built in |
+| **OpenClaw** | MCP server (one config line: `openclaw mcp set`) | 2 minutes |
 
 All three integrations share the same underlying memory store. A memory saved by Claude Code is readable by Claude Desktop and OpenClaw in the same search.
 
@@ -90,11 +90,11 @@ All three integrations share the same underlying memory store. A memory saved by
 └─────────────────────────────────────────────────┘
          ▲               ▲               ▲
          │               │               │
-    ┌────┴───┐     ┌─────┴────┐    ┌─────┴────┐
-    │ Rocky  │     │    CC    │    │   Opie   │
-    │OpenClaw│     │Claude   │    │Claude   │
-    │        │     │Code     │    │Desktop  │
-    └────────┘     └──────────┘    └──────────┘
+    ┌────┴───┐     ┌─────┴────┐    ┌─────┴────┐    ┌─────────┐
+    │ Rocky  │     │    CC    │    │   Opie   │    │ Your    │
+    │OpenClaw│     │Claude   │    │Claude   │    │ Bot     │
+    │  MCP   │     │Code     │    │Desktop  │    │ MCP     │
+    └────────┘     └──────────┘    └──────────┘    └─────────┘
 
     Isolated writes. Shared reads. One memory spine.
 ```
@@ -117,11 +117,11 @@ Most AI memory systems today are single-agent, cloud-hosted, and keyword-based. 
 
 ---
 
-## By the Numbers (as of March 27, 2026)
+## By the Numbers (as of March 29, 2026)
 
 - **244 GitHub clones** / **135 unique cloners**
-- **3 integration paths** (Claude Code, Claude Desktop, OpenClaw)
-- **3 active agents** sharing memory (Rocky, CC, Opie)
+- **3 integration paths** (Claude Code, Claude Desktop, OpenClaw MCP)
+- **3+ active agents** sharing memory (Rocky, CC, Opie — and any OpenClaw bot you connect)
 - **PR #83 merged** into Martian-Engineering/lossless-claw (544 stars)
 - **$0/day** compaction cost via local Ollama
 - **~80%** compression ratio on context frontier compaction
