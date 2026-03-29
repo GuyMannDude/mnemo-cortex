@@ -1,9 +1,12 @@
 {
   "name": "mnemo-cortex-openclaw-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Give your OpenClaw bot a brain. Persistent cross-agent memory via Mnemo Cortex.",
   "main": "server.js",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node test.js"
@@ -12,6 +15,7 @@
   "author": "Project Sparks",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.28.0"
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "zod": "^4.3.6"
   }
 }
