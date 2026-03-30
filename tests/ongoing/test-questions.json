@@ -1,0 +1,107 @@
+{
+  "generated": [
+    {
+      "date": "2026-03-22",
+      "count": 11
+    }
+  ],
+  "dates": {
+    "2026-03-22": {
+      "date": "2026-03-22",
+      "fed_at": "2026-03-23T02:33:37Z",
+      "questions": {
+        "needle": [
+          {
+            "q": "What was task #2 on the completed list for March 22, 2026?",
+            "a": "Fixed Sparks Router classifier",
+            "detail": "text-blob free-hint check was matching HEARTBEAT in prompt body, removed lines 111-112 of classifier.py"
+          },
+          {
+            "q": "How much did Rocky spend on smart tier on March 22, 2026?",
+            "a": "$0.47",
+            "detail": "across 22 calls using Gemini 3.1 Pro"
+          },
+          {
+            "q": "How many Barbie images did BW download on March 22, 2026?",
+            "a": "56",
+            "detail": "from eBay and collector sites"
+          },
+          {
+            "q": "What was the temperature in Half Moon Bay on March 22, 2026?",
+            "a": "62\u00b0F",
+            "detail": "partly cloudy"
+          },
+          {
+            "q": "How much did Sheri pay for ClaudePilot on March 22, 2026?",
+            "a": "$100",
+            "detail": "ClaudePilot setup assistance"
+          }
+        ],
+        "chain": [
+          {
+            "q": "What was the Barbie image task about on March 22, 2026 and who did the downloading?",
+            "a": "BW (Bullwinkle) downloaded 56 Barbie doll images. 50 cards on bdpage were updated with photos, 44 still have placeholders.",
+            "keywords": [
+              "BW",
+              "Bullwinkle",
+              "56",
+              "50",
+              "bdpage"
+            ]
+          },
+          {
+            "q": "Why was the Sparks Router classifier fixed on March 22, 2026?",
+            "a": "The text-blob free-hint check was matching the word HEARTBEAT in Rocky's prompt body, routing all heartbeat-triggered conversations to Nemotron free instead of the configured tier.",
+            "keywords": [
+              "HEARTBEAT",
+              "free-hint",
+              "Nemotron",
+              "classifier"
+            ]
+          },
+          {
+            "q": "What happened with the Submarine Console on March 22, 2026?",
+            "a": "Profile TWO was confirmed active in the dashboard but was not properly deployed to config.json. The utility tier was still set to gemini-2.5-flash instead of gemini-3.1-pro-preview.",
+            "keywords": [
+              "profile TWO",
+              "config.json",
+              "deployed",
+              "utility"
+            ]
+          }
+        ],
+        "general": [
+          {
+            "q": "What did we do on March 22, 2026?",
+            "a": "Deployed bdpage Barbie images, fixed Sparks Router classifier, retired Alice Moltman",
+            "keywords": [
+              "bdpage",
+              "Barbie",
+              "classifier",
+              "Alice"
+            ]
+          },
+          {
+            "q": "Name three things accomplished on March 22, 2026.",
+            "a": "1) Deployed bdpage images 2) Fixed Router classifier 3) Retired Alice",
+            "keywords": [
+              "bdpage",
+              "classifier",
+              "Alice"
+            ]
+          },
+          {
+            "q": "What happened with Alice on March 22, 2026?",
+            "a": "Alice Moltman was retired. Telegram bot deactivated, workspace archived, gateway shut down.",
+            "keywords": [
+              "retired",
+              "Telegram",
+              "archived",
+              "gateway"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
