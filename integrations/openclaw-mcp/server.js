@@ -20,6 +20,7 @@ const shareMode = SHARE_MODES.includes(process.env.MNEMO_SHARE)
 let sessionShareActive = shareMode === "always";
 
 const FETCH_TIMEOUT_MS = 10_000;
+const MAX_RESPONSE_CHARS = 16_000;
 
 // ── Mnemo API client ───────────────────────────────────────────
 // Two methods: POST for writes/searches, GET for reads.
@@ -127,23 +128,39 @@ async function ensureHealth() {
 function formatChunks(chunks, showAgent) {
   if (!chunks || chunks.length === 0) return "No memories found.";
 
-  return chunks
-    .map((c) => {
-      const rel = (c.relevance || 0).toFixed(2);
-      const tier = c.cache_tier || "?";
-      const header = showAgent
-        ? `[${tier}] agent=${c.agent_id || "?"} (relevance: ${rel})`
-        : `[${tier}] (relevance: ${rel})`;
-      return `### ${header}\n${c.content}`;
-    })
-    .join("\n\n");
+  const parts = [];
+  let chars = 0;
+  let included = 0;
+
+  for (const c of chunks) {
+    const rel = (c.relevance || 0).toFixed(2);
+    const tier = c.cache_tier || "?";
+    const header = showAgent
+      ? `[${tier}] agent=${c.agent_id || "?"} (relevance: ${rel})`
+      : `[${tier}] (relevance: ${rel})`;
+    const block = `### ${header}\n${c.content}`;
+
+    if (chars + block.length > MAX_RESPONSE_CHARS && included > 0) {
+      const remaining = chunks.length - included;
+      parts.push(
+        `[Results capped — ${remaining} more memories matched. Narrow your query for more detail.]`
+      );
+      break;
+    }
+
+    parts.push(block);
+    chars += block.length;
+    included++;
+  }
+
+  return parts.join("\n\n");
 }
 
 // ── MCP Server ─────────────────────────────────────────────────
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.0.0",
+  version: "2.0.1",
 });
 
 // ── Tool: mnemo_recall ─────────────────────────────────────────
@@ -165,7 +182,7 @@ server.tool(
       .min(1)
       .max(20)
       .optional()
-      .describe("Maximum number of memories to return (default: 5)"),
+      .describe("Maximum number of memories to return (default: 3)"),
   },
   async ({ query, max_results }) => {
     try {
@@ -173,7 +190,7 @@ server.tool(
       const data = await mnemoRequest("POST", "/context", {
         prompt: query,
         agent_id: AGENT_ID,
-        max_results: max_results || 5,
+        max_results: max_results || 3,
       });
 
       const chunks = data.chunks || [];
@@ -224,14 +241,14 @@ server.tool(
       .min(1)
       .max(20)
       .optional()
-      .describe("Maximum number of memories to return (default: 5)"),
+      .describe("Maximum number of memories to return (default: 3)"),
   },
   async ({ query, agent_id, max_results }) => {
     try {
       await ensureHealth();
       const body = {
         prompt: query,
-        max_results: max_results || 5,
+        max_results: max_results || 3,
       };
 
       if (sessionShareActive) {
