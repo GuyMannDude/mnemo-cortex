@@ -49,15 +49,16 @@ BANNER = """[bold yellow]
 # ─────────────────────────────────────────────
 
 from agentb.doctor import doctor
+from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="0.6.0", prog_name="mnemo-cortex")
+@click.version_option(version="2.1.0", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
         console.print(BANNER)
-        console.print("  Commands: [bold]init[/] · [bold]start[/] · [bold]stop[/] · [bold]status[/] · [bold]doctor[/] · [bold]watch[/] · [bold]refresh[/] · [bold]recall[/] · [bold]logs[/] · [bold]test[/]")
+        console.print("  Commands: [bold]init[/] · [bold]start[/] · [bold]stop[/] · [bold]health[/] · [bold]doctor[/] · [bold]watch[/] · [bold]refresh[/] · [bold]recall[/] · [bold]logs[/] · [bold]test[/]")
         console.print()
         if not CONFIG_FILE.exists():
             console.print("  [yellow]→ Run [bold]mnemo-cortex init[/bold] to get started![/]")
@@ -1055,6 +1056,7 @@ def recall_pack(workspace, since, limit):
 
 
 main.add_command(doctor)
+main.add_command(health)
 
 if __name__ == "__main__":
     main()

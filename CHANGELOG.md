@@ -1,5 +1,47 @@
 # Changelog
 
+## v2.1.0 — "No Agent Runs Without Verified Memory" (2026-04-04)
+
+Built-in deployment health verification. Auto-discovers agents, tests live recall, validates MCP configs, checks watchers.
+
+### What's New
+
+- **`mnemo-cortex health` command** — Comprehensive deployment health check that auto-discovers every agent from the database and runs live recall tests against each one. No hardcoded agent names.
+- **MCP config validation** — `--check-mcp` flag verifies mnemo-cortex is registered as an MCP server in any config file (OpenClaw, Claude Desktop, etc). Catches the exact bug where an agent's MCP pipe is silently broken.
+- **Watcher service monitoring** — Auto-discovers all mnemo-related systemd services and reports their status.
+- **Multiple output modes** — `--json` for scripts/monitoring, `--quiet` for cron (exit code only), `--agents` for agent-only checks, `--services` for watcher-only checks.
+- **CronAlarm integration** — Drop-in compatible with cron alerting. Non-zero exit on any failure.
+
+### Problem This Solves
+
+Rocky's Mnemo MCP tools were missing from his openclaw.json config. Nobody knew until Guy tried to use them — weeks later. This command catches that in 10 seconds, automatically, on a schedule.
+
+### Usage
+
+```
+mnemo-cortex health                         # full check, human output
+mnemo-cortex health --json                  # machine-readable for scripts
+mnemo-cortex health --quiet                 # exit code only (for cron)
+mnemo-cortex health --agents                # only test agent recall
+mnemo-cortex health --services              # only check watcher services
+mnemo-cortex health --check-mcp ~/.openclaw/openclaw.json
+mnemo-cortex health http://artforge:50001   # explicit server URL
+```
+
+### CronAlarm Example
+
+```
+0 */6 * * * mnemo-cortex health --quiet || cronalarm send "Mnemo health failed"
+```
+
+### Credits
+
+- **Guy Hutchins** — Doctrine: "No agent runs without verified memory"
+- **CC** (Claude Code Opus 4.6) — Implementation
+
+---
+
+
 ## v2.0.0 — "Don't Fear the /new!" (2026-03-17)
 
 Ground-up rewrite. SQLite replaces JSONL. Proven on two live agents with six weeks of unbroken recall.

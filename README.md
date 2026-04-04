@@ -2,7 +2,7 @@
   <img src="docs/mnemo-mascot.png" alt="Mnemo Cortex Mascot" width="300">
 </p>
 
-# ⚡ Mnemo Cortex v2.0
+# ⚡ Mnemo Cortex v2.1
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -39,6 +39,44 @@ OpenClaw Agent ──writes──▶ Session Tape (disk)
                                 │
                           writes──▶ MNEMO-CONTEXT.md ──▶ Agent Bootstrap
 ```
+
+## Health Monitoring
+
+Built-in deployment verification. No agent runs without verified memory.
+
+```
+mnemo-cortex health
+```
+
+```
+mnemo-cortex health check
+=========================
+
+Core Services
+  API server (http://artforge:50001) ...... OK (v2.1.0, 156 memories, 42ms)
+  Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
+  Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
+
+Agents (3 discovered)
+  rocky .................................... OK (recall returned 5 results (234ms))
+  cc ....................................... OK (recall returned 3 results (189ms))
+  opie ..................................... OK (recall returned 4 results (201ms))
+
+Watchers
+  mnemo-watcher-cc ......................... OK (active, PID 4521)
+  mnemo-watcher-opie ....................... OK (active, PID 4522)
+  mnemo-refresh ............................ OK (active, PID 4523)
+
+MCP Registration
+  openclaw.json ............................ OK (mnemo-cortex registered)
+  claude_desktop_config.json ............... OK (mnemo-cortex registered)
+
+16/16 checks passed
+```
+
+Options: `--json` (machine-readable) · `--quiet` (exit code only) · `--agents` (agent checks only) · `--services` (watcher checks only) · `--check-mcp <path>` (validate MCP configs)
+
+Wire to cron: `0 */6 * * * mnemo-cortex health --quiet || your-alert-command`
 
 ## What It Does
 
