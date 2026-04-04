@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.2.0 — "One Repo, One Install" (2026-04-04)
+
+Merged the MCP bridge (formerly mnemo-cortex-mcp) into the main repo. One product, one install.
+
+### What's New
+
+- **Built-in MCP bridge** — The Claude Desktop / Claude Code MCP server now lives at `integrations/claude-desktop/`. No separate repo needed. 7 tools: recall, search, save, startup, read/write/list brain files.
+- **mnemo-cortex-mcp archived** — The old separate repo redirects here. All existing links still work.
+
+### Problem This Solves
+
+Users had to find and install two separate repos to get memory working. That's broken. Now it's one clone, one install.
+
+### Migration
+
+If you were using `mnemo-cortex-mcp` separately:
+1. Pull the latest `mnemo-cortex`
+2. Update your MCP config path: `mnemo-cortex-mcp/server.js` → `mnemo-cortex/integrations/claude-desktop/server.js`
+3. Run `cd integrations/claude-desktop && npm install`
+
+---
+
+
 ## v2.1.0 — "No Agent Runs Without Verified Memory" (2026-04-04)
 
 Built-in deployment health verification. Auto-discovers agents, tests live recall, validates MCP configs, checks watchers.

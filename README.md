@@ -2,7 +2,7 @@
   <img src="docs/mnemo-mascot.png" alt="Mnemo Cortex Mascot" width="300">
 </p>
 
-# ⚡ Mnemo Cortex v2.1
+# ⚡ Mnemo Cortex v2.2
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -16,7 +16,7 @@
 
 ⌘ **[Claude Code → 60-second install](integrations/claude-code/)** — Give CC Fluid Memory with Deep Recall
 
-💻 **[Claude Desktop → MCP bridge](integrations/claude-desktop/)** — Opus 4.6 with Fluid Detailed Memories
+💻 **[Claude Desktop → Built-in MCP bridge](integrations/claude-desktop/)** — 7 tools, zero extra repos
 
 🦞 **[OpenClaw → MCP integration](integrations/openclaw-mcp/)** — Give Your ClawdBot a Brain. One Config Line.
 
