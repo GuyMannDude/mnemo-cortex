@@ -2,7 +2,7 @@
   <img src="docs/mnemo-mascot.png" alt="Mnemo Cortex Mascot" width="300">
 </p>
 
-# ⚡ Mnemo Cortex v2.2
+# ⚡ Mnemo Cortex v2.3
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -16,11 +16,11 @@
 
 ⌘ **[Claude Code → 60-second install](integrations/claude-code/)** — Give CC Fluid Memory with Deep Recall
 
-💻 **[Claude Desktop → Built-in MCP bridge](integrations/claude-desktop/)** — 7 tools, zero extra repos
-
 🦞 **[OpenClaw → MCP integration](integrations/openclaw-mcp/)** — Give Your ClawdBot a Brain. One Config Line.
 
 📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
+
+> **Claude Desktop:** The Desktop MCP bridge has been temporarily pulled. Anthropic's Desktop app (v2.1.87+) moved to a new session storage architecture that broke the automatic session watcher. The MCP tools worked fine — the file-based capture pipeline didn't. We'll re-publish when we have a reliable capture path. Claude Code and OpenClaw integrations are unaffected.
 
 ---
 
@@ -64,14 +64,12 @@ Agents (3 discovered)
 
 Watchers
   mnemo-watcher-cc ......................... OK (active, PID 4521)
-  mnemo-watcher-opie ....................... OK (active, PID 4522)
   mnemo-refresh ............................ OK (active, PID 4523)
 
 MCP Registration
   openclaw.json ............................ OK (mnemo-cortex registered)
-  claude_desktop_config.json ............... OK (mnemo-cortex registered)
 
-16/16 checks passed
+14/14 checks passed
 ```
 
 Options: `--json` (machine-readable) · `--quiet` (exit code only) · `--agents` (agent checks only) · `--services` (watcher checks only) · `--check-mcp <path>` (validate MCP configs)

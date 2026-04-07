@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.3.0 — "The Responsible Thing" (2026-04-07)
+
+Pulled the Claude Desktop MCP bridge until Anthropic's new session storage architecture is supported.
+
+### What Changed
+
+- **Claude Desktop integration removed** — `integrations/claude-desktop/` pulled from the repo. The MCP tools (recall, search, save, startup, brain file read/write) worked correctly, but the automatic session watcher depended on Claude Desktop writing `.jsonl` files to `~/.config/Claude/local-agent-mode-sessions/`. Desktop v2.1.87+ ("cowork VM" architecture) moved session storage to internal IndexedDB/LevelDB. The watcher had nothing to watch.
+- **README, CAPABILITIES, health output updated** — All references to the Desktop integration now include a notice explaining the pull and that Claude Code + OpenClaw integrations are unaffected.
+- **mnemo-cortex-mcp repo unchanged** — The archived standalone repo already redirects here. Its README still points to this repo as the canonical source.
+
+### Problem This Solves
+
+Anyone following the Desktop setup docs would get a dead session watcher that silently captured nothing. Opie (our own Desktop agent) ran for 13 days with a broken watcher before we caught it. Rather than ship a known-broken integration, we pulled it.
+
+### What's Next
+
+The MCP server itself is fine — the 7 tools work. The gap is automatic session capture. Options being evaluated:
+1. Read from Claude Desktop's new LevelDB/IndexedDB storage
+2. MCP-only memory persistence (no file watcher needed)
+3. Wait for Anthropic to expose a session export API
+
+### Claude Code and OpenClaw users
+
+Nothing changed for you. Your integrations work exactly as before.
+
+---
+
 ## v2.2.0 — "One Repo, One Install" (2026-04-04)
 
 Merged the MCP bridge (formerly mnemo-cortex-mcp) into the main repo. One product, one install.

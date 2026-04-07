@@ -52,10 +52,11 @@ Built on SQLite + FTS5, running locally on your own hardware. Zero cloud depende
 | Integration | Method | Install Time |
 |-------------|--------|--------------|
 | **Claude Code** | Shell hooks (mnemo-startup.sh, mnemo-writeback.sh) + systemd watcher | 60 seconds |
-| **Claude Desktop** | MCP bridge (server.js via stdio transport) | 5 minutes |
 | **OpenClaw** | MCP server (one config line: `openclaw mcp set`) | 2 minutes |
 
-All three integrations share the same underlying memory store. A memory saved by Claude Code is readable by Claude Desktop and OpenClaw in the same search.
+Both integrations share the same underlying memory store. A memory saved by Claude Code is readable by OpenClaw in the same search.
+
+> **Claude Desktop:** Temporarily pulled. Anthropic's Desktop app (v2.1.87+) changed session storage from disk JSONL to internal IndexedDB, breaking the auto-capture watcher. Will return when a reliable capture path exists.
 
 ### Three Tools, Universal Across Integrations
 
@@ -91,10 +92,10 @@ All three integrations share the same underlying memory store. A memory saved by
          ▲               ▲               ▲
          │               │               │
     ┌────┴───┐     ┌─────┴────┐    ┌─────┴────┐    ┌─────────┐
-    │ Rocky  │     │    CC    │    │   Opie   │    │ Your    │
-    │OpenClaw│     │Claude   │    │Claude   │    │ Bot     │
-    │  MCP   │     │Code     │    │Desktop  │    │ MCP     │
-    └────────┘     └──────────┘    └──────────┘    └─────────┘
+    │ Rocky  │     │    CC    │    │ Your    │
+    │OpenClaw│     │Claude   │    │ Bot     │
+    │  MCP   │     │Code     │    │ MCP     │
+    └────────┘     └──────────┘    └─────────┘
 
     Isolated writes. Shared reads. One memory spine.
 ```
@@ -120,7 +121,7 @@ Most AI memory systems today are single-agent, cloud-hosted, and keyword-based. 
 ## By the Numbers (as of March 29, 2026)
 
 - **244 GitHub clones** / **135 unique cloners**
-- **3 integration paths** (Claude Code, Claude Desktop, OpenClaw MCP)
+- **2 integration paths** (Claude Code, OpenClaw MCP) — Claude Desktop temporarily pulled
 - **3+ active agents** sharing memory (Rocky, CC, Opie — and any OpenClaw bot you connect)
 - **PR #83 merged** into Martian-Engineering/lossless-claw (544 stars)
 - **$0/day** compaction cost via local Ollama
