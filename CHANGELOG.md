@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.3.1 — "Total Recall" (2026-04-08)
+
+Documented auto-capture and added the `MNEMO_AUTO_CAPTURE` environment variable gate.
+
+### What's New
+
+- **Auto-Capture documentation** — New README section covering the two capture patterns (OpenClaw/Claude Code session watcher, Claude Desktop MCP bridge), quick start, and always-on configuration.
+- **`MNEMO_AUTO_CAPTURE` env var** — Set to `true` and `mnemo-cortex start` automatically starts the session watcher. Default: off. No behavior change for existing users.
+
+### Problem This Solves
+
+Auto-capture has been working in production for weeks (CC watcher running 2+ weeks straight, zero failures) but wasn't documented anywhere in the public repo. New users had no idea the feature existed.
+
+---
+
 ## v2.3.0 — "The Responsible Thing" (2026-04-07)
 
 Pulled the Claude Desktop MCP bridge until Anthropic's new session storage architecture is supported.

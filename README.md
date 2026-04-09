@@ -76,6 +76,68 @@ Options: `--json` (machine-readable) · `--quiet` (exit code only) · `--agents`
 
 Wire to cron: `0 */6 * * * mnemo-cortex health --quiet || your-alert-command`
 
+## Auto-Capture
+
+Every agent conversation captured automatically. No manual saves, no hooks, no code changes.
+
+### How It Works
+
+Mnemo watches your agent's session files from the outside and ingests every message as it happens. Two adapter patterns depending on your agent platform:
+
+| Platform | Capture Method | Command |
+|----------|---------------|---------|
+| **OpenClaw** | Session file watcher (tails JSONL) | `mnemo-cortex watch --backfill` |
+| **Claude Code** | Session file watcher (same) | `mnemo-cortex watch --backfill` |
+| **Claude Desktop** | MCP auto-capture server | *(temporarily pulled — see note above)* |
+
+### Quick Start
+
+```bash
+# 1. Start Mnemo (if not already running)
+mnemo-cortex start
+
+# 2. Start auto-capture
+mnemo-cortex watch --backfill
+```
+
+That's it. Every exchange your agent has is now captured, compressed, and searchable.
+
+### Always-On Auto-Capture
+
+Set the `MNEMO_AUTO_CAPTURE` environment variable to start the watcher automatically whenever Mnemo starts:
+
+```bash
+# Add to your shell profile (~/.bashrc, ~/.zshrc, etc.)
+export MNEMO_AUTO_CAPTURE=true
+```
+
+With this set, `mnemo-cortex start` also starts the session watcher — no separate `watch` command needed.
+
+### What Gets Captured
+
+- Every user message and agent response
+- Tool calls and results
+- Session boundaries and timestamps
+- All compressed via rolling compaction (80% token reduction, zero information loss on named entities)
+
+### Verify It's Working
+
+```bash
+mnemo-cortex status
+```
+
+Look for:
+```
+  Watcher:    running (PID 4521) — auto-capturing sessions
+```
+
+Or check the database directly:
+```bash
+mnemo-cortex recall "what happened today"
+```
+
+---
+
 ## What It Does
 
 Mnemo Cortex v2 is a **sidecar memory coprocessor** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.

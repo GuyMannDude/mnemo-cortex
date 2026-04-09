@@ -312,6 +312,17 @@ def start(foreground, port):
             console.print(f"  PID:  {proc.pid}")
             console.print(f"  Log:  {LOG_FILE}")
             console.print(f"  URL:  http://localhost:{port or 50001}")
+
+            # Auto-capture gate: start watcher automatically if enabled
+            if os.environ.get("MNEMO_AUTO_CAPTURE", "").lower() in ("true", "1", "yes"):
+                if not _is_watcher_running():
+                    console.print()
+                    console.print("  [green]MNEMO_AUTO_CAPTURE=true → starting session watcher...[/]")
+                    ctx = click.Context(watch)
+                    ctx.invoke(watch, backfill=False, backfill_count=10, foreground=False)
+                else:
+                    console.print(f"  Watcher:  [green]already running[/]")
+
             console.print()
             console.print("  [dim]mnemo-cortex status  — check health[/]")
             console.print("  [dim]mnemo-cortex logs    — watch logs[/]")
