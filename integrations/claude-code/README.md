@@ -51,8 +51,11 @@ Mnemo Cortex needs two models: one for embeddings (semantic search) and one for 
 | Tier | Embedding | Reasoning | Cost | Setup |
 |------|-----------|-----------|------|-------|
 | **Local** | Ollama nomic-embed-text | Ollama qwen2.5:32b-instruct | $0 | GPU + Ollama |
-| **Cloud** | OpenAI text-embedding-3-small | OpenAI gpt-4o-mini | ~$0.10/mo | API key |
+| **Cloud (OpenAI)** | OpenAI text-embedding-3-small | OpenAI gpt-4.1-nano | ~$0.05/mo | API key |
+| **Cloud (Google)** | Google gemini-embedding-001 | Google gemini-2.5-flash | ~$0.05/mo | API key |
 | **Custom** | Any endpoint | Any endpoint | Varies | You configure |
+
+> **Google users:** If you see `text-embedding-004` referenced anywhere, that model was shut down January 2026. Use `gemini-embedding-001` instead.
 
 Model configuration is done in Mnemo Cortex itself (see main README), not in these hooks.
 

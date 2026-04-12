@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnemo-cortex"
-version = "2.2.0"
+version = "2.3.2"
 description = "Don't Fear the /new! Memory coprocessor for AI agents. SQLite-backed total recall."
 readme = "README.md"
 license = {text = "MIT"}

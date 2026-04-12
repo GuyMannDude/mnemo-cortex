@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.3.2 — "Fresh Models" (2026-04-11)
+
+Doc audit triggered by external user report: setup guide referenced dead Google model name (`text-embedding-004`, shut down Jan 2026), causing hours of debugging silent failures.
+
+### What Changed
+
+- **Model tier table updated** — Added Google cloud tier (`gemini-embedding-001` + `gemini-2.5-flash`), updated OpenAI reasoning model to `gpt-4.1-nano` (10x cheaper than `gpt-4o-mini`). All model names verified against current provider APIs.
+- **Google deprecation warning** — Explicit callout that `text-embedding-004` is dead, use `gemini-embedding-001`.
+- **Troubleshooting section added to README** — Covers the three most common failure modes: "No chunks" (wrong embedding model name), compaction model unreachable, server unreachable. Includes current model name table by provider.
+- **Expected test output added to README** — Users can now see what a passing smoke test looks like before they run it.
+- **Version bumped** — pyproject.toml synced to 2.3.2.
+
+### Problem This Solves
+
+Model names change without notice. A user following our docs could configure a dead model, get zero results from recall, and have no idea why. The troubleshooting section now explicitly warns about this and lists current model names by provider.
+
+### Models Verified (April 2026)
+
+| Provider | Embedding | Reasoning | Status |
+|----------|-----------|-----------|--------|
+| Ollama | nomic-embed-text | qwen2.5:32b-instruct | Current |
+| OpenAI | text-embedding-3-small | gpt-4.1-nano | Current |
+| Google | gemini-embedding-001 | gemini-2.5-flash | Current (flash sunsets June 2026) |
+
+---
+
 ## v2.3.1 — "Total Recall" (2026-04-08)
 
 Documented auto-capture and added the `MNEMO_AUTO_CAPTURE` environment variable gate.

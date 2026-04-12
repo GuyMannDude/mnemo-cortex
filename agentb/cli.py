@@ -247,7 +247,7 @@ def _configure_provider(provider: str, role: str) -> dict:
         if role == "reasoning":
             config["model"] = Prompt.ask("  Model", default="gemini-2.5-flash")
         else:
-            config["model"] = Prompt.ask("  Model", default="text-embedding-004")
+            config["model"] = Prompt.ask("  Model", default="gemini-embedding-001")
 
     elif provider == "huggingface":
         config["model"] = Prompt.ask("  Model", default="sentence-transformers/all-MiniLM-L6-v2")

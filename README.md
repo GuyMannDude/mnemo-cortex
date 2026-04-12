@@ -2,7 +2,7 @@
   <img src="docs/mnemo-mascot.png" alt="Mnemo Cortex Mascot" width="300">
 </p>
 
-# ⚡ Mnemo Cortex v2.3
+# ⚡ Mnemo Cortex v2.3.2
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -390,6 +390,62 @@ for t in ['conversations', 'messages', 'summaries']:
 # Check context file
 cat ~/.openclaw/workspace/MNEMO-CONTEXT.md
 ```
+
+## Troubleshooting
+
+**Recall / cross-agent search returns "No chunks"**
+
+Most common cause: your embedding model setting doesn't match your provider's current model name. Model names change — check your provider's docs:
+
+| Provider | Current Embedding Model | Deprecated / Dead |
+|----------|------------------------|-------------------|
+| **Ollama (local)** | `nomic-embed-text` | — |
+| **OpenAI** | `text-embedding-3-small` | `text-embedding-ada-002` |
+| **Google** | `gemini-embedding-001` | `text-embedding-004` (shut down Jan 2026) |
+
+If you recently switched providers or updated your config, verify the model name is correct and that your API key has access to the embedding endpoint.
+
+**Health check fails on "Compaction model"**
+
+The compaction model (default: `qwen2.5:32b-instruct` via Ollama) must be running and reachable. Check:
+```bash
+curl http://localhost:11434/v1/models  # List loaded Ollama models
+```
+
+If you're using a remote Ollama instance, set `MNEMO_SUMMARY_URL` to point to it.
+
+**Server unreachable**
+
+If `mnemo-cortex health` can't reach the API, check:
+```bash
+curl http://localhost:50001/health    # Or your MNEMO_URL
+```
+
+Common causes: wrong port, firewall blocking, server not started. On multi-machine setups, ensure the target host's firewall allows the port (e.g., `ufw allow from 10.0.0.0/24 to any port 50001`).
+
+## Verify Installation
+
+After setup, run the smoke test to confirm everything works:
+
+```bash
+cd /path/to/mnemo-cortex
+source .venv/bin/activate
+pytest tests/test_smoke.py -v
+```
+
+Expected output (all 4 assertions must pass):
+
+```
+tests/test_smoke.py::test_ingest_compact_expand PASSED
+
+What it verifies:
+  ✅ Ingest: 24 messages stored successfully
+  ✅ Conversation: agent/session pair created
+  ✅ Compaction: summaries generated from message chunks
+  ✅ Expansion: summary expands back to source messages (verbatim)
+```
+
+If the test fails, check that all Python dependencies are installed (`pip install -e .`).
 
 ## Architecture
 

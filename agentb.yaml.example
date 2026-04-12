@@ -39,6 +39,9 @@ embedding:
     - provider: openai
       model: text-embedding-3-small
       api_key: ${OPENAI_API_KEY}
+    # - provider: google
+    #   model: gemini-embedding-001          # NOT text-embedding-004 (dead Jan 2026)
+    #   api_key: ${GEMINI_API_KEY}
 
 # ── Cache Settings ──
 cache:
@@ -103,3 +106,19 @@ agents:
 #   max_session_gap_minutes: 60  # start new session after this gap
 #   auto_summarize: true     # summarize sessions on archival
 #   max_hot_entries: 500     # safety cap per session file
+
+# ── Mem0 Upstream Bridge (Optional) ──
+# Two-tier memory: local-first, cloud-deep.
+# When local search misses, Mnemo falls through to Mem0's
+# semantic vector search. Results are cached locally.
+# Sign up at https://app.mem0.ai for a free API key.
+# mem0:
+#   enabled: true
+#   api_key: ${MEM0_API_KEY}
+#   api_base: https://api.mem0.ai/v1
+#   user_id: my-agent             # Mem0 user namespace
+#   fallback_only: true           # only hit Mem0 when local misses
+#   sync_writes: false            # push writebacks to Mem0 (default: off)
+#   min_relevance: 0.3            # ignore Mem0 results below this score
+#   max_results: 3                # max Mem0 results per query
+#   timeout: 5.0                  # seconds before giving up on Mem0
