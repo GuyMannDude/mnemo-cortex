@@ -487,6 +487,25 @@ See [`mnemo_v2/db/schema.sql`](mnemo_v2/db/schema.sql) for the full schema. Key 
 | `compaction_events` | Audit log of all compaction operations |
 | `raw_tape` | Append-only crash recovery journal |
 
+## Mnemo Cortex vs OpenClaw Active Memory
+
+OpenClaw 2026.4.10 shipped a native Active Memory plugin. Some people have asked whether it replaces Mnemo Cortex. Short answer: no — they solve different problems. Here's the difference, based on testing both on our Sparky sandbox agent.
+
+|                     | Active Memory (native)         | Mnemo Cortex (MCP)                          |
+|---------------------|-------------------------------|---------------------------------------------|
+| **Scope**           | Single agent                  | Cross-agent (multi-agent bus)               |
+| **Store**           | Local workspace files + FTS   | Centralized SQLite + embeddings             |
+| **Persistence**     | Per-agent, per-workspace      | Survives resets, sessions, machine moves     |
+| **Cross-session**   | Within one agent's workspace  | Any agent, any machine                      |
+| **Integration**     | Independent store             | Independent store                           |
+
+### When to use which
+
+- **Active Memory:** Intra-session, same-agent, fast local recall. Your agent's personal scratchpad.
+- **Mnemo Cortex:** Cross-agent memory bus. When Agent A needs to know what Agent B learned. When memory must survive session resets, machine moves, or agent restarts.
+
+We run both. Active Memory handles per-agent recent context. Mnemo handles everything that crosses agents or needs durable archival. They stack; they don't compete.
+
 ## Origin Story
 
 For two years, Guy Hutchins — a 73-year-old maker in Half Moon Bay — acted as the "Human Sync Port" for his AI agents, manually copying transcripts between sessions. Then came OpenClaw, Rocky, and a $100 Claude subscription. In one session, Guy, Rocky, and Opie designed a memory coprocessor that actually worked. They named it Mnemo Cortex.
