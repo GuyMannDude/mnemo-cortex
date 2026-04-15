@@ -24,6 +24,28 @@
 
 ---
 
+### Dreaming Mnemo — Cross-Agent Overnight Synthesis
+
+Every night, Mnemo reads every connected agent's memories and synthesizes them into a single brief. Each agent wakes up knowing what the others did. No manual relay. No copy-paste. It just happens.
+
+**This is the only AI memory system that does cross-agent synthesis.** Mem0, Zep, and Letta store memory per agent. Mnemo dreams across all of them.
+
+### Works with Mem0
+
+Already using Mem0? Keep it. Mnemo runs as a fast local working-memory layer in front of your existing Mem0 deployment. When Mnemo has what you need: sub-100ms local recall. When local results are thin: automatic fallback to Mem0 for depth. Writes sync both ways.
+
+**"And Mem0" — not "instead of Mem0."**
+
+### Deploy Your Way
+
+- **Shared** — One Mnemo for all agents. Cross-agent search and dreaming. Full team awareness.
+- **Isolated** — Separate Mnemo per agent or per customer. Zero bleed between tenants.
+- **Hybrid** — Shared for internal agents + isolated for customer-facing bots. This is what we run.
+
+Mem0 makes you choose one shared store. Mnemo lets you architect for your actual privacy and separation needs.
+
+---
+
 ### *A Crustacean That Never Forgets* 🧠🦞
 
 🤖 **ClaudePilot Enabled** — [AI-guided installation](CLAUDEPILOT.md). Designed for Claude (free). Works with ChatGPT, Gemini, and others.
@@ -540,8 +562,7 @@ Built for [Project Sparks](https://projectsparks.ai).
 
 ## Works Great With
 
-- **[Sparks Router](https://github.com/GuyMannDude/sparks-router)** — stop burning tokens on heartbeats. Smart model routing that sends each task to the right tier automatically.
-- **[ClaudePilot OpenClaw](https://github.com/GuyMannDude/claudepilot-openclaw)** — free AI-guided setup guide. Get an OpenClaw agent running with memory and routing in one afternoon.
+- **[ClaudePilot OpenClaw](https://github.com/GuyMannDude/claudepilot-openclaw)** — free AI-guided setup guide. Get an OpenClaw agent running with memory in one afternoon.
 
 ## License
 
