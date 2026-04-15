@@ -7,7 +7,7 @@
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
 
-## Deep Recall for Claude Code and OpenClaw.
+## Deep Recall for Claude Code, Claude Desktop, and OpenClaw.
 
 > Every AI agent has amnesia. Mnemo Cortex fixes that.
 > Persistent memory that survives across sessions, searches by meaning, and costs $0 to run.
@@ -16,11 +16,11 @@
 
 ⌘ **[Claude Code → 60-second install](integrations/claude-code/)** — Give CC Fluid Memory with Deep Recall
 
+🖥️ **[Claude Desktop → MCP setup](integrations/claude-desktop/)** — Works on Windows, Mac, and Linux
+
 🦞 **[OpenClaw → MCP integration](integrations/openclaw-mcp/)** — Give Your ClawdBot a Brain. One Config Line.
 
 📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
-
-> **Claude Desktop:** The Desktop MCP bridge has been temporarily pulled. Anthropic's Desktop app (v2.1.87+) moved to a new session storage architecture that broke the automatic session watcher. The MCP tools worked fine — the file-based capture pipeline didn't. We'll re-publish when we have a reliable capture path. Claude Code and OpenClaw integrations are unaffected.
 
 ---
 
@@ -88,7 +88,7 @@ Mnemo watches your agent's session files from the outside and ingests every mess
 |----------|---------------|---------|
 | **OpenClaw** | Session file watcher (tails JSONL) | `mnemo-cortex watch --backfill` |
 | **Claude Code** | Session file watcher (same) | `mnemo-cortex watch --backfill` |
-| **Claude Desktop** | MCP auto-capture server | *(temporarily pulled — see note above)* |
+| **Claude Desktop** | MCP tools (save/recall/search) | [Setup guide](integrations/claude-desktop/) |
 
 ### Quick Start
 
@@ -168,10 +168,21 @@ Proven on two live OpenClaw agents:
 
 > 🤖 **ClaudePilot Enabled** — [Follow the guide in CLAUDEPILOT.md](CLAUDEPILOT.md) and paste it into [claude.ai](https://claude.ai). Claude becomes your personal installer. No experience needed. Works with ChatGPT, Gemini, and others.
 
+### Platforms
+
+Mnemo Cortex runs on **Linux, macOS, and Windows**. The core (Python + SQLite) is cross-platform. Platform-specific differences:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| **Server** | systemd | launchd / manual | Task Scheduler / manual |
+| **Claude Code** | Full support | Full support | Full support |
+| **Claude Desktop** | Full support | Full support | Full support |
+| **OpenClaw** | Full support | Full support | Full support |
+
 ### Prerequisites
 
 - Python 3.11+
-- An OpenClaw agent with session files in `~/.openclaw/agents/<agent>/sessions/`
+- An OpenClaw agent with session files in `~/.openclaw/agents/<agent>/sessions/` (if using OpenClaw)
 - OpenRouter API key (for LLM-backed summaries; falls back to deterministic if unavailable)
 
 ### Step 1: Clone and set up
