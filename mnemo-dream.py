@@ -342,6 +342,30 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
     md_path.write_text(md_content)
 
     log.info(f"Dream written: {json_path} + {md_path}")
+
+    # Also POST through /writeback so the dream hits L2 index + Mem0
+    bridge_url = os.getenv("MNEMO_URL", "http://localhost:50001")
+    try:
+        wb_response = httpx.post(
+            f"{bridge_url}/writeback",
+            json={
+                "session_id": f"dream-{date_str}",
+                "agent_id": "dreamer",
+                "summary": dream_text,
+                "key_facts": memory_entry["key_facts"],
+                "projects_referenced": memory_entry["projects_referenced"],
+                "decisions_made": memory_entry["decisions_made"],
+            },
+            timeout=15.0,
+        )
+        if wb_response.status_code == 200:
+            wb_data = wb_response.json()
+            log.info(f"Dream synced to bridge (L2 + Mem0): memory_id={wb_data.get('memory_id', '?')}")
+        else:
+            log.warning(f"Bridge writeback returned {wb_response.status_code}")
+    except Exception as e:
+        log.warning(f"Bridge writeback failed (non-fatal): {e}")
+
     return dream_id
 
 
