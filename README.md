@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/mnemo-mascot.png" alt="Mnemo Cortex Mascot" width="300">
+  <img src="docs/mnemo-cortex-card-v1.png" alt="Mnemo Cortex — Memory That Dreams" width="480">
 </p>
 
 # ⚡ Mnemo Cortex v2.3.2
