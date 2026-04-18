@@ -388,6 +388,310 @@ server.tool(
   }
 );
 
+// ── Tool: passport_get_user_context ────────────────────────────
+// Read the user's portable working-style passport. Returns both
+// a structured claims list AND a prompt-ready text block ready
+// to drop into Custom Instructions or a system prompt. Calibrates
+// tone, workflow defaults, and negative constraints at session start.
+
+server.tool(
+  "passport_get_user_context",
+  "Read the user's portable working-style passport. Returns a prompt-ready text block plus structured claims. Call at session start to calibrate tone, workflow defaults, and negative constraints.",
+  {
+    scopes: z
+      .array(z.string())
+      .optional()
+      .describe("Filter by scope tags (general, build_mode, debug_mode, research_mode, public_facing). Omit for all."),
+    platform: z
+      .string()
+      .optional()
+      .describe("Platform hint (chatgpt, claude, gemini). Reserved for Phase 2 adapter layer."),
+    max_claims: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Cap the number of claims returned (default: 20)"),
+  },
+  async ({ scopes, platform, max_claims }) => {
+    try {
+      await ensureHealth();
+      const data = await mnemoRequest("POST", "/passport/context", {
+        scopes: scopes || null,
+        platform: platform || null,
+        max_claims: max_claims || 20,
+      });
+      const n = data.claims?.length || 0;
+      const o = data.overlays?.length || 0;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${data.prompt_block}\n\n---\n*Structured: ${n} claim(s), ${o} overlay(s), passport v${data.passport_version}*`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Passport context error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: passport_observe_behavior ────────────────────────────
+// Record a candidate observation about the user's working style.
+// Requires 2+ evidence turn refs. Observations land in the pending
+// queue — they are NOT promoted into the stable passport
+// automatically. Never write credentials, project secrets, or
+// client data. Bad claim: "User is awesome." Good claim:
+// "Prefers direct answers with minimal fluff."
+
+server.tool(
+  "passport_observe_behavior",
+  "Record a candidate observation about the user's working style. REQUIRES 2+ evidence turn refs (minimum). Lands in pending queue; does NOT promote automatically. Never include credentials, project secrets, or client data.",
+  {
+    proposed_claim: z
+      .string()
+      .max(180)
+      .describe("Atomic, testable claim (≤180 chars). E.g. 'Prefers direct answers with minimal fluff.'"),
+    type: z
+      .enum([
+        "preference",
+        "workflow_default",
+        "negative_constraint",
+        "style_default",
+        "decision_pattern",
+        "mode_trait",
+      ])
+      .describe("Claim type."),
+    scope: z
+      .array(z.string())
+      .optional()
+      .describe("Scope tags: general, build_mode, debug_mode, research_mode, public_facing, personal, professional."),
+    confidence: z
+      .number()
+      .min(0)
+      .max(1)
+      .describe("Self-assessment 0.0–1.0."),
+    proposed_target_section: z
+      .string()
+      .describe("Dotted path for promotion. E.g. 'stable_core.communication', 'stable_core.workflow', 'negative_constraints'."),
+    source_platform: z
+      .string()
+      .describe("Where the interaction happened (chatgpt, claude, cc, opie, rocky)."),
+    source_session_id: z
+      .string()
+      .describe("Session identifier (free-form)."),
+    evidence: z
+      .array(
+        z.object({
+          turn_ref: z.string().describe("Turn identifier, e.g. 'u12-a12'."),
+          excerpt: z.string().max(400).describe("Short verbatim excerpt (≤400 chars). Never a full transcript."),
+        })
+      )
+      .min(2)
+      .describe("MINIMUM 2 evidence items. Fewer = rejected."),
+  },
+  async (args) => {
+    try {
+      await ensureHealth();
+      const data = await mnemoRequest("POST", "/passport/observe", args);
+      if (data.status === "rejected") {
+        const dup = data.duplicate_of ? ` (duplicate of ${data.duplicate_of})` : "";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Observation rejected: ${data.rejection_reason}${dup}`,
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Pending: ${data.observation_id}\nCommit: ${data.commit_sha?.slice(0, 7) || "—"}\nAwaiting passport_promote_observation to land in the stable passport.`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Passport observe error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: passport_list_pending_observations ───────────────────
+// List candidate observations waiting in the pending queue.
+// Use before promoting to see what's staged.
+
+server.tool(
+  "passport_list_pending_observations",
+  "List candidate observations waiting in the pending queue. Filter by status (pending|promoted).",
+  {
+    status: z
+      .enum(["pending", "promoted"])
+      .optional()
+      .describe("Filter by status (default: pending)"),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Cap items returned (default: 25)"),
+  },
+  async ({ status, limit }) => {
+    try {
+      await ensureHealth();
+      const data = await mnemoRequest("POST", "/passport/pending", {
+        status: status || "pending",
+        limit: limit || 25,
+      });
+      const items = data.items || [];
+      if (items.length === 0) {
+        return { content: [{ type: "text", text: "No pending observations." }] };
+      }
+      const lines = items.map(
+        (o) =>
+          `- ${o.observation_id} [${o.type}] conf=${o.confidence} → ${o.proposed_target_section}\n  "${o.proposed_claim}"`
+      );
+      return {
+        content: [{ type: "text", text: `${items.length} pending:\n\n${lines.join("\n\n")}` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Passport list error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: passport_promote_observation ─────────────────────────
+// Move a pending observation into the stable passport. This is
+// the gate between candidate and canonical — only promote claims
+// you're confident are accurate and evidence-backed.
+
+server.tool(
+  "passport_promote_observation",
+  "Move a pending observation into the stable passport. Only promote claims you're confident in — this is the gate between candidate and canonical.",
+  {
+    observation_id: z
+      .string()
+      .describe("The obs_NNN id from passport_list_pending_observations."),
+    target_section: z
+      .string()
+      .optional()
+      .describe("Override the observation's proposed target. Dotted path, e.g. 'stable_core.communication'."),
+    actor: z
+      .string()
+      .optional()
+      .describe("Who is promoting (user, opie, cc, system). Default: system."),
+  },
+  async ({ observation_id, target_section, actor }) => {
+    try {
+      await ensureHealth();
+      const data = await mnemoRequest("POST", "/passport/promote", {
+        observation_id,
+        target_section: target_section || null,
+        actor: actor || "system",
+      });
+      if (!data.promoted) {
+        return {
+          content: [{ type: "text", text: `Promotion failed: ${data.reason}` }],
+          isError: true,
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Promoted ${observation_id} → ${data.claim_id} (${data.target_section})\nCommit: ${data.commit_sha?.slice(0, 7) || "—"}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Passport promote error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: passport_forget_or_override ──────────────────────────
+// Deprecate, forget, or replace an existing stable claim.
+// - override: replace wording and preserve lineage via supersedes
+// - forget:   remove claim entirely (audit keeps the snapshot)
+// - deprecate: retire without replacement
+
+server.tool(
+  "passport_forget_or_override",
+  "Deprecate, forget, or replace an existing stable claim. Use override (with replacement_claim) to correct wording while preserving lineage. Use forget to remove a claim entirely. Use deprecate to retire without replacement.",
+  {
+    action: z
+      .enum(["deprecate", "forget", "override", "replace"])
+      .describe("deprecate=retire; forget=remove; override/replace=new wording with supersedes link."),
+    target_claim_id: z
+      .string()
+      .describe("The claim_id to act on, e.g. 'pref_prefers_001'."),
+    replacement_claim: z
+      .string()
+      .max(180)
+      .optional()
+      .describe("Required for action=override/replace. The corrected claim text."),
+    reason: z
+      .string()
+      .optional()
+      .describe("Free-text reason (lands in the audit log)."),
+    actor: z
+      .string()
+      .optional()
+      .describe("user | opie | cc | system. Default: user."),
+  },
+  async ({ action, target_claim_id, replacement_claim, reason, actor }) => {
+    try {
+      await ensureHealth();
+      const data = await mnemoRequest("POST", "/passport/override", {
+        action,
+        target_claim_id,
+        replacement_claim: replacement_claim || null,
+        reason: reason || null,
+        actor: actor || "user",
+      });
+      if (!data.success) {
+        return {
+          content: [{ type: "text", text: `Action failed: ${data.reason}` }],
+          isError: true,
+        };
+      }
+      const line = data.new_claim_id
+        ? `${action} ${target_claim_id} → ${data.new_claim_id}`
+        : `${action} ${target_claim_id}`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${line}\nAudit: ${data.override_id}\nCommit: ${data.commit_sha?.slice(0, 7) || "—"}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Passport override error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Start ──────────────────────────────────────────────────────
 
 await checkHealth();
