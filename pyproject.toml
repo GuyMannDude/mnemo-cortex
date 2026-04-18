@@ -29,6 +29,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "pydantic>=2.8",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -48,4 +49,4 @@ mnemo-cortex = "agentb.cli:main"
 mnemo = "agentb.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["agentb*", "mnemo_v2*"]
+include = ["agentb*", "mnemo_v2*", "passport*"]

@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from agentb.config import (
-    load_config, AgentBConfig, get_agent_data_dir, get_persona, PersonaConfig,
+    load_config, AgentBConfig, get_agent_data_dir, get_persona, PersonaConfig, Mem0Config,
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding
 from agentb.cache import L1Cache, L2Index, l3_scan, ContextChunk
@@ -223,6 +223,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     embedder = create_resilient_embedding(config.embedding)
     tenants = TenantManager(config)
 
+    # Initialize Mem0 bridge if configured
+    mem0 = None
+    if config.mem0 and config.mem0.enabled and config.mem0.api_key:
+        from agentb.mem0_bridge import Mem0Bridge
+        mem0 = Mem0Bridge(config.mem0)
+        log.info("Mem0 upstream bridge enabled")
+
     # Pre-initialize configured agents
     for agent_name in config.agents:
         tenants.get(agent_name)
@@ -264,6 +271,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
             agents_configured=list(config.agents.keys()) + tenants.active_tenants,
+            # mem0_enabled is surfaced via the agents_configured list for now
             default_persona="default",
             sessions=total_sessions,
         )
@@ -278,7 +286,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         memory_dir = tenant["memory_dir"]
         sessions = tenant["sessions"]
 
-        cache_hits = {"HOT": 0, "L1": 0, "L2": 0, "L3": 0}
+        cache_hits = {"HOT": 0, "L1": 0, "L2": 0, "L3": 0, "MEM0": 0}
         all_chunks: list[ContextChunk] = []
 
         # HOT: Search recent session logs first (fastest, keyword matching)
@@ -328,6 +336,22 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                         top_k=remaining)
             all_chunks.extend(l3_results)
             cache_hits["L3"] = len(l3_results)
+
+        # MEM0: Optional upstream fallback
+        remaining = req.max_results - len(all_chunks)
+        if remaining > 0 and mem0:
+            if not config.mem0.fallback_only or len(all_chunks) == 0:
+                try:
+                    mem0_user = req.agent_id or config.mem0.user_id or "default"
+                    mem0_results = await mem0.search(
+                        query=req.prompt,
+                        user_id=mem0_user,
+                        top_k=min(remaining, config.mem0.max_results),
+                    )
+                    all_chunks.extend(mem0_results)
+                    cache_hits["MEM0"] = len(mem0_results)
+                except Exception as e:
+                    log.warning(f"Mem0 fallback failed: {e}")
 
         latency = (time.time() - start) * 1000
         return ContextResponse(
@@ -436,6 +460,18 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 l1_updated += 1
         except Exception as e:
             log.error(f"Writeback indexing failed: {e}")
+
+        # Mem0: optional upstream sync
+        if mem0 and config.mem0.sync_writes:
+            try:
+                mem0_user = req.agent_id or config.mem0.user_id or "default"
+                await mem0.add(
+                    messages=[{"role": "user", "content": req.summary + "\n" + "\n".join(req.key_facts)}],
+                    user_id=mem0_user,
+                    metadata={"session_id": req.session_id, "source": "mnemo-writeback"},
+                )
+            except Exception as e:
+                log.warning(f"Mem0 sync write failed: {e}")
 
         return WritebackResponse(
             status="archived", memory_id=memory_id, agent_id=req.agent_id,
@@ -574,6 +610,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         log.info(f"  Personas:  {list(config.personas.keys())}")
         log.info(f"  Live Wire: /ingest endpoint active — every exchange captured")
         asyncio.create_task(maintenance_loop())
+
+    # ── Passport Lane (Phase 1) ──
+    # Five MCP-facing routes under /passport/*. Self-contained: no shared state
+    # with Mnemo's L1/L2/L3 cache. Data lives at $MNEMO_PASSPORT_DIR
+    # (default ~/.mnemo/passport), auto-committed via git, never auto-pushed.
+    from passport.api import router as passport_router
+    app.include_router(passport_router)
+    log.info("  Passport Lane: /passport/* endpoints active (5 tools)")
 
     return app
 
