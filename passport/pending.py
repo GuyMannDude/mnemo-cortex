@@ -21,8 +21,15 @@ def add(
     source_platform: str,
     source_session_id: str,
     evidence: list[dict],
+    validation_snapshot: dict | None = None,
 ) -> Observation:
-    """Append a new pending observation. Returns the fully-populated Observation."""
+    """Append a new pending observation. Returns the fully-populated Observation.
+
+    If a `validation_snapshot` is supplied, it is stored alongside the
+    observation record for Gate 2 auditability — disposition, reason_codes,
+    flagged_spans, taint_flags, etc. Promotion re-runs validation against the
+    live policy, so the snapshot is informational, not authoritative.
+    """
     with storage.exclusive_lock(storage.pending_path()):
         doc = storage.load_pending()
         obs_id = _mint_observation_id(doc)
@@ -37,7 +44,10 @@ def add(
             source_session_id=source_session_id,
             evidence=evidence,  # type: ignore[arg-type]
         )
-        doc.setdefault("pending_observations", []).append(obs.model_dump(mode="json"))
+        record = obs.model_dump(mode="json")
+        if validation_snapshot is not None:
+            record["validation"] = validation_snapshot
+        doc.setdefault("pending_observations", []).append(record)
         storage.save_pending(doc)
     return obs
 

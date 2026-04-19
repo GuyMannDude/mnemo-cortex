@@ -6,3 +6,6 @@ package-lock.json
 mnemo_cortex.egg-info/
 ~/
 tests/ongoing/
+
+# Passport Lane — never track anyone's private deny/redaction maps.
+*.local.yaml

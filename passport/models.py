@@ -67,6 +67,14 @@ class Evidence(BaseModel):
     session_id: str
     turn_ref: str
     excerpt: str = Field(max_length=400)
+    # Phase 1.5 — per-row provenance. Optional for back-compat with Phase 1
+    # records on disk; new writes populate them via the API/config layer.
+    origin_type: Optional[str] = None       # chat | page_dom | api | manual_paste
+    provenance_bucket: Optional[str] = None # trusted_local | trusted_curated_import | semi_trusted_remote | untrusted_web
+    capture_mode: Optional[str] = None      # user_invoked | auto_capture | import
+    origin_uri_hash: Optional[str] = None
+    taint_flags: list[str] = Field(default_factory=list)
+    redacted_excerpt: Optional[str] = None
 
 
 class Claim(BaseModel):

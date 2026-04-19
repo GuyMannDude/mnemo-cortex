@@ -37,6 +37,12 @@ class EvidenceIn(BaseModel):
     session_id: Optional[str] = None
     turn_ref: str
     excerpt: str = Field(max_length=400)
+    # Phase 1.5 — per-row provenance. Clients should supply when known; the
+    # API falls back to observation-level source_platform resolution otherwise.
+    origin_type: Optional[str] = None
+    provenance_bucket: Optional[str] = None
+    capture_mode: Optional[str] = None
+    origin_uri_hash: Optional[str] = None
 
 
 class ContextRequest(BaseModel):
@@ -73,6 +79,15 @@ class ObserveResponse(BaseModel):
     rejection_reason: Optional[str] = None
     duplicate_of: Optional[str] = None
     commit_sha: Optional[str] = None
+    # Phase 1.5 — Gate 2 classifier output surfaced to the caller.
+    disposition: Optional[str] = None        # hard_block | local_only | review_required | allow
+    reason_codes: list[str] = Field(default_factory=list)
+    flagged_spans: Optional[list[dict]] = None
+    evidence_trust: Optional[str] = None
+    taint_flags: list[str] = Field(default_factory=list)
+    portability: Optional[str] = None
+    redacted_claim: Optional[str] = None
+    salvageability: Optional[str] = None
 
 
 class ListPendingRequest(BaseModel):
@@ -139,13 +154,21 @@ def get_user_context(req: ContextRequest) -> ContextResponse:
 
 @router.post("/observe", response_model=ObserveResponse)
 def observe_behavior(req: ObserveRequest) -> ObserveResponse:
-    # Mint evidence ids for any entries that didn't supply one.
+    # Mint evidence ids for any entries that didn't supply one. Provenance
+    # fields are carried through; validation.py infers defaults per-row.
     evs: list[dict] = []
     for i, e in enumerate(req.evidence):
         eid = e.evidence_id or f"ev_{req.source_session_id}_{i+1}"
         sid = e.session_id or req.source_session_id
         evs.append(Evidence(
-            evidence_id=eid, session_id=sid, turn_ref=e.turn_ref, excerpt=e.excerpt,
+            evidence_id=eid,
+            session_id=sid,
+            turn_ref=e.turn_ref,
+            excerpt=e.excerpt,
+            origin_type=e.origin_type,
+            provenance_bucket=e.provenance_bucket,
+            capture_mode=e.capture_mode,
+            origin_uri_hash=e.origin_uri_hash,
         ).model_dump(mode="json"))
 
     # Build an Observation *without* adding to pending yet, so we can validate first.
@@ -162,11 +185,25 @@ def observe_behavior(req: ObserveRequest) -> ObserveResponse:
     )
     stable = storage.load_stable()
     vr = validation.validate_observation(candidate, stable)
-    if not vr.ok:
+
+    # Gate 2 stub — disposition routes the write:
+    #   hard_block       → reject, never enters pending
+    #   local_only       → accept; promotion to shared scope blocked downstream
+    #   review_required  → accept; human sign-off required before promote
+    #   allow            → accept as normal
+    if vr.disposition == "hard_block":
         return ObserveResponse(
             status="rejected",
             rejection_reason=vr.reason,
             duplicate_of=vr.duplicate_of,
+            disposition=vr.disposition,
+            reason_codes=vr.reason_codes,
+            flagged_spans=vr.flagged_spans,
+            evidence_trust=vr.evidence_trust,
+            taint_flags=vr.taint_flags,
+            portability=vr.portability,
+            redacted_claim=vr.redacted_claim,
+            salvageability=vr.salvageability,
         )
 
     obs = pending.add(
@@ -178,6 +215,7 @@ def observe_behavior(req: ObserveRequest) -> ObserveResponse:
         source_platform=req.source_platform,
         source_session_id=req.source_session_id,
         evidence=evs,
+        validation_snapshot=vr.to_snapshot(),
     )
 
     entry = audit.make_entry(
@@ -194,6 +232,14 @@ def observe_behavior(req: ObserveRequest) -> ObserveResponse:
         observation_id=obs.observation_id,
         status="pending",
         commit_sha=sha,
+        disposition=vr.disposition,
+        reason_codes=vr.reason_codes,
+        flagged_spans=vr.flagged_spans,
+        evidence_trust=vr.evidence_trust,
+        taint_flags=vr.taint_flags,
+        portability=vr.portability,
+        redacted_claim=vr.redacted_claim,
+        salvageability=vr.salvageability,
     )
 
 
