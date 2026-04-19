@@ -159,6 +159,11 @@ def test_all_untrusted_web_caps_at_local_only(passport_dir: Path):
     assert vr.disposition != "allow"
     assert vr.disposition in ("local_only", "review_required", "hard_block")
     assert vr.portability in ("local_only", "blocked")
+    # Audit trail: the bucket floor is the reason we landed here. Reviewers
+    # must be able to trace disposition back to trust bucket without guessing.
+    assert any(rc.startswith("bucket_floor:untrusted_web=") for rc in vr.reason_codes), (
+        f"expected bucket_floor reason code; got {vr.reason_codes}"
+    )
 
 
 # ─── 4. Injection phrase in evidence → review_required + taint ──────────────

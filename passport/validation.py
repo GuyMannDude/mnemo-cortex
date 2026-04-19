@@ -255,9 +255,14 @@ def validate_observation(obs: Observation, stable: dict) -> ValidationResult:
                 reason_codes.append("redaction:private_dict_salvaged")
 
     # (9) Final disposition = strongest seen, floored by bucket default.
-    final = _strongest(dispositions_seen) if dispositions_seen else "allow"
+    # Emit an audit code when the floor actually raises the outcome, so
+    # reviewers can trace "why did this land at local_only?" back to the
+    # trust bucket rather than guessing.
+    pre_floor = _strongest(dispositions_seen) if dispositions_seen else "allow"
     bucket_floor = bucket_defaults.get(evidence_trust, "allow")
-    final = _strongest([final, bucket_floor])
+    final = _strongest([pre_floor, bucket_floor])
+    if final != pre_floor:
+        reason_codes.append(f"bucket_floor:{evidence_trust}={bucket_floor}")
 
     # (10) Untrusted-alone rule for shared-scope promotion.
     # If every evidence row is untrusted_web, cap the disposition at local_only
