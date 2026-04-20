@@ -164,7 +164,7 @@ mnemo-cortex recall "what happened today"
 
 Mnemo Cortex v2 is a **sidecar memory coprocessor** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.
 
-No hooks. No agent modifications. No cloud dependency. If Mnemo crashes, your agent keeps working. If your agent crashes, Mnemo already has everything on disk.
+No hooks. No agent modifications. No cloud dependency. Mnemo keeps your memory on disk — if either process restarts, the data is already there.
 
 ## Key Features
 
