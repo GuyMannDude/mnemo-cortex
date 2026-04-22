@@ -18,7 +18,7 @@
 | 🌙 **Dreaming** | Cross-agent overnight synthesis. Every agent wakes up knowing what the others did. |
 | 📚 **WikAI** | Auto-compiled knowledge base. The wiki is regenerated nightly from Mnemo. Never goes stale. |
 | 📬 **Sparks Bus** | Agent-to-agent messaging with delivery confirmation. A2A-compatible. |
-| 🪪 **Passport** | Portable user working-style preferences. Agents adapt to *you*. |
+| 🪪 **Developer's Passport** | Safe behavioral-claim ingestion layer. Review queue + 32 detectors + provenance buckets. Dev-targeted beta. |
 | 🔗 **Mem0 Bridge** | "And Mem0, not instead of Mem0." Use both. |
 
 ### 🚀 Get Started
@@ -89,13 +89,15 @@ Plus one-shot ⚠️ alerts in `#alerts` for delivery failures and stale message
 
 ---
 
-### 🪪 Passport — User Working-Style Preferences
+### 🪪 Developer's Passport — Safe Behavioral-Claim Ingestion
 
-A portable preference system that captures how a user likes to work and lets agents adapt their communication, tone, and workflow to match. Observations are recorded as candidates, reviewed, and promoted to stable claims; nothing lands in the user's profile without an explicit promotion step.
+**Status: beta. Dev-targeted release.** A reference-grade safety layer for developers building agent systems that need to ingest user working-style claims into an agent's context. Observations are recorded as candidates, reviewed, and promoted to stable claims; nothing lands in the user's profile without an explicit promotion step.
 
-MCP tools: `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`, `passport_get_user_context`.
+What's in the box: 5 MCP tools, a review queue, 32 content detectors (secrets, PII, prompt injection, generic fluff, duplicates), 4 provenance buckets, a policy layer with 4-way disposition outcomes, git-tracked audit, and a 200-entry eval corpus. Current eval: 53.0% accuracy / 0.458 macro-F1.
 
-Designed so the user owns the artifact, not the platform. The Passport file is portable across agent platforms — when you switch from Claude to ChatGPT to a new tool, your working-style preferences travel with you.
+MCP tools: `passport_get_user_context`, `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`. Reference integration via stdio MCP at [`integrations/openclaw-mcp/`](integrations/openclaw-mcp/). See [`passport/README.md`](passport/README.md) for the 5-minute quickstart.
+
+Designed so the user owns the artifact, not the platform. The possessive in the name is deliberate — it drops when the hosted / browser-AI release for normal users ships. Today's release is for devs who wire MCP subprocesses into their own agent stacks.
 
 ---
 

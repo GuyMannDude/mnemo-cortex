@@ -128,13 +128,15 @@ A delivery-confirmed messaging system for inter-agent communication. Lives both 
 
 ---
 
-## Passport — User Working-Style Preferences
+## Developer's Passport — Safe Behavioral-Claim Ingestion
 
-A portable preference layer. Captures how a user works (tone, density, formality, workflow choices) so agents adapt to *them* instead of forcing the user to adapt. Observations become candidates, get reviewed, and only stable claims land in the user's profile — nothing auto-promoted.
+**Status: beta. Dev-targeted release.** A reference-grade safety layer for ingesting user working-style claims into an agent's context. Captures how a user works (tone, density, formality, workflow choices) so agents adapt to *them* instead of forcing the user to adapt. Observations become candidates, get reviewed, and only stable claims land in the user's profile — nothing auto-promoted.
 
-MCP tools: `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`, `passport_get_user_context`.
+**What's in the box:** 5 MCP tools, a review queue, 32 content detectors (secrets, PII, prompt injection, generic fluff, duplicates), 4 provenance buckets driving a policy layer with 4-way disposition outcomes (`allow`, `review_required`, `local_only`, `hard_block`), git-tracked audit of every mutation, and a 200-entry eval corpus. Current eval: 53.0% accuracy / 0.458 macro-F1, `hard_block` F1 0.771.
 
-Designed so the user owns the artifact, not the platform. Travels across agent platforms.
+MCP tools: `passport_get_user_context`, `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`. Reference integration via stdio MCP at `integrations/openclaw-mcp/`. Details: [`passport/README.md`](passport/README.md).
+
+Designed so the user owns the artifact, not the platform. The name loses the possessive when the hosted / browser-AI story ships for normal users — today's release is for developers building agent systems who want known-good machinery.
 
 ---
 

@@ -1,5 +1,64 @@
 # Changelog
 
+## v2.4.1 — "Developer's Passport" (2026-04-22)
+
+Passport gets an honest name and the tuning loop lands its first real pass.
+This is a dev-targeted release: the product is aimed at developers building
+agent systems who want a known-good pattern for safe behavioral-claim
+ingestion. The possessive in the name is deliberate — it drops when the
+hosted / browser-AI story is ready for normal users. Not today.
+
+### What Changed
+
+- **Rebrand: Passport → Developer's Passport** (product name only; code
+  paths, tool names, YAML schema, and REST API all unchanged). `passport/`
+  stays `passport/`. `passport_get_user_context` still `passport_get_user_context`.
+- **Policy tweaks applied after corpus run.** Three policy changes approved
+  and committed against the shipped 200-entry eval corpus:
+  - `bucket_defaults.semi_trusted_remote`: `review_required` → `allow`
+  - `bucket_defaults.untrusted_web`: `local_only` → `review_required`
+  - `dispositions.insufficient_evidence`: new key, `review_required`
+  `validation.py` now routes the <2-evidence short-circuit through the
+  policy map instead of hard-coding `hard_block`, matching the pattern used
+  for every other disposition.
+- **Eval numbers published.** Overall moved from 48.0% / 0.428 macro-F1
+  (baseline) to 53.0% / 0.458 (+5pp / +0.030) after the tweaks. Per-class
+  F1: `allow` +0.251, `review_required` +0.089, `hard_block` +0.027,
+  `local_only` -0.246. The `local_only` regression is inherent to raising
+  the `untrusted_web` floor — those cases now land at `review_required`
+  where a human can make the call. Detail in `passport/README.md`.
+- **README rewritten for developers.** UNDER CONSTRUCTION banner removed.
+  Accurate 5-tool table. 5-minute dev quickstart. Honest Known Gaps section
+  (no Phase 2 classifier, no hosted HTTP MCP wrapper, no review UI, weak
+  `local_only` F1, no per-user repo sync automation).
+- **Chrome extension and claude.ai HTTP connector work parked** — neither
+  was shipping in this release and neither was honest to advertise. When
+  there's a live user for the browser path, that work resumes. Until then,
+  the dev integration via stdio MCP (`integrations/openclaw-mcp/`) is the
+  shipped path.
+- **Eval corpus held separately.** The 200-entry labeled corpus used to
+  produce the numbers above contains detector-bait tokens (fake-but-
+  well-formed API keys) that trip public secret scanners. The harness
+  (`tests/passport/corpus_score.py`) is in the repo; the corpus itself
+  ships on request — open an issue for access.
+
+### Why This Matters
+
+The previous framing — "portable AI identity that travels with you to any
+AI" — was writing a check the shipped code couldn't cash. The stdio MCP
+integration works. The HTTP-to-claude.ai path doesn't exist yet. Renaming
+to *Developer's* Passport aligns the pitch with what the product actually
+delivers: a reference-grade safety + review-queue layer for devs who want
+to wire it into their own agent stacks today.
+
+### Models / Cost
+
+No model changes. Validator is deterministic rule + detector logic; no LLM
+calls in the hot path. Eval harness calls no LLM — it scores the current
+validator against the labeled corpus.
+
+---
+
 ## v2.4.0 — "Compile, Connect, Adapt" (2026-04-22)
 
 The biggest release since v2.0. Three new feature surfaces land alongside the existing memory + dreaming core. Mnemo is now a full memory architecture, not just a memory store.
