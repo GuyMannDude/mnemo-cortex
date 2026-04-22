@@ -1,0 +1,19 @@
+{
+  "name": "BW",
+  "description": "Bullwinkle — Agent Zero in Docker on IGOR. Long-running research agent. Runs deep web research, scans marketplaces, summarizes findings.",
+  "url": "http://localhost:50090/agents/bw",
+  "capabilities": [
+    "web-research",
+    "scraping",
+    "summarization",
+    "long-running-tasks"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "discord",
+    "channel": "bw-research",
+    "notes": "Bus watcher posts to #bw-research; BW's a0-discord plugin pulls and acts."
+  }
+}

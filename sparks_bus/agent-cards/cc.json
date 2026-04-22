@@ -1,0 +1,22 @@
+{
+  "name": "CC",
+  "description": "Claude Code on IGOR. Builder + debugger. Writes code, runs deploys, fixes infrastructure, executes shell, talks to APIs.",
+  "url": "https://igor.tailce7587.ts.net/agents/cc",
+  "capabilities": [
+    "code",
+    "deploy",
+    "debug",
+    "shell",
+    "git",
+    "shopify",
+    "fileflare",
+    "mnemo-write"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "claude",
+    "notes": "Bus watcher spawns `claude --print` with the message body as the prompt."
+  }
+}

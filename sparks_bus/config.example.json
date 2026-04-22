@@ -1,0 +1,33 @@
+{
+  "_comment": "Copy to config.json and edit. Every key can also be overridden by env var; see .env.example.",
+
+  "db_path": "~/.sparks/bus.sqlite",
+  "poll_interval_seconds": 30,
+  "stale_seconds": 3600,
+
+  "mnemo": {
+    "_comment": "If url is unreachable at startup, watcher runs in STANDALONE mode (payload travels in Discord notifications). Otherwise FULL mode (payload saved to Mnemo by tracking_id).",
+    "url": "http://localhost:50001",
+    "agent_id": "bus",
+    "writeback_endpoint": "/writeback",
+    "health_endpoint": "/health",
+    "timeout_seconds": 30
+  },
+
+  "discord": {
+    "token_file": "~/.sparks/discord-token",
+    "channels_file": "./discord-channels.example.json",
+    "dispatch_channel": "dispatch",
+    "alerts_channel": "alerts",
+    "post_timeout_seconds": 15
+  },
+
+  "agents": {
+    "_comment": "Agent name -> wake method. Methods: 'claude' (spawn claude --print), 'http' (POST to Agent Zero API), 'discord' (post to a Discord channel), 'queue' (pull-mode; watcher never marks read).",
+    "CC":    { "method": "claude" },
+    "Rocky": { "method": "discord", "channel": "rocky-log" },
+    "BW":    { "method": "discord", "channel": "bw-research" },
+    "Cliff": { "method": "discord", "channel": "dispatch" },
+    "Opie":  { "method": "queue" }
+  }
+}

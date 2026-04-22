@@ -1,0 +1,20 @@
+{
+  "name": "Rocky",
+  "description": "OpenClaw agent on IGOR. Production-facing. Operates Shopify storefront, watches the gallery, runs the 1-of-1 drop rotation, talks to customers.",
+  "url": "https://igor.tailce7587.ts.net/agents/rocky",
+  "capabilities": [
+    "shopify-admin",
+    "storefront-ops",
+    "customer-chat",
+    "browser-automation",
+    "mnemo-read"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "discord",
+    "channel": "rocky-log",
+    "notes": "Bus watcher posts to #rocky-log; Rocky's OpenClaw plugin pulls and acts."
+  }
+}

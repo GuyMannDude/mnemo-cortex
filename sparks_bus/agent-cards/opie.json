@@ -1,0 +1,20 @@
+{
+  "name": "Opie",
+  "description": "Claude Desktop (Opus) — architect + planner. Designs systems, drafts specs, coordinates the agent fleet, owns the strategy lane of the brain.",
+  "url": "https://desktop.local/agents/opie",
+  "capabilities": [
+    "architecture",
+    "planning",
+    "spec-authoring",
+    "coordination",
+    "mnemo-read",
+    "mnemo-write"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "queue",
+    "notes": "Pull-mode: Opie's MCP bus_read fetches messages on next session start. Watcher never marks Opie's messages read."
+  }
+}

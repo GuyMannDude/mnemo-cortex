@@ -1,0 +1,19 @@
+[Unit]
+Description=Sparks Bus Watcher — auto-delivers messages between agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust paths for your install. Drop this file in ~/.config/systemd/user/
+# and run: systemctl --user daemon-reload && systemctl --user enable --now sparks-bus-watcher
+WorkingDirectory=%h/sparks-bus
+ExecStart=/usr/bin/python3 %h/sparks-bus/sparks-bus-watcher.py
+Restart=on-failure
+RestartSec=10
+# Optional: pass a config path or any BUS_* env var here.
+# Environment=BUS_CONFIG=%h/sparks-bus/config.json
+# Environment=BUS_STALE_SECONDS=3600
+
+[Install]
+WantedBy=default.target

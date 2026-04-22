@@ -1,0 +1,12 @@
+# Local config — copy from config.example.json
+config.json
+discord-channels.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Local DBs
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

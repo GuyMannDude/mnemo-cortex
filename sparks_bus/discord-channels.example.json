@@ -1,0 +1,12 @@
+{
+  "_comment": "Map channel slug -> Discord channel ID. The watcher reads this; replace IDs with your guild's.",
+  "guild_id": "000000000000000000",
+  "channels": {
+    "dispatch": "000000000000000001",
+    "alerts": "000000000000000002",
+    "cc-log": "000000000000000003",
+    "rocky-log": "000000000000000004",
+    "bw-research": "000000000000000005",
+    "opie-plans": "000000000000000006"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "Cliff",
+  "description": "Agent Zero in Docker on IGOR. Lightweight task agent for parallel work alongside BW (e.g., Shopify research v2 directives).",
+  "url": "http://localhost:50090/agents/cliff",
+  "capabilities": [
+    "web-research",
+    "shopify-research",
+    "parallel-tasking"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "discord",
+    "channel": "dispatch",
+    "notes": "Bus watcher posts to #dispatch; Cliff's a0-discord plugin filters and acts."
+  }
+}
