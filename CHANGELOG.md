@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.4.0 — "Compile, Connect, Adapt" (2026-04-22)
+
+The biggest release since v2.0. Three new feature surfaces land alongside the existing memory + dreaming core. Mnemo is now a full memory architecture, not just a memory store.
+
+### What Changed
+
+- **WikAI compiler** — `mnemo-wiki-compile.py` lands in the repo. Nightly cron at 3:30 AM (15 min after Dreaming) reads recent Mnemo memories, clusters by topic in Python (no LLM routing), then per-topic calls gemini-2.5-flash to rewrite the corresponding wiki page integrating new information. Cross-references are validated against the live page set — no hallucinated wikilinks. Every page carries a provenance footer listing source memory session IDs. Per-page failure isolation; one bad LLM call posts ⚠️ to `#alerts` and the run continues. Cost: ~$0.01–$0.05 per nightly. The wiki is never edited directly; Mnemo is the source of truth.
+- **Sparks Bus** — agent-to-agent messaging with delivery confirmation, shipped as `sparks_bus/` inside this repo and standalone at github.com/GuyMannDude/sparks-bus. Doctrine: Discord = doorbell, Mnemo = mailbox, tracking ID = receipt. Lifecycle in `#dispatch`: 📬 DELIVERED → ✅ PICKED UP → 🔄 LOOP CLOSED. One-shot ⚠️ alerts on failure (no retry storms). Two install modes auto-detected: Full (with Mnemo) or Standalone (payload in Discord notification). A2A-compatible: Agent Cards in `sparks_bus/agent-cards/`, task-shape translator in the watcher, `A2A.md` mapping reference, `SETUP-PROMPT.md` for AI-bootstrapped deployments.
+- **Passport** — portable user working-style preferences. Five MCP tools (`passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`, `passport_get_user_context`). Observations become candidates, only stable claims promote — nothing auto-lands in the user's profile.
+- **Three-layer architecture documented** — Mnemo (source of truth, query-time) + WikAI (compiled view, write-time) + Brain files (live state, ephemeral). When they disagree, Mnemo wins.
+- **Inspirations credited openly** — Karpathy's LLM Wiki pattern (WikAI), Nate B Jones's hybrid analysis (three-layer architecture), Google A2A (Sparks Bus compatibility), Mem0 (bridge not replace).
+- **README + CAPABILITIES + landing page updated** — feature overview block, new sections, updated full-stack ASCII diagram.
+
+### Why This Matters
+
+Before v2.4, agents could remember (Mnemo), agents could share (Dreaming), and agents could fall back to depth (Mem0). After v2.4, agents can also:
+- Read a *compiled* understanding of the project state without re-deriving from raw data on every query (WikAI)
+- Send each other tracked, ack'd messages with the lifecycle visible to the operator in one Discord channel (Sparks Bus)
+- Adapt their tone and workflow to how *this user* works (Passport)
+
+The v2.4 release is when Mnemo became a memory architecture, not a memory server.
+
+### Models / Cost
+
+No model changes. WikAI compiler + Dreaming both run on `google/gemini-2.5-flash` via OpenRouter. Combined nightly cost: under $0.10.
+
+---
+
 ## v2.3.2 — "Fresh Models" (2026-04-11)
 
 Doc audit triggered by external user report: setup guide referenced dead Google model name (`text-embedding-004`, shut down Jan 2026), causing hours of debugging silent failures.

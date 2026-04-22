@@ -2,15 +2,24 @@
   <img src="docs/mnemo-cortex-card-v1.png" alt="Mnemo Cortex — Memory That Dreams" width="480">
 </p>
 
-# ⚡ Mnemo Cortex v2.3.2
+# ⚡ Mnemo Cortex v2.4.0
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
 
-## Deep Recall for Claude Code, Claude Desktop, and OpenClaw.
+## Memory That Dreams, Compiles, and Connects
 
-> Every AI agent has amnesia. Mnemo Cortex fixes that.
+> Every AI agent has amnesia. Mnemo Cortex fixes that — and then some.
 > Persistent memory that survives across sessions, searches by meaning, and costs $0 to run.
+
+| | |
+|---|---|
+| 🧠 **Deep Recall** | Persistent memory across sessions. Semantic search. $0 to run. |
+| 🌙 **Dreaming** | Cross-agent overnight synthesis. Every agent wakes up knowing what the others did. |
+| 📚 **WikAI** | Auto-compiled knowledge base. The wiki is regenerated nightly from Mnemo. Never goes stale. |
+| 📬 **Sparks Bus** | Agent-to-agent messaging with delivery confirmation. A2A-compatible. |
+| 🪪 **Passport** | Portable user working-style preferences. Agents adapt to *you*. |
+| 🔗 **Mem0 Bridge** | "And Mem0, not instead of Mem0." Use both. |
 
 ### 🚀 Get Started
 
@@ -46,6 +55,75 @@ Mem0 makes you choose one shared store. Mnemo lets you architect for your actual
 
 ---
 
+### 📚 WikAI — Compiled Knowledge Base
+
+A 3,000+ page wiki layer auto-compiled from Mnemo data. Organized into `projects/`, `entities/`, `concepts/`, and `sources/`. Searchable through three MCP tools: `wiki_search`, `wiki_read`, `wiki_index`.
+
+**The wiki is never edited directly.** It's recompiled nightly by [`mnemo-wiki-compile.py`](mnemo-wiki-compile.py) from Mnemo data. Mnemo is the source of truth. The wiki is the study guide. If a page is wrong, fix the source memories in Mnemo and recompile.
+
+The compiler clusters recent memories by topic, passes each cluster + the existing page to gemini-2.5-flash, and writes a fully-rewritten page that integrates the new information without bloating. Cross-references are validated against the live page set — no hallucinated wikilinks. Every page carries a provenance footer listing the Mnemo session IDs that fed it, so any claim is auditable. Per-page failures are isolated; one bad LLM call posts ⚠️ to `#alerts` and the run continues.
+
+This is the **Karpathy/Nate Jones hybrid** in production: query-time facts in Mnemo + write-time synthesis in WikAI. Neither Mem0, Zep, nor Letta offer this. See [Inspirations](#inspirations) below.
+
+---
+
+### 📬 Sparks Bus — Agent-to-Agent Messaging
+
+A delivery-confirmed messaging system for multi-agent communication. Lives as a module inside Mnemo Cortex at [`sparks_bus/`](sparks_bus/) AND ships standalone at [github.com/GuyMannDude/sparks-bus](https://github.com/GuyMannDude/sparks-bus).
+
+**Doctrine:** Discord is the doorbell. Mnemo is the mailbox. The tracking ID is the receipt.
+
+**Lifecycle visible in `#dispatch`:**
+```
+📬 DELIVERED  →  ✅ PICKED UP  →  🔄 LOOP CLOSED
+```
+Plus one-shot ⚠️ alerts in `#alerts` for delivery failures and stale messages. No retry storms.
+
+**Two install modes auto-detected at startup:**
+- **Full** — Mnemo reachable. Payload saved to Mnemo by tracking ID. Discord notifications carry just the receipt.
+- **Standalone** — No Mnemo. Payload travels in the Discord notification itself. Same lifecycle, no semantic recall.
+
+**A2A compatible.** Agent Cards live in [`sparks_bus/agent-cards/`](sparks_bus/agent-cards/) for every agent in the deployment, formatted to [Google's A2A spec](https://github.com/google/A2A). Each bus message maps to an A2A Task: `tracking_id → task.id`, `subject → task.name`, `body → task.input`, lifecycle → A2A `TaskState`. Transport (HTTPS / JSON-RPC) is the v2 roadmap; data shape compatibility is in now. See [`sparks_bus/A2A.md`](sparks_bus/A2A.md).
+
+**Includes [`SETUP-PROMPT.md`](sparks_bus/SETUP-PROMPT.md)** — a self-contained prompt any AI agent can read to bootstrap the entire bus on a fresh deployment. Karpathy's "idea file as publishing format" pattern.
+
+---
+
+### 🪪 Passport — User Working-Style Preferences
+
+A portable preference system that captures how a user likes to work and lets agents adapt their communication, tone, and workflow to match. Observations are recorded as candidates, reviewed, and promoted to stable claims; nothing lands in the user's profile without an explicit promotion step.
+
+MCP tools: `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`, `passport_get_user_context`.
+
+Designed so the user owns the artifact, not the platform. The Passport file is portable across agent platforms — when you switch from Claude to ChatGPT to a new tool, your working-style preferences travel with you.
+
+---
+
+### The Memory Architecture
+
+**Three layers, one source of truth:**
+
+| Layer | Role | Analogy |
+|---|---|---|
+| **Mnemo Cortex** | Source of truth. Raw facts, sessions, key events. Multi-agent, query-time. | The librarian's filing cabinet |
+| **WikAI** | Compiled view. Auto-generated from Mnemo. Cross-referenced, browsable. Write-time. | The study guide |
+| **Brain files** | Live working memory. Current state, identity, active context per agent. | The sticky notes on your desk |
+
+**When they disagree, Mnemo wins.** WikAI is always regenerable from Mnemo. Brain files are ephemeral. This split is what lets the system scale: facts go where they're addressable (Mnemo), synthesis goes where it's browsable (WikAI), and active state stays where it can change at the speed of work (brain files).
+
+---
+
+### Inspirations
+
+We did not invent this. We adopted the best ideas in the air, credited them openly, and built on top.
+
+- **[Andrej Karpathy's LLM Wiki](https://gist.github.com/karpathy)** (April 2026, 41,000+ bookmarks) — the pattern of compiling AI understanding into navigable artifacts instead of rederiving from raw data on every query. WikAI is our implementation of this pattern. Also the "idea file as publishing format" approach we use in `SETUP-PROMPT.md`.
+- **Nate B Jones — [OpenBrain](https://github.com/NateBJones-Projects/OB1) and [the analysis video](https://youtu.be/dxq7WtWxi44)** ([Substack](https://natesnewsletter.substack.com/), [YouTube](https://www.youtube.com/@NateBJones)) — the write-time vs query-time fork, and the hybrid architecture: structured data as source of truth, compiled wiki as the browsable layer over the top. Our three-layer architecture maps directly to Nate's hybrid model.
+- **[Google A2A Protocol](https://github.com/google/A2A)** — agent-to-agent standard. Sparks Bus speaks A2A's data shapes today; transport is the v2 roadmap.
+- **[Mem0](https://mem0.ai)** — the first to make portable AI memory feel real. Our Mem0 Bridge is "and Mem0, not instead of Mem0."
+
+---
+
 ### *A Crustacean That Never Forgets* 🧠🦞
 
 🤖 **ClaudePilot Enabled** — [AI-guided installation](CLAUDEPILOT.md). Designed for Claude (free). Works with ChatGPT, Gemini, and others.
@@ -60,6 +138,38 @@ OpenClaw Agent ──writes──▶ Session Tape (disk)
                           Refresher Daemon ◀──reads─────┘
                                 │
                           writes──▶ MNEMO-CONTEXT.md ──▶ Agent Bootstrap
+```
+
+The full v2.4 stack:
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │           Mnemo Cortex Stack            │
+                    └─────────────────────────────────────────┘
+
+  Agents (CC, Rocky, Opie, BW, Cliff)
+    │                                     ┌──────────────┐
+    ├── recall / save / search ──────────▶│ Mnemo SQLite │ ◀── Source of Truth
+    │                                     │  + FTS5 +    │
+    │                                     │  Embeddings  │
+    │                                     └──────┬───────┘
+    │                                            │
+    ├── bus_send / bus_read / bus_reply ──▶ Sparks Bus ──▶ Discord (#dispatch)
+    │                                      (SQLite)        📬 → ✅ → 🔄
+    │
+    ├── wiki_search / wiki_read ─────────▶ WikAI (3,000+ .md pages)
+    │                                       ▲
+    │                                       │ auto-compiled nightly
+    │                                       │
+    │                              ┌────────┴───────┐
+    │                              │  Dreaming      │ 3:15 AM → Dream Brief
+    │                              │  + Wiki        │ 3:30 AM → Wiki Pages
+    │                              │  Compiler      │
+    │                              └────────────────┘
+    │
+    ├── passport_* ──────────────────────▶ Passport (user prefs)
+    │
+    └── Mem0 Bridge ─────────────────────▶ Mem0 (fallback depth layer)
 ```
 
 ## Health Monitoring
@@ -549,14 +659,20 @@ Read the full story: [Finding Mnemo](FINDING-MNEMO.md)
 
 ## Credits
 
+**The Sparks team:**
 - **Guy Hutchins** — Project lead, testing, and the reason any of this exists
 - **Rocky Moltman** 🦞 — Creative AI partner, first v2.0 production user
-- **Opie** (Claude Opus 4.6) — Architecture design, schema design, compaction strategy
+- **Opie** (Claude Opus 4.6 / 4.7) — Architecture design, schema design, compaction strategy
 - **AL** (ChatGPT) — Implementation, watcher/refresher daemons, test suite
-- **CC** (Claude Code) — Deployment, integration, live testing, bug fixes
+- **CC** (Claude Code) — Deployment, integration, live testing, bug fixes; built WikAI compiler + Sparks Bus
 - **Alice Moltman** — Live test subject on THE VAULT, first v2.0 user
 
-Inspired in part by exploration of lossless conversation logging approaches, including [Lossless Claw](https://github.com/Martian-Engineering/lossless-claw) by Martian Engineering.
+**External inspirations** (the Clapton Method — adopt the best ideas, credit openly, build on top):
+- **Andrej Karpathy** — [LLM Wiki pattern](https://gist.github.com/karpathy), April 2026. Inspired WikAI's compile-don't-rederive design and the "idea file as publishing format" pattern used in `SETUP-PROMPT.md`.
+- **Nate B Jones** — [OpenBrain](https://github.com/NateBJones-Projects/OB1) + ["Your AI Does the Hard Work Then Deletes It" (YouTube)](https://youtu.be/dxq7WtWxi44) + [Substack](https://natesnewsletter.substack.com/). Inspired our three-layer memory architecture (structured store + compiled wiki + ephemeral brain files).
+- **Google A2A Protocol** — [github.com/google/A2A](https://github.com/google/A2A). Sparks Bus speaks A2A data shapes; transport is v2 roadmap.
+- **Mem0** — [mem0.ai](https://mem0.ai). The Mem0 Bridge is "and Mem0, not instead of Mem0."
+- **[Lossless Claw](https://github.com/Martian-Engineering/lossless-claw)** by Martian Engineering — early exploration of lossless conversation logging that informed the v1 capture pattern.
 
 Built for [Project Sparks](https://projectsparks.ai).
 

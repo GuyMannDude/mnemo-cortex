@@ -102,6 +102,42 @@ Both integrations share the same underlying memory store. A memory saved by Clau
 
 ---
 
+## WikAI — Compiled Knowledge Base
+
+Mnemo holds the facts. WikAI is the study guide compiled from those facts. 3,000+ markdown pages organized into `projects/`, `entities/`, `concepts/`, and `sources/`. Three MCP tools: `wiki_search`, `wiki_read`, `wiki_index`.
+
+The wiki is regenerated nightly by `mnemo-wiki-compile.py`. The compiler clusters recent memories by topic, passes each cluster + the existing page to gemini-2.5-flash, and rewrites the page to integrate new info without bloating. Cross-references are validated against the live page set — no hallucinated wikilinks. Every page carries a provenance footer listing the Mnemo session IDs that contributed.
+
+**Doctrine:** the wiki is never edited directly. Mnemo is the source of truth. If a page is wrong, fix the source data and recompile. Manual edits are detected by hash diff and warned.
+
+This is the **Karpathy/Nate Jones hybrid** in production: query-time facts (Mnemo) + write-time synthesis (WikAI). When they disagree, Mnemo wins.
+
+---
+
+## Sparks Bus — Agent-to-Agent Messaging
+
+A delivery-confirmed messaging system for inter-agent communication. Lives both inside Mnemo Cortex (`sparks_bus/`) and as a standalone repo at github.com/GuyMannDude/sparks-bus.
+
+**Doctrine:** Discord is the doorbell. Mnemo is the mailbox. The tracking ID is the receipt.
+
+**Lifecycle visible in `#dispatch`:** 📬 DELIVERED → ✅ PICKED UP → 🔄 LOOP CLOSED. ⚠️ alerts in `#alerts` for failures and stale messages — one shot, no retry storms.
+
+**Two modes auto-detected at startup:** Full (Mnemo reachable, payload saved by tracking ID) or Standalone (no Mnemo, payload travels in the Discord notification).
+
+**A2A compatible.** Agent Cards for every agent, message-to-task mapping aligned with Google's A2A spec. Sparks Bus does for agent-to-agent what MCP does for agent-to-tool.
+
+---
+
+## Passport — User Working-Style Preferences
+
+A portable preference layer. Captures how a user works (tone, density, formality, workflow choices) so agents adapt to *them* instead of forcing the user to adapt. Observations become candidates, get reviewed, and only stable claims land in the user's profile — nothing auto-promoted.
+
+MCP tools: `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`, `passport_get_user_context`.
+
+Designed so the user owns the artifact, not the platform. Travels across agent platforms.
+
+---
+
 ## What Makes This Different
 
 Most AI memory systems today are single-agent, cloud-hosted, and keyword-based. Mnemo-Cortex is none of those.
