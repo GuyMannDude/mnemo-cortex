@@ -51,8 +51,8 @@ DEFAULT_POLICY: dict[str, Any] = {
     "bucket_defaults": {
         "trusted_local": "allow",
         "trusted_curated_import": "allow",
-        "semi_trusted_remote": "review_required",
-        "untrusted_web": "local_only",
+        "semi_trusted_remote": "allow",
+        "untrusted_web": "review_required",
     },
     # Category → disposition. Detectors carry a `category` which maps here.
     "dispositions": {
@@ -65,6 +65,7 @@ DEFAULT_POLICY: dict[str, Any] = {
         "injection_in_evidence": "review_required",
         "generic_fluff": "hard_block",
         "duplicate": "hard_block",
+        "insufficient_evidence": "review_required",
     },
 }
 

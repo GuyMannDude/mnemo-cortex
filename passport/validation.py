@@ -164,7 +164,8 @@ def validate_observation(obs: Observation, stable: dict) -> ValidationResult:
         return ValidationResult(disposition="hard_block", reason_codes=["claim_too_long"])
 
     if len(obs.evidence) < 2:
-        return ValidationResult(disposition="hard_block", reason_codes=["insufficient_evidence"])
+        disp = dispositions_map.get("insufficient_evidence", "hard_block")
+        return ValidationResult(disposition=disp, reason_codes=["insufficient_evidence"])
 
     # (2) Metadata integrity.
     source_bucket, meta_untrusted = config.resolve_bucket(obs.source_platform)
