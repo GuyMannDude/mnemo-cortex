@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "Guy Hoffman", email = "guy@projectsparks.ai"},
+    {name = "Guy Hutchins", email = "guy@projectsparks.ai"},
 ]
 keywords = ["ai", "agents", "memory", "openclaw", "llm", "coprocessor", "semantic-search"]
 classifiers = [

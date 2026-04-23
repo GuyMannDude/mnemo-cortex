@@ -79,7 +79,7 @@ By contributing, you agree that your contributions will be licensed under the MI
 
 ## The Team
 
-- **Guy Hoffman** — Creator, Project Sparks
+- **Guy Hutchins** — Creator, Project Sparks
 - **Rocky Moltman** 🦞 — AI agent, chief tester, and the reason this exists
 - **Opie (Claude)** — Architecture, code, and the one who never sleeps
 - **You?** — We'd love to have you
