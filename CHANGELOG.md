@@ -1,5 +1,59 @@
 # Changelog
 
+## v2.5.0 — "One Bridge" (2026-04-26)
+
+The MCP bridge becomes a single drop-in for every agent. Restores the
+brain-lane, wiki, and auto-capture tools that came over from the archived
+`mnemo-cortex-mcp` repo, layered on top of the existing Passport + share
+bridge. One bridge. Every agent. No more "which server.js do I point at?"
+
+### What Changed
+
+- **Restored 8 tools that were removed in v2.3.0** when Claude Desktop's
+  storage architecture forced the integration pull. They're back in the
+  unified bridge: `opie_startup`, `read_brain_file`, `list_brain_files`,
+  `write_brain_file`, `session_end`, `wiki_search`, `wiki_read`, `wiki_index`.
+  The Passport + `mnemo_share` tools introduced in v2.4.x are unchanged.
+  Total: 17 tools.
+- **Auto-capture + nudge system ported.** Tool calls are buffered (8 entries
+  or 2 min idle) and flushed to Mnemo as background activity trail. After
+  20 calls without a manual save, responses get a save reminder appended.
+  `SIGTERM` / `SIGINT` drain the buffer before exit. Passport tools are
+  marked `skip` — their audit lives in passport's git log already.
+- **Session ID prefix honors `MNEMO_AGENT_ID`.** CC's saves get `cc-`
+  prefix, Rocky's get `rocky-`, Opie's stay `opie-`. The previous bridge
+  hardcoded `opie-` regardless of the env var. (The fix already existed
+  in the openclaw-mcp bridge from v2.4 — it's now propagated through the
+  ported tools too.)
+- **`session_end` git commit message respects `AGENT_ID`.** Was hardcoded
+  `"brain: Opie session end"`; now uses the running agent's id.
+- **Single shared HTTP client.** All tools route through the `mnemoRequest`
+  helper with 10s timeout + abort-on-stall. Replaces the legacy bridge's
+  fire-and-hope `fetch` calls.
+- **`BRAIN_DIR`, `WIKI_DIR`, `DREAM_DIR` env vars** for non-default install
+  paths. Defaults still match the Sparks-Brain reference layout — but
+  non-Sparks users can override.
+- **Archived `mnemo-cortex-mcp` repo stays archived.** No further changes
+  there. The legacy `server.js` was patched in-place earlier the same day
+  for the agent-ID prefix bug — fix kept locally for any installs still
+  pointing at that path; this release supersedes it.
+
+### Migration
+
+If you're still pointing at the legacy bridge (`mnemo-cortex-mcp/server.js`)
+or the slim openclaw-mcp bridge (`mnemo-cortex/integrations/openclaw-mcp/server.js`
+pre-v2.5.0):
+
+1. Pull latest `mnemo-cortex`.
+2. `cd integrations/openclaw-mcp && npm install`.
+3. Update your MCP config command path to point at this `server.js`.
+4. Restart whatever spawns the bridge (Claude Code session, OpenClaw gateway).
+
+Tool names and behavior are unchanged — existing prompts and agent muscle
+memory keep working.
+
+---
+
 ## v2.4.1 — "Developer's Passport" (2026-04-22)
 
 Passport gets an honest name and the tuning loop lands its first real pass.

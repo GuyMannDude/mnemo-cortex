@@ -1,7 +1,7 @@
 {
   "name": "mnemo-cortex-openclaw-mcp",
-  "version": "2.0.1",
-  "description": "Give your OpenClaw bot a brain. Persistent cross-agent memory via Mnemo Cortex.",
+  "version": "2.5.0",
+  "description": "Give any agent a brain. Persistent cross-agent memory + brain-lane CRUD + WikAI search + Passport via Mnemo Cortex.",
   "main": "server.js",
   "type": "module",
   "engines": {
