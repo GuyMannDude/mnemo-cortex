@@ -33,6 +33,31 @@ let sessionShareActive = shareMode === "always";
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_CHARS = 16_000;
 
+// ── Optional integrations ──────────────────────────────────────
+// Brain-lane and wiki tools only register when the directories
+// they target actually exist. New users get a clean memory bridge
+// (mnemo + passport = 9 tools). Sparks operators with a brain or
+// wiki checkout get the rest automatically — same install, more tools.
+
+async function dirExists(path) {
+  try {
+    const s = await stat(path);
+    return s.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+const BRAIN_AVAILABLE = await dirExists(BRAIN_DIR);
+const WIKI_AVAILABLE = await dirExists(WIKI_DIR);
+
+if (BRAIN_AVAILABLE) {
+  process.stderr.write(`[mnemo-mcp] Brain dir found at ${BRAIN_DIR} — brain/session tools enabled\n`);
+}
+if (WIKI_AVAILABLE) {
+  process.stderr.write(`[mnemo-mcp] Wiki dir found at ${WIKI_DIR} — wiki tools enabled\n`);
+}
+
 // ── Mnemo API client ───────────────────────────────────────────
 // 10-second timeout on all requests. Errors surface as tool
 // errors — the agent sees a clean message, not a stack trace.
@@ -276,7 +301,7 @@ process.on("SIGINT", async () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.5.0",
+  version: "2.6.0",
 });
 
 // ── Tool: mnemo_recall ─────────────────────────────────────────
@@ -496,6 +521,13 @@ server.tool(
     };
   }
 );
+
+// ── Brain-lane + session tools (conditional) ──────────────────
+// Only register if BRAIN_DIR exists. New users without a brain
+// checkout get a clean memory bridge. Sparks operators get the
+// full kit automatically.
+
+if (BRAIN_AVAILABLE) {
 
 // ── Tool: opie_startup ─────────────────────────────────────────
 // Opie-specific: loads opie.md + reference brain docs + recent
@@ -805,7 +837,12 @@ server.tool(
   }
 );
 
-// ── WikAI tools ────────────────────────────────────────────────
+} // end if (BRAIN_AVAILABLE)
+
+// ── WikAI tools (conditional) ──────────────────────────────────
+// Only register if WIKI_DIR exists.
+
+if (WIKI_AVAILABLE) {
 
 server.tool(
   "wiki_search",
@@ -944,6 +981,8 @@ server.tool(
     }
   }
 );
+
+} // end if (WIKI_AVAILABLE)
 
 // ── Tool: passport_get_user_context ────────────────────────────
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.6.0 (2026-04-27)
+
+Tools auto-detected based on available directories. Fresh installs see 9
+core memory tools.
+
+- **Default tool surface = 9 tools** (4 memory + 5 Passport).
+- **Brain-lane + session tools (5)** auto-enable when `BRAIN_DIR` exists
+  (default `~/github/sparks-brain-guy/brain`).
+- **Wiki tools (3)** auto-enable when `WIKI_DIR` exists (default `~/wiki`).
+- No flags, no env-var switches — if the directory is on disk, the tools
+  register; if not, they don't.
+
+| Setup | Tools registered |
+|---|---|
+| Default | **9** — memory + Passport |
+| + brain dir | 14 |
+| + wiki dir | 12 |
+| + both | 17 |
+
+---
+
 ## v2.5.0 — "One Bridge" (2026-04-26)
 
 The MCP bridge becomes a single drop-in for every agent. Restores the
