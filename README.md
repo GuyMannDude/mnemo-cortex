@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-card-v1.png" alt="Mnemo Cortex — Memory That Dreams" width="480">
 </p>
 
-# ⚡ Mnemo Cortex v2.4.0
+# ⚡ Mnemo Cortex v2.6.0
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -28,6 +28,8 @@
 🖥️ **[Claude Desktop → MCP setup](integrations/claude-desktop/)** — Works on Windows, Mac, and Linux
 
 🦞 **[OpenClaw → MCP integration](integrations/openclaw-mcp/)** — Give Your ClawdBot a Brain. One Config Line.
+
+🦙 **[Any Local LLM → MCP setup](#use-with-any-local-llm)** — LM Studio, Open WebUI, llama.cpp, Ollama, LobeChat, Jan
 
 📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
 
@@ -98,6 +100,190 @@ What's in the box: 5 MCP tools, a review queue, 32 content detectors (secrets, P
 MCP tools: `passport_get_user_context`, `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`. Reference integration via stdio MCP at [`integrations/openclaw-mcp/`](integrations/openclaw-mcp/). See [`passport/README.md`](passport/README.md) for the 5-minute quickstart.
 
 Designed so the user owns the artifact, not the platform. The possessive in the name is deliberate — it drops when the hosted / browser-AI release for normal users ships. Today's release is for devs who wire MCP subprocesses into their own agent stacks.
+
+---
+
+## 🦙 Use With Any Local LLM
+
+> Run any local LLM. Add Mnemo for memory. **No cloud, no subscription, no API keys for the model. Free forever.**
+
+Mnemo Cortex talks Model Context Protocol (MCP). Every modern local-LLM host either supports MCP natively or has a one-line bridge. Pick your host and follow the snippet below.
+
+> **Why this matters.** Zapier's "AI tool connections" run **$20–50/month** per workflow. Same pattern with Mnemo + your local LLM: **$0/mo, fully private, runs on hardware you already own.**
+
+### Prerequisites (once)
+
+1. **Run Mnemo Cortex** — locally, in Docker, or on a network box. The bridge is just an HTTP client; the server can be anywhere reachable. See the [Install Guide](#install-guide).
+2. **Clone this repo** somewhere your LLM host can reach:
+   ```
+   git clone https://github.com/GuyMannDude/mnemo-cortex.git
+   cd mnemo-cortex/integrations/openclaw-mcp && npm install
+   ```
+   That's the bridge. It's a small Node script. Every host below points at the same `server.js`.
+
+The full path to `server.js` and your Mnemo URL go into each host's config below.
+
+---
+
+### LM Studio — native MCP, GUI
+
+LM Studio added native MCP support in v0.3.17. Edit `mcp.json` and restart.
+
+**Config path:**
+- Windows: `%USERPROFILE%\.lmstudio\mcp.json`
+- macOS / Linux: `~/.lmstudio/mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "mnemo-cortex": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js"],
+      "env": {
+        "MNEMO_URL": "http://localhost:50001",
+        "MNEMO_AGENT_ID": "lmstudio"
+      }
+    }
+  }
+}
+```
+
+Restart LM Studio. Open a chat with a tool-capable model (Qwen3, Llama 3.2, Mistral). Click the **MCP** tab in the chat panel — `mnemo-cortex` should be listed with **9 tools** (4 memory + 5 Passport). Ask "save a note that I prefer concise replies" — the model calls `mnemo_save`. New chat: "what do you remember about my preferences?" — the model calls `mnemo_recall`.
+
+---
+
+### Open WebUI — native MCP, multi-model
+
+Open WebUI works with any backend (Ollama, llama.cpp, OpenAI-compatible). In **Settings → Tools → MCP Servers**, add a stdio server:
+
+| Field | Value |
+|---|---|
+| Name | `mnemo-cortex` |
+| Command | `node` |
+| Args | `/ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js` |
+| Env | `MNEMO_URL=http://localhost:50001`<br>`MNEMO_AGENT_ID=open-webui` |
+
+Save. Open a chat. Tools appear inline.
+
+---
+
+### llama.cpp — native MCP
+
+`llama-server` ships with MCP client support. Run with `--mcp-config`:
+
+```bash
+llama-server \
+  -m qwen3-8b.gguf \
+  --mcp-config /path/to/mcp.json
+```
+
+Use the same `mcp.json` shape as LM Studio above.
+
+---
+
+### Ollama — via MCPHost or ollmcp
+
+Ollama has no native MCP support yet ([issue #7865](https://github.com/ollama/ollama/issues/7865)). Use a bridge:
+
+**Option 1 — MCPHost** (Go binary, multi-platform):
+
+```bash
+go install github.com/mark3labs/mcphost@latest
+# OR download a Windows binary from https://github.com/mark3labs/mcphost/releases
+```
+
+```yaml
+# ~/.mcphost.yaml
+mcpServers:
+  mnemo-cortex:
+    type: local
+    command:
+      - "node"
+      - "/ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js"
+    environment:
+      MNEMO_URL: "http://localhost:50001"
+      MNEMO_AGENT_ID: "ollama-mcphost"
+model: "ollama:qwen3:8b"
+```
+
+```bash
+mcphost                                    # interactive
+mcphost -p "save a note about X" --quiet   # scripted
+```
+
+**Option 2 — ollmcp** (Python TUI):
+
+```bash
+pip install mcp-client-for-ollama
+ollmcp
+```
+
+> **Heads-up for Windows users:** MCPHost's interactive UI must run in a real console window. Driving it through SSH-stdio doesn't work — Windows buffers the output until the process exits. Run it locally on the box where Ollama lives.
+
+---
+
+### LobeChat — MCP plugin
+
+In **Settings → Plugins → MCP → Add custom MCP server**:
+
+| Field | Value |
+|---|---|
+| Type | `stdio` |
+| Command | `node /ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js` |
+| Env | `MNEMO_URL=http://localhost:50001`<br>`MNEMO_AGENT_ID=lobechat` |
+
+---
+
+### Jan — MCP via extensions
+
+Jan exposes MCP through its Extensions panel. **Settings → Extensions → MCP Servers → Add**:
+
+```json
+{
+  "name": "mnemo-cortex",
+  "command": "node",
+  "args": ["/ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js"],
+  "env": {
+    "MNEMO_URL": "http://localhost:50001",
+    "MNEMO_AGENT_ID": "jan"
+  }
+}
+```
+
+Restart Jan. Tools appear in the assistant configuration.
+
+---
+
+### What you get
+
+By default, **9 tools** that work for any user:
+
+| Group | Tools |
+|---|---|
+| Memory | `mnemo_recall`, `mnemo_search`, `mnemo_save`, `mnemo_share` |
+| [Developer's Passport](passport/) | `passport_get_user_context`, `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override` |
+
+The bridge also detects two optional dirs and registers more tools when present:
+
+- Set `BRAIN_DIR` to a brain-lane checkout → adds `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
+- Set `WIKI_DIR` to a wiki dir → adds `wiki_search`, `wiki_read`, `wiki_index`.
+
+If the directory doesn't exist, those tools simply don't register — the model never sees them. Most users stay on the 9-tool default and that's the right call.
+
+| Setup | Tools |
+|---|---|
+| Default (any user) | **9** |
+| + brain dir | 14 |
+| + wiki dir | 12 |
+| Both | 17 |
+
+Pair with [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) for web search, vision, browser, NotebookLM, Shopify, and Google Drive tools. Same MCP config pattern — just add a second `mcpServers` entry.
+
+### Tips
+
+- **Pick a tool-capable model.** Qwen3, Llama 3.2, Mistral, and Gemma 2 all do tool-calling well. Smaller models (under 7B) can struggle; if the model never invokes the tool, scale up.
+- **First call is slow.** Cold model load + tool round-trip can take 30–60s. After the model is warm, calls are sub-second.
+- **`MNEMO_AGENT_ID` matters.** Each host should use a distinct agent ID (`lmstudio`, `ollama`, `jan`, etc.) so memories don't collide. If you're using Mnemo's cross-agent dreaming feature, the agent ID is what shows up in the dream brief.
 
 ---
 
