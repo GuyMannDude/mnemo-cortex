@@ -321,7 +321,7 @@ process.on("SIGINT", async () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.6.2",
+  version: "2.6.3",
 });
 
 // ── Tool: mnemo_recall ─────────────────────────────────────────

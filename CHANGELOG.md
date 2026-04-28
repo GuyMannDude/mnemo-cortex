@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.6.3 (2026-04-27)
+
+Audit-driven catalog polish (Opie's compliance pass). Two real fixes plus
+one nice-to-have, all narrowed from a line-by-line check of the v2.6.2
+bundle against the MCPB spec + Connectors Directory submission requirements.
+
+- **`tools_generated: true`** declared in the manifest. The bridge
+  conditionally registers up to 8 additional tools at startup based on
+  `BRAIN_DIR` / `WIKI_DIR` presence, so the manifest tool list isn't always
+  exhaustive. This flag tells reviewers and hosts that's intentional.
+- **`tools` array expanded to all 17** with explicit "Conditional (BRAIN_DIR)"
+  / "Conditional (WIKI_DIR)" prefixes on the optional ones. Previously the
+  manifest declared 9; a reviewer testing on a Sparks-style box would have
+  seen 17 and flagged the mismatch.
+- **`icons` array** added alongside the existing `icon` string for richer
+  catalog rendering. Single 512×512 entry today; room for theme variants
+  later without further schema changes.
+- Bundle rebuilt; size unchanged (~3.6 MB packed).
+
+No code changes in this release — manifest only, plus the version bump.
+
+---
+
 ## v2.6.2 (2026-04-27)
 
 Catalog-grade polish on the Claude Desktop bundle.

@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "mnemo-cortex",
   "display_name": "Mnemo Cortex",
-  "version": "2.6.2",
+  "version": "2.6.3",
   "description": "Persistent memory for Claude. Save, search, and recall across sessions. Works with any Mnemo Cortex server (local or hosted).",
-  "long_description": "Mnemo Cortex gives Claude a persistent semantic memory layer that survives across sessions. This bundle provides 9 tools by default (4 memory + 5 Developer's Passport) and auto-enables 8 more (brain-lane CRUD, wiki search, session lifecycle) when matching directories are detected on disk.\n\nYou need a running Mnemo Cortex server — locally, in Docker, or somewhere reachable on your network. See https://github.com/GuyMannDude/mnemo-cortex for the server install.\n\nFree, self-hosted, fully private. Same memory across Claude Desktop, Claude Code, Ollama, LM Studio, and any other MCP host.",
+  "long_description": "Mnemo Cortex gives Claude a persistent semantic memory layer that survives across sessions. This bundle registers 9 tools by default (4 memory + 5 Developer's Passport). Up to 8 additional tools (brain-lane CRUD, wiki search, session lifecycle) auto-register at startup if matching directories are found on disk via the optional `BRAIN_DIR` and `WIKI_DIR` env vars — this is what `tools_generated: true` reflects below.\n\nYou need a running Mnemo Cortex server — locally, in Docker, or somewhere reachable on your network. See https://github.com/GuyMannDude/mnemo-cortex for the server install.\n\nFree, self-hosted, fully private. Same memory across Claude Desktop, Claude Code, Ollama, LM Studio, and any other MCP host.",
   "author": {
     "name": "Project Sparks",
     "email": "support@projectsparks.ai",
@@ -32,6 +32,9 @@
     "self-hosted"
   ],
   "icon": "icon.png",
+  "icons": [
+    { "src": "icon.png", "size": "512x512" }
+  ],
   "server": {
     "type": "node",
     "entry_point": "server/server.js",
@@ -68,16 +71,25 @@
       "default": "separate"
     }
   },
+  "tools_generated": true,
   "tools": [
-    { "name": "mnemo_recall", "description": "Recall memories from your own agent's lane. Semantic search." },
-    { "name": "mnemo_search", "description": "Search memories across agents (gated by share_mode)." },
-    { "name": "mnemo_save", "description": "Save a summary or key facts for future recall." },
-    { "name": "mnemo_share", "description": "Toggle cross-agent search on/off for this session." },
-    { "name": "passport_get_user_context", "description": "Read the user's portable working-style passport." },
-    { "name": "passport_observe_behavior", "description": "Record a behavioral observation about the user (review-queued)." },
-    { "name": "passport_list_pending_observations", "description": "List queued observations awaiting promotion." },
-    { "name": "passport_promote_observation", "description": "Promote a pending observation to a stable claim." },
-    { "name": "passport_forget_or_override", "description": "Deprecate, forget, or replace a stable claim." }
+    { "name": "mnemo_recall",                         "description": "Recall memories from your own agent's lane. Semantic search." },
+    { "name": "mnemo_search",                         "description": "Search memories across agents (gated by share_mode)." },
+    { "name": "mnemo_save",                           "description": "Save a summary or key facts for future recall." },
+    { "name": "mnemo_share",                          "description": "Toggle cross-agent search on/off for this session." },
+    { "name": "passport_get_user_context",            "description": "Read the user's portable working-style passport." },
+    { "name": "passport_observe_behavior",            "description": "Record a behavioral observation about the user (review-queued, never auto-promoted)." },
+    { "name": "passport_list_pending_observations",   "description": "List queued observations awaiting promotion." },
+    { "name": "passport_promote_observation",         "description": "Promote a pending observation to a stable claim." },
+    { "name": "passport_forget_or_override",          "description": "Deprecate, forget, or replace a stable claim." },
+    { "name": "opie_startup",                         "description": "Conditional (BRAIN_DIR): load brain lane file, recent context, and dream brief at session start." },
+    { "name": "read_brain_file",                      "description": "Conditional (BRAIN_DIR): read a markdown file from the brain directory." },
+    { "name": "list_brain_files",                     "description": "Conditional (BRAIN_DIR): list markdown files in the brain directory." },
+    { "name": "write_brain_file",                     "description": "Conditional (BRAIN_DIR): write or update a brain file. Refuses to write CLAUDE.md or cc-session.md." },
+    { "name": "session_end",                          "description": "Conditional (BRAIN_DIR): save final summary to Mnemo, then git add/commit/push the brain dir." },
+    { "name": "wiki_search",                          "description": "Conditional (WIKI_DIR): grep-search the local wiki for a phrase." },
+    { "name": "wiki_read",                            "description": "Conditional (WIKI_DIR): read a wiki page by relative path." },
+    { "name": "wiki_index",                           "description": "Conditional (WIKI_DIR): return the wiki's top-level index." }
   ],
   "compatibility": {
     "claude_desktop": ">=1.0.0",
