@@ -59,68 +59,96 @@ Mnemo Cortex needs two models: one for embeddings (semantic search) and one for 
 
 Model configuration is done in Mnemo Cortex itself (see main README), not in these hooks.
 
-## Automatic Mode (Session Watcher)
+## Automatic Mode (Session Sync)
 
-The hooks above require Claude Code to run the writeback manually at session end. For fully automatic ingestion, use the session watcher — it tails Claude Code's JSONL session files in real-time and ingests every message into Mnemo Cortex as it happens.
+The hooks above require Claude Code to run the writeback manually at session end. For fully automatic ingestion, use the **session sync** — it reads Claude Code's JSONL session files and POSTs structured memories to Mnemo Cortex's `/writeback` endpoint every 60 seconds. Memories are immediately recallable across agents (no overnight summarization wait).
 
 ### Setup
 
-1. Make sure Mnemo Cortex is installed and the venv is set up (see main README).
+1. Make sure Mnemo Cortex is reachable from this machine. Quick check:
+   ```bash
+   curl -s "${MNEMO_URL:-http://localhost:50001}/health"
+   ```
 
-2. Edit the variables in `mnemo-watcher-cc.sh` or set them as environment variables:
+2. Test the sync manually (`--force` flushes regardless of message count):
+   ```bash
+   python3 integrations/claude-code/mnemo-cc-artforge-sync.py --force
+   ```
+   Expected output: `[cc-artforge-sync] posted N msgs → memory_id=<id>`.
+
+3. Verify the memory landed:
+   ```bash
+   curl -s -X POST "${MNEMO_URL:-http://localhost:50001}/recall" \
+     -H 'Content-Type: application/json' \
+     -d '{"agent_id":"cc","query":"session activity"}'
+   ```
+
+### Configuration
+
+All env-var, all optional:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex base URL |
+| `MNEMO_AGENT_ID` | `cc` | Agent ID for writebacks |
+| `MNEMO_CC_SESSIONS_DIR` | `~/.claude/projects` | Where Claude Code stores `.jsonl` |
+| `MNEMO_CC_OFFSET_FILE` | `~/.mnemo-cc/cc-artforge-sync.offset.json` | Sync offset state |
+| `MNEMO_CC_SYNC_INTERVAL` | `60` | Seconds between syncs (loop only) |
+
+### Install as a systemd service (Linux)
+
+A template is provided at `mnemo-cc-artforge-sync.service.template`. Copy it into your user units dir, edit any env vars you need to override, then enable:
 
 ```bash
-MNEMO_CC_SESSIONS_DIR="$HOME/.claude/projects"   # Where CC stores .jsonl files
-MNEMO_AGENT_ID="cc"                                # Your agent ID
-MNEMO_CORTEX_DIR="/path/to/mnemo-cortex"           # Repo root (has .venv/)
-```
+cp integrations/claude-code/mnemo-cc-artforge-sync.service.template \
+   ~/.config/systemd/user/mnemo-cc-artforge-sync.service
 
-3. Test it:
-
-```bash
-bash integrations/claude-code/mnemo-watcher-cc.sh
-```
-
-You should see `[mnemo-watcher-cc] Tracking session: <uuid>` when a session is active.
-
-### Install as systemd service (Linux)
-
-```bash
-cat > ~/.config/systemd/user/mnemo-watcher-cc.service << EOF
-[Unit]
-Description=Mnemo v2 Session Watcher (Claude Code)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/path/to/mnemo-cortex/integrations/claude-code/mnemo-watcher-cc.sh
-Restart=on-failure
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-Environment=MNEMO_CORTEX_DIR=/path/to/mnemo-cortex
-Environment=MNEMO_CC_SESSIONS_DIR=%h/.claude/projects
-Environment=MNEMO_AGENT_ID=cc
-
-[Install]
-WantedBy=default.target
-EOF
+# Optional: edit env vars
+$EDITOR ~/.config/systemd/user/mnemo-cc-artforge-sync.service
 
 systemctl --user daemon-reload
-systemctl --user enable --now mnemo-watcher-cc
+systemctl --user enable --now mnemo-cc-artforge-sync.service
+systemctl --user status mnemo-cc-artforge-sync.service
 ```
 
-Replace `/path/to/mnemo-cortex` with the actual path to your clone.
+The service runs `mnemo-cc-artforge-sync-loop.sh` which calls the Python sync every 60s and force-flushes on `SIGTERM` so nothing is stranded on shutdown.
 
-### Hooks vs Watcher
+### Health monitoring (recommended)
 
-| | Hooks (manual) | Watcher (automatic) |
+Silent failure modes are the worst kind — a sync that stops working without alerting wastes the entire memory-parity guarantee. The repo ships `mnemo-cc-sync-watchdog.sh` which exits non-zero when the service is down or the sync is stuck, so any cron / scheduler can alert.
+
+**Plain cron:**
+```cron
+*/15 * * * * /path/to/mnemo-cortex/integrations/claude-code/mnemo-cc-sync-watchdog.sh || \
+  /usr/bin/curl -fsS --data-urlencode "payload={\"text\":\"Mnemo CC sync watchdog FAIL on $(hostname)\"}" \
+  "$YOUR_WEBHOOK_URL"
+```
+
+**healthchecks.io:**
+```cron
+*/15 * * * * /path/to/.../mnemo-cc-sync-watchdog.sh && curl -fsS https://hc-ping.com/<your-uuid>
+```
+
+**systemd OnFailure=** — wrap the watchdog in a oneshot unit + timer; OnFailure triggers your alert unit.
+
+The watchdog exits OK when (a) the service is active and (b) either Claude Code is idle (no JSONL writes in 30 min) or the sync has posted within 30 min.
+
+### Hooks vs Sync
+
+| | Hooks (manual) | Sync (automatic) |
 |---|---|---|
-| **Ingestion** | On writeback only | Every message, real-time |
-| **Completeness** | Summary + key facts | Full transcript |
-| **Setup** | install.sh | systemd service |
-| **Overhead** | None between sessions | Daemon polls every 2s |
+| **Ingestion** | On writeback only | Every 60s, real-time |
+| **Trigger** | Claude Code calls writeback | systemd loop |
+| **Format** | Summary + key facts | Structured memory with last 20 turns |
+| **Setup** | `install.sh` | systemd service |
+| **Overhead** | None between sessions | One Python invocation per minute |
+| **Cross-agent visibility** | Summary at session end | Continuous |
 
-You can run both — the watcher captures everything automatically, and the hooks add structured summaries at session boundaries.
+You can run both — the sync captures continuously, and the hooks add high-signal summaries at session boundaries.
+
+### Legacy: `mnemo-watcher-cc.sh` (deprecated)
+
+The older `mnemo-watcher-cc.sh` writes raw messages to a local SQLite via the `mnemo-cortex-v2` codebase. **It does not feed the central Mnemo Cortex API**, so memories ingested by it are not recallable across agents in v2.6+. The script is preserved for users still running v2 setups but will be removed in a future release. Migrate to `mnemo-cc-artforge-sync` per the steps above.
 
 ## Files
 

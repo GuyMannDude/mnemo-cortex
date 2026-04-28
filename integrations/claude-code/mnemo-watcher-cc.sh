@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# ⚠️ DEPRECATED — see mnemo-cc-artforge-sync.py instead.
+#
+# This legacy watcher writes raw session messages to a LOCAL SQLite at
+# ~/.mnemo-v2/mnemo.sqlite3 using the older mnemo-cortex-v2 codebase. That
+# DB is not what the central Mnemo Cortex API serves, so messages ingested
+# here are NOT recallable across agents in the v2.6+ architecture.
+#
+# The supported path is `mnemo-cc-artforge-sync.py` + `*-loop.sh`, which
+# POST structured memories directly to Mnemo Cortex's /writeback endpoint.
+# See README.md → "Automatic Mode (Session Sync)".
+#
+# Migration:
+#   systemctl --user disable --now mnemo-watcher-cc.service
+#   # follow the systemd setup in README.md for mnemo-cc-artforge-sync
+#
+# This file is preserved for users still running v2 setups. It will be
+# removed in a future release.
+#
+# ---------- Original watcher follows ----------
 # Mnemo v2 Session Watcher for Claude Code
 # Watches the newest session file and ingests messages into Mnemo Cortex.
 #
