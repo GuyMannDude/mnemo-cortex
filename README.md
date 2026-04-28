@@ -169,12 +169,15 @@ Save. Open a chat. Tools appear inline.
 
 ### AnythingLLM — desktop GUI, multi-workspace
 
-AnythingLLM speaks MCP through its plugin layer. Edit `mcp_servers.json` and gate tool calls behind `@agent` mode in chat.
+AnythingLLM speaks MCP through its plugin layer. Two setup steps: drop in the MCP config, then flip the workspace to **Automatic mode** so memory tools fire on every message without a manual prefix.
 
-**Config path:**
-- Windows: `%APPDATA%\anythingllm-desktop\storage\plugins\anythingllm_mcp_servers.json`
-- macOS: `~/Library/Application Support/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json`
-- Linux: `~/.config/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json`
+**1. MCP config — edit `anythingllm_mcp_servers.json`:**
+
+| Platform | Path |
+|---|---|
+| Windows | `%APPDATA%\anythingllm-desktop\storage\plugins\anythingllm_mcp_servers.json` |
+| macOS | `~/Library/Application Support/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json` |
+| Linux | `~/.config/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json` |
 
 ```json
 {
@@ -191,12 +194,16 @@ AnythingLLM speaks MCP through its plugin layer. Edit `mcp_servers.json` and gat
 }
 ```
 
-In a workspace chat, prefix every tool-using message with `@agent`:
+**2. Flip the workspace to Automatic mode:** Open the workspace → ⚙️ Settings → **Chat Settings** tab → change mode to **Automatic**.
+
+Per [AnythingLLM's docs](https://docs.anythingllm.com/features/chat-modes), Automatic mode "automatically uses all available agent-skills, tools, and MCPs." That means `mnemo_save` and `mnemo_recall` fire whenever the model decides they're useful — no `@agent` prefix, just normal conversation.
+
+> **Visual cue:** if the chat input shows an `@` symbol on the left, you're still in the default mode and need to type `@agent` per message. If it's gone, Automatic mode is on and memory just works.
+
+**Fallback:** if your workspace can't run Automatic mode (model doesn't support native tool calling, etc.), you can stay in default mode and prefix tool-using messages with `@agent`:
 > `@agent please save a memory using mnemo_save: I prefer concise replies.`
 
-Without `@agent`, AnythingLLM doesn't expose tools to the model.
-
-**Three real gotchas (verified 2026-04-27):**
+**Three real gotchas (verified 2026-04-27 on IGOR-2):**
 
 1. **Use a tool-capable model.** `qwen3:8b` and similar **do** invoke `mnemo_save` correctly. `llama3.1:8b` *narrates* "saved with id e4d3c9..." while never calling the tool — the memory ID is hallucinated. We tested both. Same bridge, same server, just a different model. Stick with qwen3.
 2. **Verify the actual model.** AnythingLLM's GUI may show one model name while `.env` (`%APPDATA%\anythingllm-desktop\storage\.env`) retains a stale `OLLAMA_MODEL_PREF`. Restart fully after switching models.
