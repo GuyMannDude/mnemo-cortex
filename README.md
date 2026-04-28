@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/mnemo-cortex-card-v1.png" alt="Mnemo Cortex — Local Memory for Claude, OpenClaw, Ollama, AnythingLLM, Agent Zero, and more" width="480">
+  <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v2.6.0
+# ⚡ Mnemo Cortex v2.6.3
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
