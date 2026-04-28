@@ -1,134 +1,115 @@
 # Mnemo Cortex — Claude Desktop Integration
 
-Persistent memory for Claude Desktop on **Windows, Mac, and Linux**. Same recall, save, and search tools that OpenClaw agents use — just wired through Claude Desktop's MCP config.
+Persistent memory for Claude Desktop on **Windows, macOS, and Linux**.
 
-## What You Need
+## Two install paths
 
-- **Mnemo Cortex** running somewhere (this machine or a remote server on your network)
-- **Claude Desktop** installed
-- **Node.js 18+** (for the MCP server)
+> 🦞 **Most users**: drag-and-drop a `.mcpb` bundle. No clone, no Node, no JSON editing.
+>
+> 🛠️ **Developers / multi-host operators**: edit `claude_desktop_config.json` by hand and point at a checked-out repo.
 
-## Install
+---
 
-### 1. Clone the repo (if you haven't already)
+## 🦞 One-click install (recommended)
+
+1. Download [`mnemo-cortex.mcpb`](mnemo-cortex.mcpb) from this folder *(or grab it from the [latest release](https://github.com/GuyMannDude/mnemo-cortex/releases))*.
+2. Open **Claude Desktop → Settings → Extensions**.
+3. Drag `mnemo-cortex.mcpb` into the window.
+4. When prompted, fill in the three fields:
+   - **Mnemo Cortex Server URL** — defaults to `http://localhost:50001`. If your server is on another machine, use its address (e.g., `http://10.0.0.65:50001`).
+   - **Agent ID** — defaults to `claude-desktop`. Use something distinct per host (`claude-code`, `lmstudio`, etc.) so memories don't collide.
+   - **Cross-Agent Sharing** — `separate` (default, your own memory only), `always` (read every agent), or `never` (never share, can't be toggled later).
+5. Done. The bundle ships its own Node runtime and dependencies — Claude Desktop spawns it on the next chat.
+
+You'll need a **Mnemo Cortex server** reachable from this machine. Spin one up locally with the [main install guide](../../README.md#install-guide), or point at an existing instance on your network.
+
+---
+
+## 🛠️ Manual install (developers)
+
+Use this path if you want to develop the bridge, run a custom build, or hold the install at a checked-out commit.
+
+**Prereqs:** Node.js 18+, a clone of this repo, and a reachable Mnemo Cortex server.
 
 ```bash
 git clone https://github.com/GuyMannDude/mnemo-cortex.git
-cd mnemo-cortex/integrations/openclaw-mcp
-npm install
+cd mnemo-cortex/integrations/openclaw-mcp && npm install
 ```
 
-The MCP server lives in `integrations/openclaw-mcp/` — it's platform-agnostic and works with Claude Desktop, not just OpenClaw.
+Open Claude Desktop's config file:
 
-### 2. Find your Claude Desktop config file
+| Platform | Path |
+|---|---|
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
 
-| Platform | Config path |
-|----------|-------------|
-| **Windows** | `%APPDATA%\Claude\claude_desktop_config.json` |
-| **Mac** | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| **Linux** | `~/.config/Claude/claude_desktop_config.json` |
-
-You can also open it from Claude Desktop: **Settings > Developer > Edit Config**
-
-### 3. Add Mnemo Cortex to the config
-
-Edit the config file and add a `mnemo-cortex` entry under `mcpServers`:
-
-**Mac / Linux:**
+Or open it via **Settings → Developer → Edit Config**. Add a `mnemo-cortex` entry under `mcpServers`:
 
 ```json
 {
   "mcpServers": {
     "mnemo-cortex": {
       "command": "node",
-      "args": ["/absolute/path/to/mnemo-cortex/integrations/openclaw-mcp/server.js"],
+      "args": ["/ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js"],
       "env": {
         "MNEMO_URL": "http://localhost:50001",
-        "MNEMO_AGENT_ID": "opie"
+        "MNEMO_AGENT_ID": "claude-desktop",
+        "MNEMO_SHARE": "separate"
       }
     }
   }
 }
 ```
 
-**Windows:**
+Quit Claude Desktop **completely** (tray icon → Quit; closing the window isn't enough), re-launch.
 
-```json
-{
-  "mcpServers": {
-    "mnemo-cortex": {
-      "command": "node",
-      "args": ["C:\\Users\\YourName\\mnemo-cortex\\integrations\\openclaw-mcp\\server.js"],
-      "env": {
-        "MNEMO_URL": "http://localhost:50001",
-        "MNEMO_AGENT_ID": "opie"
-      }
-    }
-  }
-}
-```
+---
 
-Replace:
-- The path with where you actually cloned the repo
-- `MNEMO_URL` with your Mnemo Cortex server address
-- `MNEMO_AGENT_ID` with a name for this Claude Desktop instance (e.g., `opie`, `desktop`, `my-claude`)
+## Verify
 
-### 4. Restart Claude Desktop
+In a new chat, ask Claude: **"Use mnemo_save to remember that I tested the bundle today."** Then a fresh chat: **"Use mnemo_recall to find what I told you to remember."**
 
-Close and reopen Claude Desktop. The MCP server starts automatically.
+If the recall returns your phrase, you're live. If you only see the model agreeing without invoking a tool, the MCP isn't wired — recheck the steps.
 
-### 5. Verify
+---
 
-Ask Claude: **"What do you remember?"**
+## Default tools (9)
 
-It should use the `mnemo_recall` tool. If it does, you're live.
+| Group | Tools |
+|---|---|
+| Memory | `mnemo_recall`, `mnemo_search`, `mnemo_save`, `mnemo_share` |
+| [Developer's Passport](../../passport/) | `passport_get_user_context`, `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override` |
 
-## Available Tools
+Eight more tools auto-enable when matching directories exist on your machine — see the [main README](../../README.md#use-with-any-local-llm) for details.
 
-Once connected, Claude Desktop gets four memory tools:
+---
 
-| Tool | What it does |
-|------|-------------|
-| `mnemo_recall` | Recall this agent's own memories. Semantic search over past sessions. |
-| `mnemo_search` | Search all memories. Cross-agent access controlled by share mode. |
-| `mnemo_save` | Save a summary and key facts. Use when something important happens. |
-| `mnemo_share` | Toggle cross-agent memory sharing on/off for this session. |
+## Environment variables (manual install only)
 
-## Remote Server Setup
+| Variable | Default | Notes |
+|---|---|---|
+| `MNEMO_URL` | `http://localhost:50001` | Where your Mnemo Cortex server is listening. |
+| `MNEMO_AGENT_ID` | `openclaw` | Distinct per host so memories don't collide. |
+| `MNEMO_SHARE` | `separate` | `separate`/`always`/`never`. |
+| `BRAIN_DIR` | `~/github/sparks-brain-guy/brain` | Optional — auto-enables brain-lane tools when present. |
+| `WIKI_DIR` | `~/wiki` | Optional — auto-enables wiki tools when present. |
 
-If Mnemo Cortex runs on a different machine (common in multi-machine setups), just point `MNEMO_URL` at that machine:
-
-```json
-"MNEMO_URL": "http://your-server:50001"
-```
-
-The server must be reachable from the machine running Claude Desktop. If both machines are on the same network (LAN, Tailscale, etc.), this works out of the box.
-
-## Multi-Agent Memory
-
-Every Claude Desktop instance can have its own `MNEMO_AGENT_ID`. They all share the same Mnemo Cortex database. Agent A can search Agent B's memories if sharing is enabled.
-
-Give each instance a unique ID. One memory spine, many agents.
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex API address |
-| `MNEMO_AGENT_ID` | `openclaw` | This agent's identity in the memory system |
-| `MNEMO_SHARE` | `separate` | Cross-agent sharing mode: `separate`, `always`, or `never` |
+---
 
 ## Troubleshooting
 
-**Tools don't appear in Claude Desktop** — Restart Claude Desktop completely (quit, not just close the window). Check that the path to `server.js` is correct and absolute.
+**Tools don't appear** — Quit Claude Desktop completely (tray icon → Quit, not just close the window) and re-launch. The MCP only spawns at app start.
 
-**"Mnemo Cortex unreachable"** — The server isn't running or the URL is wrong. Test from a terminal:
+**"Mnemo Cortex unreachable"** — Server isn't running or the URL is wrong. Test from a terminal:
 ```bash
 curl http://localhost:50001/health
 ```
 
-**Node not found** — Make sure Node.js 18+ is installed and on your PATH. On Windows, you may need the full path to `node.exe`.
+**Manifest parse error on bundle install** — Make sure you're on a recent Claude Desktop (>=1.0). Older builds may not understand `manifest_version: 0.3`.
+
+**Manual install: Node not found** — Node.js 18+ must be on `PATH`. On Windows, you may need the full path to `node.exe` in the `command` field.
 
 ---
 
-*Part of [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex) by Project Sparks*
+*Part of [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex) by [Project Sparks](https://projectsparks.ai).*

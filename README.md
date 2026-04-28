@@ -25,7 +25,7 @@
 
 ⌘ **[Claude Code → 60-second install](integrations/claude-code/)** — Give CC Fluid Memory with Deep Recall
 
-🖥️ **[Claude Desktop → MCP setup](integrations/claude-desktop/)** — Works on Windows, Mac, and Linux
+🖥️ **[Claude Desktop → one-click `.mcpb` bundle](integrations/claude-desktop/)** — Drag-and-drop install. No clone, no Node, no JSON editing. Works on Windows, macOS, and Linux.
 
 🦞 **[OpenClaw → MCP integration](integrations/openclaw-mcp/)** — Give Your ClawdBot a Brain. One Config Line.
 

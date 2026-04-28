@@ -1,0 +1,86 @@
+{
+  "manifest_version": "0.3",
+  "name": "mnemo-cortex",
+  "display_name": "Mnemo Cortex",
+  "version": "2.6.1",
+  "description": "Persistent memory for Claude. Save, search, and recall across sessions. Works with any Mnemo Cortex server (local or hosted).",
+  "long_description": "Mnemo Cortex gives Claude a persistent semantic memory layer that survives across sessions. This bundle provides 9 tools by default (4 memory + 5 Developer's Passport) and auto-enables 8 more (brain-lane CRUD, wiki search, session lifecycle) when matching directories are detected on disk.\n\nYou need a running Mnemo Cortex server — locally, in Docker, or somewhere reachable on your network. See https://github.com/GuyMannDude/mnemo-cortex for the server install.\n\nFree, self-hosted, fully private. Same memory across Claude Desktop, Claude Code, Ollama, LM Studio, and any other MCP host.",
+  "author": {
+    "name": "Project Sparks",
+    "email": "support@projectsparks.ai",
+    "url": "https://projectsparks.ai"
+  },
+  "homepage": "https://projectsparks.ai/mnemo-cortex",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GuyMannDude/mnemo-cortex"
+  },
+  "documentation": "https://github.com/GuyMannDude/mnemo-cortex#readme",
+  "support": "https://github.com/GuyMannDude/mnemo-cortex/issues",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "semantic-search",
+    "persistence",
+    "mcp",
+    "rag",
+    "passport",
+    "local-first",
+    "self-hosted"
+  ],
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/server.js"],
+      "env": {
+        "MNEMO_URL": "${user_config.mnemo_url}",
+        "MNEMO_AGENT_ID": "${user_config.agent_id}",
+        "MNEMO_SHARE": "${user_config.share_mode}"
+      }
+    }
+  },
+  "user_config": {
+    "mnemo_url": {
+      "type": "string",
+      "title": "Mnemo Cortex Server URL",
+      "description": "Where your Mnemo Cortex server is running. Use http://localhost:50001 if you're running it on the same machine, or the address of your network instance.",
+      "required": true,
+      "default": "http://localhost:50001"
+    },
+    "agent_id": {
+      "type": "string",
+      "title": "Agent ID",
+      "description": "How this Claude session identifies itself in your memory store. Use a distinct ID per host (e.g., 'claude-desktop', 'claude-code') so memories don't collide.",
+      "required": true,
+      "default": "claude-desktop"
+    },
+    "share_mode": {
+      "type": "string",
+      "title": "Cross-Agent Sharing",
+      "description": "'separate' restricts mnemo_search to your own agent's memories. 'always' lets you read across all agents (good for personal multi-host setups). 'never' permanently disables cross-agent search.",
+      "required": false,
+      "default": "separate"
+    }
+  },
+  "tools": [
+    { "name": "mnemo_recall", "description": "Recall memories from your own agent's lane. Semantic search." },
+    { "name": "mnemo_search", "description": "Search memories across agents (gated by share_mode)." },
+    { "name": "mnemo_save", "description": "Save a summary or key facts for future recall." },
+    { "name": "mnemo_share", "description": "Toggle cross-agent search on/off for this session." },
+    { "name": "passport_get_user_context", "description": "Read the user's portable working-style passport." },
+    { "name": "passport_observe_behavior", "description": "Record a behavioral observation about the user (review-queued)." },
+    { "name": "passport_list_pending_observations", "description": "List queued observations awaiting promotion." },
+    { "name": "passport_promote_observation", "description": "Promote a pending observation to a stable claim." },
+    { "name": "passport_forget_or_override", "description": "Deprecate, forget, or replace a stable claim." }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
