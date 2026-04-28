@@ -329,6 +329,10 @@ Pair with [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) for web sear
 - **First call is slow.** Cold model load + tool round-trip can take 30–60s. After the model is warm, calls are sub-second.
 - **`MNEMO_AGENT_ID` matters.** Each host should use a distinct agent ID (`lmstudio`, `ollama`, `jan`, etc.) so memories don't collide. If you're using Mnemo's cross-agent dreaming feature, the agent ID is what shows up in the dream brief.
 
+### More on hosts, models, and what actually works
+
+For host-by-host pass/fail, model tool-calling test results, browser automation comparisons, and the rest of our field findings: **[projectsparks.ai/field-guide](https://projectsparks.ai/field-guide)**. Updated as we test more.
+
 ---
 
 ### The Memory Architecture
