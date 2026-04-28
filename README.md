@@ -29,7 +29,11 @@
 
 🦞 **[OpenClaw → MCP integration](integrations/openclaw-mcp/)** — Give Your ClawdBot a Brain. One Config Line.
 
-🦙 **[Any Local LLM → MCP setup](#use-with-any-local-llm)** — LM Studio, Open WebUI, llama.cpp, Ollama, LobeChat, Jan
+🎛️ **[LM Studio → native MCP, GUI](integrations/lmstudio/)** — `mcp.json` + restart. Works with any tool-capable open-weights model.
+
+📦 **[AnythingLLM → desktop GUI, multi-workspace](integrations/anythingllm/)** — Drop-in MCP config + Automatic mode. No `@agent` prefix needed.
+
+🦙 **[Any Local LLM → MCP setup](#use-with-any-local-llm)** — Open WebUI, llama.cpp, Ollama, LobeChat, Jan, and more
 
 📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
 
@@ -144,6 +148,8 @@ The full path to `server.js` and your Mnemo URL go into each host's config below
 
 ### LM Studio — native MCP, GUI
 
+> 📖 **Full install guide with troubleshooting:** [`integrations/lmstudio/`](integrations/lmstudio/)
+
 LM Studio added native MCP support in v0.3.17. Edit `mcp.json` and restart.
 
 **Config path:**
@@ -185,6 +191,8 @@ Save. Open a chat. Tools appear inline.
 ---
 
 ### AnythingLLM — desktop GUI, multi-workspace
+
+> 📖 **Full install guide with verified gotchas:** [`integrations/anythingllm/`](integrations/anythingllm/)
 
 AnythingLLM speaks MCP through its plugin layer. Two setup steps: drop in the MCP config, then flip the workspace to **Automatic mode** so memory tools fire on every message without a manual prefix.
 

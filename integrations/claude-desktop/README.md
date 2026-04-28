@@ -109,9 +109,15 @@ The bundle connects to **one server only** — the Mnemo Cortex URL you provide 
 
 Memory entries are stored in a SQLite DB on your Mnemo Cortex server. You can read or delete them at any time. Full details: [PRIVACY.md](../../PRIVACY.md).
 
+## Workflow
+
+For day-to-day use patterns — when to recall, when to save, how to structure a brain lane, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
+
 ## Troubleshooting
 
 **Tools don't appear** — Quit Claude Desktop completely (tray icon → Quit, not just close the window) and re-launch. The MCP only spawns at app start.
+
+**Bridge crashed silently** — Bridge versions ≥2.6.4 log uncaught exceptions, unhandled rejections, signal exits, and stdin EOF to stderr (visible in Claude Desktop's MCP log: `mcp-server-mnemo-cortex.log`). If the bridge dies and the log is empty, you're on an older version — update via the manual install path or the `.mcpb` bundle.
 
 **"Mnemo Cortex unreachable"** — Server isn't running or the URL is wrong. Test from a terminal:
 ```bash

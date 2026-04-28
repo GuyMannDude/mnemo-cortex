@@ -178,6 +178,10 @@ rm -rf ~/.mnemo-cc
 
 Then remove the `MNEMO CORTEX` block from your `CLAUDE.md`.
 
+## Workflow
+
+For day-to-day use patterns — when to recall, when to save, how to structure a brain lane, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
+
 ## Troubleshooting
 
 **"Mnemo Cortex unreachable"** — The server isn't running or the URL is wrong. Check with:

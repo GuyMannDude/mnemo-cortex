@@ -143,6 +143,10 @@ Every agent gets its own memory lane in the Mnemo Cortex database (keyed by `age
 
 Give each bot a unique `MNEMO_AGENT_ID`. They all share the same Mnemo Cortex database — one memory spine, many agents.
 
+## Workflow
+
+For day-to-day use patterns — when to recall, when to save, how to structure a brain lane, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
+
 ## License
 
 MIT
