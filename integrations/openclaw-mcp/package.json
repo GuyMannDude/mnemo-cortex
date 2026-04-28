@@ -1,6 +1,6 @@
 {
   "name": "mnemo-cortex-openclaw-mcp",
-  "version": "2.6.3",
+  "version": "2.6.4",
   "description": "Drop-in MCP bridge for any local LLM. Persistent semantic memory + Passport, plus optional brain-lane and wiki tools that auto-enable when those dirs exist.",
   "main": "server.js",
   "type": "module",

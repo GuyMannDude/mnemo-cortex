@@ -317,6 +317,30 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
+// Diagnostic logging — capture WHY the bridge dies. Without these,
+// silent exits leave no trace in Claude Desktop's MCP log.
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`[mnemo-mcp] FATAL uncaughtException: ${err?.stack || err}\n`);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[mnemo-mcp] unhandledRejection: ${reason?.stack || reason}\n`);
+});
+process.on("exit", (code) => {
+  process.stderr.write(`[mnemo-mcp] process exiting code=${code}\n`);
+});
+process.on("SIGHUP", () => {
+  process.stderr.write(`[mnemo-mcp] SIGHUP received — exiting\n`);
+  process.exit(0);
+});
+process.on("SIGPIPE", () => {
+  process.stderr.write(`[mnemo-mcp] SIGPIPE received — exiting\n`);
+  process.exit(0);
+});
+process.stdin.on("end", () => {
+  process.stderr.write(`[mnemo-mcp] stdin EOF — parent disconnected\n`);
+});
+
 // ── MCP Server ─────────────────────────────────────────────────
 
 const server = new McpServer({
