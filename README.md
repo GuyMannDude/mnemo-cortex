@@ -33,6 +33,8 @@
 
 📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
 
+🧭 **[How should my agent use it? → Session Guide](SESSION-GUIDE.md)** — Workflow patterns, per-platform boot snippets, common mistakes
+
 ---
 
 ### Dreaming Mnemo — Cross-Agent Overnight Synthesis
