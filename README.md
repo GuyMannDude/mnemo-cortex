@@ -91,6 +91,21 @@ Plus one-shot ⚠️ alerts in `#alerts` for delivery failures and stale message
 
 ---
 
+### 📋 mnemo-plan — Project Pad for Your Agents
+
+Mnemo Cortex captures conversation memory automatically. **mnemo-plan** is the manual companion: a folder of markdown files in Git that you write and curate, and any LLM agent can read at session start via the Mnemo MCP tools.
+
+The split:
+
+- **Mnemo Cortex** = automatic conversation memory (save / recall / search happens in the background as agents work)
+- **mnemo-plan** = manual project pad (you write it, agents read it — project specs, active tasks, decision logs, architecture notes)
+
+Same MCP bridge handles both. mnemo-plan tools (`read_brain_file`, `write_brain_file`, `list_brain_files`, plus `opie_startup` and `session_end`) auto-enable when `BRAIN_DIR` is set on disk; if there's no plan repo, those tools simply don't register.
+
+The starter template repo: [github.com/GuyMannDude/mnemo-plan](https://github.com/GuyMannDude/mnemo-plan). Fork it, fill in your project's files, point `BRAIN_DIR` at it. Your agents now have project context the moment they start a session — without you re-explaining your setup every time.
+
+---
+
 ### 🪪 Developer's Passport — Safe Behavioral-Claim Ingestion
 
 **Status: beta. Dev-targeted release.** A reference-grade safety layer for developers building agent systems that need to ingest user working-style claims into an agent's context. Observations are recorded as candidates, reviewed, and promoted to stable claims; nothing lands in the user's profile without an explicit promotion step.
@@ -309,7 +324,7 @@ By default, **9 tools** that work for any user:
 
 The bridge also detects two optional dirs and registers more tools when present:
 
-- Set `BRAIN_DIR` to a brain-lane checkout → adds `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
+- Set `BRAIN_DIR` to a brain-lane checkout (use the [mnemo-plan template](https://github.com/GuyMannDude/mnemo-plan) for a clean starting point) → adds `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
 - Set `WIKI_DIR` to a wiki dir → adds `wiki_search`, `wiki_read`, `wiki_index`.
 
 If the directory doesn't exist, those tools simply don't register — the model never sees them. Most users stay on the 9-tool default and that's the right call.

@@ -94,7 +94,7 @@ Eight more tools auto-enable when matching directories exist on your machine —
 | `MNEMO_URL` | `http://localhost:50001` | Where your Mnemo Cortex server is listening. |
 | `MNEMO_AGENT_ID` | `openclaw` | Distinct per host so memories don't collide. |
 | `MNEMO_SHARE` | `separate` | `separate`/`always`/`never`. |
-| `BRAIN_DIR` | `~/github/sparks-brain-guy/brain` | Optional — auto-enables brain-lane tools when present. |
+| `BRAIN_DIR` | `~/github/sparks-brain-guy/brain` | Optional — auto-enables brain-lane tools when present. Set this to a fork of [mnemo-plan](https://github.com/GuyMannDude/mnemo-plan) for project-context files. |
 | `WIKI_DIR` | `~/wiki` | Optional — auto-enables wiki tools when present. |
 
 ---
