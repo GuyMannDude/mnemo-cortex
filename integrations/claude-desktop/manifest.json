@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "mnemo-cortex",
   "display_name": "Mnemo Cortex",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Persistent memory for Claude. Save, search, and recall across sessions. Works with any Mnemo Cortex server (local or hosted).",
   "long_description": "Mnemo Cortex gives Claude a persistent semantic memory layer that survives across sessions. This bundle provides 9 tools by default (4 memory + 5 Developer's Passport) and auto-enables 8 more (brain-lane CRUD, wiki search, session lifecycle) when matching directories are detected on disk.\n\nYou need a running Mnemo Cortex server — locally, in Docker, or somewhere reachable on your network. See https://github.com/GuyMannDude/mnemo-cortex for the server install.\n\nFree, self-hosted, fully private. Same memory across Claude Desktop, Claude Code, Ollama, LM Studio, and any other MCP host.",
   "author": {
@@ -18,6 +18,9 @@
   "documentation": "https://github.com/GuyMannDude/mnemo-cortex#readme",
   "support": "https://github.com/GuyMannDude/mnemo-cortex/issues",
   "license": "MIT",
+  "privacy_policies": [
+    "https://github.com/GuyMannDude/mnemo-cortex/blob/master/PRIVACY.md"
+  ],
   "keywords": [
     "memory",
     "semantic-search",

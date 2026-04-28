@@ -321,16 +321,17 @@ process.on("SIGINT", async () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.6.1",
+  version: "2.6.2",
 });
 
 // ── Tool: mnemo_recall ─────────────────────────────────────────
 // Semantic recall within this agent's own memories.
 
-server.tool(
+server.registerTool(
   "mnemo_recall",
-  `Recall memories from Mnemo Cortex for the current agent (${AGENT_ID}). Returns semantically relevant chunks from past sessions.`,
   {
+    description: `Recall memories from Mnemo Cortex for the current agent (${AGENT_ID}). Returns semantically relevant chunks from past sessions.`,
+    inputSchema: {
     query: z
       .string()
       .max(10000)
@@ -342,6 +343,8 @@ server.tool(
       .max(20)
       .optional()
       .describe("Maximum number of memories to return (default: 3)"),
+  },
+    annotations: { "title": 'Recall Memories', "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
   },
   async ({ query, max_results }) => {
     try {
@@ -378,10 +381,11 @@ server.tool(
 // ── Tool: mnemo_search ─────────────────────────────────────────
 // Cross-agent search. Gated by share mode.
 
-server.tool(
+server.registerTool(
   "mnemo_search",
-  "Search memories in Mnemo Cortex. By default, searches only your own memories. Use mnemo_share to enable cross-agent search for this session.",
   {
+    description: "Search memories in Mnemo Cortex. By default, searches only your own memories. Use mnemo_share to enable cross-agent search for this session.",
+    inputSchema: {
     query: z
       .string()
       .max(10000)
@@ -399,6 +403,8 @@ server.tool(
       .max(20)
       .optional()
       .describe("Maximum number of memories to return (default: 3)"),
+  },
+    annotations: { "title": 'Search Memories Across Agents', "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
   },
   async ({ query, agent_id, max_results }) => {
     try {
@@ -449,10 +455,11 @@ server.tool(
 // ── Tool: mnemo_save ───────────────────────────────────────────
 // Write a memory to Mnemo Cortex. Always writes to this agent's slot.
 
-server.tool(
+server.registerTool(
   "mnemo_save",
-  "Save a summary or key facts to Mnemo Cortex for future recall. Use at session end or when something important should be remembered.",
   {
+    description: "Save a summary or key facts to Mnemo Cortex for future recall. Use at session end or when something important should be remembered.",
+    inputSchema: {
     summary: z
       .string()
       .max(10000)
@@ -465,6 +472,8 @@ server.tool(
       .string()
       .optional()
       .describe("Session identifier. Auto-generated if omitted."),
+  },
+    annotations: { "title": 'Save Memory', "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
   },
   async ({ summary, key_facts, session_id }) => {
     captureCall("mnemo_save", summary.slice(0, 150));
@@ -505,10 +514,12 @@ server.tool(
 // ── Tool: mnemo_share ──────────────────────────────────────────
 // Toggle cross-agent memory sharing for this session.
 
-server.tool(
+server.registerTool(
   "mnemo_share",
-  "Toggle cross-agent memory sharing for this session. When on, mnemo_search can read memories from all agents. When off, search is limited to this agent only.",
-  {},
+  {
+    description: "Toggle cross-agent memory sharing for this session. When on, mnemo_search can read memories from all agents. When off, search is limited to this agent only.",
+    annotations: { "title": 'Toggle Cross-Agent Sharing', "readOnlyHint": false, "idempotentHint": false },
+  },
   async () => {
     if (shareMode === "never") {
       return {
@@ -554,10 +565,12 @@ if (BRAIN_AVAILABLE) {
 // Mnemo + latest dream brief, returns Opie identity prompt.
 // Other agents can call it but will get an Opie-shaped orientation.
 
-server.tool(
+server.registerTool(
   "opie_startup",
-  "CALL THIS FIRST in every new conversation. Loads your brain lane (opie.md) and recent Mnemo context. Returns your full identity, current state, and priorities. Without this, you will not know who you are or what you're working on.",
-  {},
+  {
+    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (opie.md) and recent Mnemo context. Returns your full identity, current state, and priorities. Without this, you will not know who you are or what you're working on.",
+    annotations: { "title": 'Load Opie Identity & Context', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
+  },
   async () => {
     sessionStartTime = new Date().toISOString();
     sessionId = `${AGENT_ID}-${sessionStartTime.slice(0, 19).replace(/[T:]/g, "-")}`;
@@ -681,13 +694,16 @@ Both matter. Auto-capture is the safety net; manual saves are the high-signal me
 
 // ── Tool: read_brain_file ──────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "read_brain_file",
-  "Read a file from the Sparks Brain directory. Use this to check brain lanes, reference docs, or any .md file in the brain.",
   {
+    description: "Read a file from the Sparks Brain directory. Use this to check brain lanes, reference docs, or any .md file in the brain.",
+    inputSchema: {
     filename: z
       .string()
       .describe("Filename to read, e.g. 'opie.md', 'active.md', 'stack.md'"),
+  },
+    annotations: { "title": 'Read Brain File', "readOnlyHint": true, "idempotentHint": true },
   },
   async ({ filename }) => {
     captureCall("read_brain_file", `read ${filename}`);
@@ -710,10 +726,12 @@ server.tool(
 
 // ── Tool: list_brain_files ─────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "list_brain_files",
-  "List all files in the Sparks Brain directory. Use to discover what brain lanes and reference docs are available.",
-  {},
+  {
+    description: "List all files in the Sparks Brain directory. Use to discover what brain lanes and reference docs are available.",
+    annotations: { "title": 'List Brain Files', "readOnlyHint": true, "idempotentHint": true },
+  },
   async () => {
     try {
       const files = await readdir(BRAIN_DIR);
@@ -739,14 +757,17 @@ server.tool(
 
 // ── Tool: write_brain_file ─────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "write_brain_file",
-  "Write or update a file in the Sparks Brain directory. Use at session end to update opie.md or other brain files you own. Do NOT write to cc-session.md (CC only) or CLAUDE.md.",
   {
+    description: "Write or update a file in the Sparks Brain directory. Use at session end to update opie.md or other brain files you own. Do NOT write to cc-session.md (CC only) or CLAUDE.md.",
+    inputSchema: {
     filename: z
       .string()
       .describe("Filename to write, e.g. 'opie.md', 'active.md'"),
     content: z.string().describe("Full file content to write"),
+  },
+    annotations: { "title": 'Write Brain File', "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true },
   },
   async ({ filename, content }) => {
     captureCall(
@@ -784,10 +805,11 @@ server.tool(
 // Drain auto-capture buffer, save final summary, commit + push
 // brain lane changes.
 
-server.tool(
+server.registerTool(
   "session_end",
-  "Call this before ending a session. Saves a final summary to Mnemo Cortex and commits brain lane changes. This is your last chance to preserve what happened in this conversation.",
   {
+    description: "Call this before ending a session. Saves a final summary to Mnemo Cortex and commits brain lane changes. This is your last chance to preserve what happened in this conversation.",
+    inputSchema: {
     summary: z
       .string()
       .describe(
@@ -797,6 +819,8 @@ server.tool(
       .array(z.string())
       .optional()
       .describe("Key facts to remember from this session"),
+  },
+    annotations: { "title": 'End Session (Save & Commit)', "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true },
   },
   async ({ summary, key_facts }) => {
     await flushBuffer();
@@ -864,10 +888,11 @@ server.tool(
 
 if (WIKI_AVAILABLE) {
 
-server.tool(
+server.registerTool(
   "wiki_search",
-  "Search the WikAI knowledge base — indexed project docs, session transcripts, entities, and concepts. Uses grep under the hood. Returns matching filenames and context lines. Use this to find information about projects, people, decisions, or any topic the Librarian has indexed.",
   {
+    description: "Search the WikAI knowledge base — indexed project docs, session transcripts, entities, and concepts. Uses grep under the hood. Returns matching filenames and context lines. Use this to find information about projects, people, decisions, or any topic the Librarian has indexed.",
+    inputSchema: {
     query: z.string().describe("Search term or phrase to find in the wiki"),
     section: z
       .enum(["all", "projects", "entities", "concepts", "sources"])
@@ -877,6 +902,8 @@ server.tool(
       .number()
       .optional()
       .describe("Max files to return (default 10)"),
+  },
+    annotations: { "title": 'Search Wiki', "readOnlyHint": true, "idempotentHint": true },
   },
   async ({ query, section, max_results }) => {
     const limit = max_results || 10;
@@ -929,15 +956,18 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "wiki_read",
-  "Read a specific WikAI page by path (relative to ~/wiki/). Example: 'projects/peter-widget.md', 'entities/rocky.md'. Use wiki_search first to find the right page, then wiki_read to get the full content.",
   {
+    description: "Read a specific WikAI page by path (relative to ~/wiki/). Example: 'projects/peter-widget.md', 'entities/rocky.md'. Use wiki_search first to find the right page, then wiki_read to get the full content.",
+    inputSchema: {
     path: z
       .string()
       .describe(
         "Relative path within ~/wiki/, e.g. 'projects/peter-widget.md' or 'entities/guy.md'"
       ),
+  },
+    annotations: { "title": 'Read Wiki Page', "readOnlyHint": true, "idempotentHint": true },
   },
   async ({ path: wikiPath }) => {
     captureCall("wiki_read", `read wiki: ${wikiPath}`);
@@ -977,10 +1007,12 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "wiki_index",
-  "Get the WikAI index — lists all projects, entities, and concepts in the wiki. Good starting point to see what knowledge is available.",
-  {},
+  {
+    description: "Get the WikAI index — lists all projects, entities, and concepts in the wiki. Good starting point to see what knowledge is available.",
+    annotations: { "title": 'Read Wiki Index', "readOnlyHint": true, "idempotentHint": true },
+  },
   async () => {
     try {
       const index = await readFile(join(WIKI_DIR, "index.md"), "utf-8");
@@ -1006,10 +1038,11 @@ server.tool(
 
 // ── Tool: passport_get_user_context ────────────────────────────
 
-server.tool(
+server.registerTool(
   "passport_get_user_context",
-  "Read the user's portable working-style passport. Returns a prompt-ready text block plus structured claims. Call at session start to calibrate tone, workflow defaults, and negative constraints.",
   {
+    description: "Read the user's portable working-style passport. Returns a prompt-ready text block plus structured claims. Call at session start to calibrate tone, workflow defaults, and negative constraints.",
+    inputSchema: {
     scopes: z
       .array(z.string())
       .optional()
@@ -1029,6 +1062,8 @@ server.tool(
       .max(100)
       .optional()
       .describe("Cap the number of claims returned (default: 20)"),
+  },
+    annotations: { "title": 'Get User Passport Context', "readOnlyHint": true, "idempotentHint": true },
   },
   async ({ scopes, platform, max_claims }) => {
     try {
@@ -1061,10 +1096,11 @@ server.tool(
 
 // ── Tool: passport_observe_behavior ────────────────────────────
 
-server.tool(
+server.registerTool(
   "passport_observe_behavior",
-  "Record a candidate observation about the user's working style. REQUIRES 2+ evidence turn refs (minimum). Lands in pending queue; does NOT promote automatically. Never include credentials, project secrets, or client data.",
   {
+    description: "Record a candidate observation about the user's working style. REQUIRES 2+ evidence turn refs (minimum). Lands in pending queue; does NOT promote automatically. Never include credentials, project secrets, or client data.",
+    inputSchema: {
     proposed_claim: z
       .string()
       .max(180)
@@ -1120,6 +1156,8 @@ server.tool(
       .min(2)
       .describe("MINIMUM 2 evidence items. Fewer = rejected."),
   },
+    annotations: { "title": 'Observe User Behavior (Pending Queue)', "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false },
+  },
   async (args) => {
     try {
       await ensureHealth();
@@ -1158,10 +1196,11 @@ server.tool(
 
 // ── Tool: passport_list_pending_observations ───────────────────
 
-server.tool(
+server.registerTool(
   "passport_list_pending_observations",
-  "List candidate observations waiting in the pending queue. Filter by status (pending|promoted).",
   {
+    description: "List candidate observations waiting in the pending queue. Filter by status (pending|promoted).",
+    inputSchema: {
     status: z
       .enum(["pending", "promoted"])
       .optional()
@@ -1173,6 +1212,8 @@ server.tool(
       .max(200)
       .optional()
       .describe("Cap items returned (default: 25)"),
+  },
+    annotations: { "title": 'List Pending Passport Observations', "readOnlyHint": true, "idempotentHint": true },
   },
   async ({ status, limit }) => {
     try {
@@ -1212,10 +1253,11 @@ server.tool(
 
 // ── Tool: passport_promote_observation ─────────────────────────
 
-server.tool(
+server.registerTool(
   "passport_promote_observation",
-  "Move a pending observation into the stable passport. Only promote claims you're confident in — this is the gate between candidate and canonical.",
   {
+    description: "Move a pending observation into the stable passport. Only promote claims you're confident in — this is the gate between candidate and canonical.",
+    inputSchema: {
     observation_id: z
       .string()
       .describe("The obs_NNN id from passport_list_pending_observations."),
@@ -1229,6 +1271,8 @@ server.tool(
       .string()
       .optional()
       .describe("Who is promoting (user, opie, cc, system). Default: system."),
+  },
+    annotations: { "title": 'Promote Observation to Stable Claim', "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true },
   },
   async ({ observation_id, target_section, actor }) => {
     try {
@@ -1265,10 +1309,11 @@ server.tool(
 
 // ── Tool: passport_forget_or_override ──────────────────────────
 
-server.tool(
+server.registerTool(
   "passport_forget_or_override",
-  "Deprecate, forget, or replace an existing stable claim. Use override (with replacement_claim) to correct wording while preserving lineage. Use forget to remove a claim entirely. Use deprecate to retire without replacement.",
   {
+    description: "Deprecate, forget, or replace an existing stable claim. Use override (with replacement_claim) to correct wording while preserving lineage. Use forget to remove a claim entirely. Use deprecate to retire without replacement.",
+    inputSchema: {
     action: z
       .enum(["deprecate", "forget", "override", "replace"])
       .describe(
@@ -1292,6 +1337,8 @@ server.tool(
       .string()
       .optional()
       .describe("user | opie | cc | system. Default: user."),
+  },
+    annotations: { "title": 'Forget or Override Stable Claim', "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true },
   },
   async ({ action, target_claim_id, replacement_claim, reason, actor }) => {
     try {

@@ -97,6 +97,16 @@ Eight more tools auto-enable when matching directories exist on your machine —
 
 ---
 
+## Privacy
+
+The bundle connects to **one server only** — the Mnemo Cortex URL you provide at install time. No telemetry, no analytics, no third-party services.
+
+- Run Mnemo Cortex locally → your data never leaves your machine.
+- Run it on your home network → your data stays on your hardware.
+- Point at a third-party-hosted instance → only if you explicitly choose to.
+
+Memory entries are stored in a SQLite DB on your Mnemo Cortex server. You can read or delete them at any time. Full details: [PRIVACY.md](../../PRIVACY.md).
+
 ## Troubleshooting
 
 **Tools don't appear** — Quit Claude Desktop completely (tray icon → Quit, not just close the window) and re-launch. The MCP only spawns at app start.

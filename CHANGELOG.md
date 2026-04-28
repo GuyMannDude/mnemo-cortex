@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.6.2 (2026-04-27)
+
+Catalog-grade polish on the Claude Desktop bundle.
+
+- All 17 tool registrations migrated from the deprecated `server.tool(...)`
+  signature to `server.registerTool(...)` with proper `annotations`. Every
+  tool now declares `title` plus `readOnlyHint` / `destructiveHint` /
+  `idempotentHint` / `openWorldHint` per the [MCP tool annotations spec](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations).
+  Hosts can now show a clear destructive-action warning before
+  `write_brain_file`, `session_end`, and `passport_forget_or_override` fire.
+- `manifest.json` declares `privacy_policies` pointing at `PRIVACY.md`.
+- New top-level `PRIVACY.md` documents the data flow plainly: bundle talks
+  only to the user-configured Mnemo Cortex URL, no telemetry, no third-party
+  services unless the user's server is configured that way.
+- Claude Desktop README adds a Privacy section.
+- Bundle rebuilt with the updated bridge.
+
+These changes meet the requirements for submission to Anthropic's curated
+Connectors Directory ([docs](https://claude.com/docs/connectors/building/submission)).
+
+---
+
 ## v2.6.1 (2026-04-27)
 
 Bridge surfaces agent attribution again. Mnemo Cortex's `/context` endpoint
