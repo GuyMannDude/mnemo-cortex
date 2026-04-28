@@ -118,6 +118,25 @@ OpenClaw spawns this server as a child process using MCP stdio transport. When y
 
 All requests have a 10-second timeout. If Mnemo Cortex is unreachable, tools return clear error messages.
 
+## Auto-Capture (in-bridge)
+
+The bridge keeps a small ring buffer of tool activity and flushes a summary to Mnemo on its own. You don't need to call `mnemo_save` explicitly to get a record of what happened — manual saves are still recommended for high-signal moments (decisions, deliverables), but the bridge will log the rest of the trail for you.
+
+| Setting | Value |
+|---|---|
+| Buffer size flush | 8 captureable tool calls |
+| Idle flush | 2 minutes since last captureable call |
+| Shutdown flush | `SIGTERM` / `SIGINT` drain on exit |
+| Capture policy | `mnemo_recall`, `mnemo_search`, `read_brain_file`, `wiki_search`, `wiki_read` are captured as summaries; `mnemo_save` and `write_brain_file` are captured in full; `opie_startup`, `mnemo_share`, `*_index`, and most read-only `passport_*` tools skip capture (their content lives elsewhere already). |
+
+### Where to find auto-capture entries in your memory store
+
+Auto-capture flushes piggyback on the **active session ID**. If you've called `opie_startup` (or any tool that initialises a session), the flush lands under that same session — `session:opie-2026-04-28-07-21-01` — alongside any manual saves from the same session. This is intentional: it keeps related activity grouped on one timeline instead of fragmenting across `-auto-` sessions.
+
+If no active session has been started, the flush falls back to `${AGENT_ID}-auto-{timestamp}` (e.g. `session:opie-auto-1777158029026`). You'll typically only see this pattern when an agent uses bridge tools without calling `opie_startup` first — most often a fresh test run or a non-Opie agent.
+
+When debugging "did my auto-capture fire?", search by content (`[AUTO-CAPTURE] N tool calls:`) rather than by session-ID prefix. Filtering for `opie-auto-` will miss flushes that landed under an active session.
+
 ## Multi-Agent Memory
 
 Every agent gets its own memory lane in the Mnemo Cortex database (keyed by `agent_id`). Agents write only to their own slot. Cross-agent reading is controlled by the share mode.
