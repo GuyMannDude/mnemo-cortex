@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.6.1 (2026-04-27)
+
+Bridge surfaces agent attribution again. Mnemo Cortex's `/context` endpoint
+returns chunks without an `agent_id` field, so the bridge was always
+displaying `agent=?` in cross-agent search results. Now the bridge infers
+the agent from the `session:` source string (which is written as
+`{AGENT_ID}-YYYY-MM-DD-HH-MM-SS` since v2.5.0).
+
+- `formatChunks` now derives a tag from `c.source` when `c.agent_id` is
+  absent.
+- Patterns covered: `session:cc-2026-...`, `session:lmstudio-igor2-2026-...`,
+  `session:dream-2026-04-25`. `mem0:*` chunks tag as `mem0`. Anything else
+  still falls through as `?`.
+- Known limitation: the server-side `agent_id` filter on `/context` is a
+  ranking hint, not a strict filter — passing `agent_id=cc` to artforge can
+  still return non-cc chunks if they rank highly. That's a Mnemo Cortex
+  server issue; the bridge can't fix it. For exact-match retrieval, use
+  unique marker phrases in your save content.
+
+---
+
 ## v2.6.0 (2026-04-27)
 
 Tools auto-detected based on available directories. Fresh installs see 9

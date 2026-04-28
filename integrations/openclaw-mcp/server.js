@@ -154,6 +154,25 @@ async function ensureHealth() {
 
 // ── Format memory chunks for display ───────────────────────────
 
+// The /context API doesn't surface agent_id in chunks today, but we
+// always write session IDs as `${AGENT_ID}-YYYY-MM-DD-HH-MM-SS`, so we
+// can recover the agent from the `source` string. Mem0 chunks and
+// non-conforming sessions fall through and stay "?".
+function inferAgent(source) {
+  if (!source) return null;
+  // session:cc-2026-04-27-19-37-28  → "cc"
+  // session:lmstudio-igor2-2026-04-27-...  → "lmstudio-igor2"
+  const m = String(source).match(
+    /^session:(.+?)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}/
+  );
+  if (m) return m[1];
+  // session:dream-2026-04-25  → "dream"
+  const d = String(source).match(/^session:(.+?)-\d{4}-\d{2}-\d{2}$/);
+  if (d) return d[1];
+  if (String(source).startsWith("mem0:")) return "mem0";
+  return null;
+}
+
 function formatChunks(chunks, showAgent) {
   if (!chunks || chunks.length === 0) return "No memories found.";
 
@@ -164,8 +183,9 @@ function formatChunks(chunks, showAgent) {
   for (const c of chunks) {
     const rel = (c.relevance || 0).toFixed(2);
     const tier = c.cache_tier || "?";
+    const agentTag = c.agent_id || inferAgent(c.source) || "?";
     const header = showAgent
-      ? `[${tier}] agent=${c.agent_id || "?"} (relevance: ${rel})`
+      ? `[${tier}] agent=${agentTag} (relevance: ${rel})`
       : `[${tier}] (relevance: ${rel})`;
     const block = `### ${header}\n${c.content}`;
 
@@ -301,7 +321,7 @@ process.on("SIGINT", async () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.6.0",
+  version: "2.6.1",
 });
 
 // ── Tool: mnemo_recall ─────────────────────────────────────────
