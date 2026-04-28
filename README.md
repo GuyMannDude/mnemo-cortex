@@ -167,6 +167,43 @@ Save. Open a chat. Tools appear inline.
 
 ---
 
+### AnythingLLM — desktop GUI, multi-workspace
+
+AnythingLLM speaks MCP through its plugin layer. Edit `mcp_servers.json` and gate tool calls behind `@agent` mode in chat.
+
+**Config path:**
+- Windows: `%APPDATA%\anythingllm-desktop\storage\plugins\anythingllm_mcp_servers.json`
+- macOS: `~/Library/Application Support/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json`
+- Linux: `~/.config/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json`
+
+```json
+{
+  "mcpServers": {
+    "mnemo-cortex": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/mnemo-cortex/integrations/openclaw-mcp/server.js"],
+      "env": {
+        "MNEMO_URL": "http://localhost:50001",
+        "MNEMO_AGENT_ID": "anythingllm"
+      }
+    }
+  }
+}
+```
+
+In a workspace chat, prefix every tool-using message with `@agent`:
+> `@agent please save a memory using mnemo_save: I prefer concise replies.`
+
+Without `@agent`, AnythingLLM doesn't expose tools to the model.
+
+**Three real gotchas (verified 2026-04-27):**
+
+1. **Use a tool-capable model.** `qwen3:8b` and similar **do** invoke `mnemo_save` correctly. `llama3.1:8b` *narrates* "saved with id e4d3c9..." while never calling the tool — the memory ID is hallucinated. We tested both. Same bridge, same server, just a different model. Stick with qwen3.
+2. **Verify the actual model.** AnythingLLM's GUI may show one model name while `.env` (`%APPDATA%\anythingllm-desktop\storage\.env`) retains a stale `OLLAMA_MODEL_PREF`. Restart fully after switching models.
+3. **Verify the Ollama URL.** `OLLAMA_BASE_PATH` in `.env` may auto-discover a network Ollama that doesn't have your model. Set it to `http://localhost:11434` if your model lives on the same machine.
+
+---
+
 ### llama.cpp — native MCP
 
 `llama-server` ships with MCP client support. Run with `--mcp-config`:
