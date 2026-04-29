@@ -1,5 +1,5 @@
 ---
-name: mnemo-memory
+name: mnemo-cortex
 description: Installs and wires Mnemo Cortex (local-first persistent memory) into OpenClaw and other MCP-capable agents. Use for cross-session recall, decision history, or multi-agent shared memory.
 version: 0.1.0
 metadata:
@@ -13,7 +13,7 @@ metadata:
     emoji: 🧠
 ---
 
-# Mnemo Memory
+# Mnemo Cortex
 
 Set up Mnemo Cortex — local-first persistent memory — so the agent can save, recall, and search across sessions.
 
