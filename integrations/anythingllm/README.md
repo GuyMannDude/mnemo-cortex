@@ -2,7 +2,7 @@
 
 Persistent semantic memory inside AnythingLLM workspaces. Drop in the MCP config, flip the workspace to **Automatic mode**, and memory tools fire on every message — no `@agent` prefix, just normal conversation.
 
-AnythingLLM speaks MCP through its plugin layer. With this integration, every workspace that opts in gains `mnemo_save`, `mnemo_recall`, `mnemo_search`, `mnemo_share`, plus the optional brain-lane and wiki tools. Memories survive restarts, workspace switches, and full app reinstalls.
+AnythingLLM speaks MCP through its plugin layer. With this integration, every workspace that opts in gains `mnemo_save`, `mnemo_recall`, `mnemo_search`, `mnemo_share`, plus the optional brain-file and wiki tools. Memories survive restarts, workspace switches, and full app reinstalls.
 
 ## Prerequisites
 
@@ -150,7 +150,7 @@ If you run multiple AnythingLLM workspaces and want them isolated, give each its
 | `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex API address |
 | `MNEMO_AGENT_ID` | `openclaw` (rename to `anythingllm`) | Agent identity |
 | `MNEMO_SHARE` | `separate` | Cross-agent sharing mode |
-| `BRAIN_DIR` | unset | Optional — enables brain-lane tools when pointed at an existing dir |
+| `BRAIN_DIR` | unset | Optional — enables brain-file tools when pointed at an existing dir |
 | `WIKI_DIR` | unset | Optional — enables wiki tools when pointed at an existing dir |
 
 ## Multi-Workspace Memory
@@ -178,7 +178,7 @@ AnythingLLM spawns the Mnemo Cortex bridge (`openclaw-mcp/server.js`) as a child
 
 ## Workflow
 
-See the [Session Guide](../../SESSION-GUIDE.md) for day-to-day use patterns — when to recall, when to save, how to structure a brain lane.
+See the [Session Guide](../../SESSION-GUIDE.md) for day-to-day use patterns — when to recall, when to save, how to structure a brain file.
 
 ## Next Step
 

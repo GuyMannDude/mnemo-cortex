@@ -176,7 +176,7 @@ Pick `always` if you want this Ollama-driven agent to read what your other agent
 | `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex API address |
 | `MNEMO_AGENT_ID` | `openclaw` (rename per host) | This agent's identity in the memory system |
 | `MNEMO_SHARE` | `separate` | Cross-agent sharing mode |
-| `BRAIN_DIR` | `~/mnemo-plan/brain` | Optional — enables brain-lane tools when pointed at an existing dir |
+| `BRAIN_DIR` | `~/mnemo-plan/brain` | Optional — enables brain-file tools when pointed at an existing dir |
 | `WIKI_DIR` | unset | Optional — enables wiki tools when pointed at an existing dir |
 
 ## How It Works

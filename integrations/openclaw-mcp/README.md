@@ -22,7 +22,7 @@ npm install
 One command:
 
 ```bash
-openclaw mcp set mnemo-cortex '{"command":"node","args":["/absolute/path/to/mnemo-cortex/integrations/openclaw-mcp/server.js"],"env":{"MNEMO_URL":"http://artforge:50001","MNEMO_AGENT_ID":"rocky"}}'
+openclaw mcp set mnemo-cortex '{"command":"node","args":["/absolute/path/to/mnemo-cortex/integrations/openclaw-mcp/server.js"],"env":{"MNEMO_URL":"http://localhost:50001","MNEMO_AGENT_ID":"rocky"}}'
 ```
 
 Replace:
@@ -90,13 +90,13 @@ never  >  always  >  separate  >  session toggle
 ### Example: Trusted Team
 
 ```bash
-openclaw mcp set mnemo-cortex '{"command":"node","args":["/path/to/server.js"],"env":{"MNEMO_URL":"http://artforge:50001","MNEMO_AGENT_ID":"rocky","MNEMO_SHARE":"always"}}'
+openclaw mcp set mnemo-cortex '{"command":"node","args":["/path/to/server.js"],"env":{"MNEMO_URL":"http://localhost:50001","MNEMO_AGENT_ID":"rocky","MNEMO_SHARE":"always"}}'
 ```
 
 ### Example: Isolated Client Project
 
 ```bash
-openclaw mcp set mnemo-cortex '{"command":"node","args":["/path/to/server.js"],"env":{"MNEMO_URL":"http://artforge:50001","MNEMO_AGENT_ID":"client-bot","MNEMO_SHARE":"never"}}'
+openclaw mcp set mnemo-cortex '{"command":"node","args":["/path/to/server.js"],"env":{"MNEMO_URL":"http://localhost:50001","MNEMO_AGENT_ID":"client-bot","MNEMO_SHARE":"never"}}'
 ```
 
 ## Environment Variables
@@ -145,7 +145,7 @@ Give each bot a unique `MNEMO_AGENT_ID`. They all share the same Mnemo Cortex da
 
 ## Workflow
 
-For day-to-day use patterns — when to recall, when to save, how to structure a brain lane, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
+For day-to-day use patterns — when to recall, when to save, how to structure a brain file, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
 
 ## Next Step
 

@@ -191,7 +191,7 @@ Then remove the `MNEMO CORTEX` block from your `CLAUDE.md`.
 
 ## Workflow
 
-For day-to-day use patterns — when to recall, when to save, how to structure a brain lane, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
+For day-to-day use patterns — when to recall, when to save, how to structure a brain file, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
 
 ## Troubleshooting
 

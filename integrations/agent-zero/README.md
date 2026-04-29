@@ -147,7 +147,7 @@ Use `always` if you have a trusted team of agents that should learn from each ot
 | `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex API address (often `http://host.docker.internal:50001` from a container) |
 | `MNEMO_AGENT_ID` | `openclaw` (rename per agent) | Unique identity in the memory system |
 | `MNEMO_SHARE` | `separate` | Cross-agent sharing mode |
-| `BRAIN_DIR` | `~/mnemo-plan/brain` | Optional — enables brain-lane tools when pointed at an existing dir inside the container |
+| `BRAIN_DIR` | `~/mnemo-plan/brain` | Optional — enables brain-file tools when pointed at an existing dir inside the container |
 | `WIKI_DIR` | unset | Optional — enables wiki tools when pointed at an existing dir |
 
 ## How It Works

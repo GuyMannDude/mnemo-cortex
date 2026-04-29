@@ -2,7 +2,7 @@
 
 Give your local LM Studio model persistent memory across chats and sessions. One config file, restart, done.
 
-LM Studio added native MCP client support in **v0.3.17**. With this integration, your LM Studio chats — running entirely on your machine, on any tool-capable open-weights model — gain persistent semantic memory, brain-lane file access, and (optional) cross-agent search alongside other agents on your network.
+LM Studio added native MCP client support in **v0.3.17**. With this integration, your LM Studio chats — running entirely on your machine, on any tool-capable open-weights model — gain persistent semantic memory, brain-file file access, and (optional) cross-agent search alongside other agents on your network.
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ Fully quit LM Studio (not just close the window) and reopen. The MCP config is r
    - 4 memory tools: `mnemo_recall`, `mnemo_search`, `mnemo_save`, `mnemo_share`
    - 5 Passport tools: `passport_get_user_context`, `passport_observe_behavior`, `passport_list_pending_observations`, `passport_promote_observation`, `passport_forget_or_override`
 
-If `BRAIN_DIR` and/or `WIKI_DIR` are also set (see [Optional](#optional-brain-lane-and-wiki-tools)), you'll see additional tools.
+If `BRAIN_DIR` and/or `WIKI_DIR` are also set (see [Optional](#optional-brain-file-and-wiki-tools)), you'll see additional tools.
 
 ### Quick functional test
 
@@ -79,7 +79,7 @@ The model should call `mnemo_save` (you'll see the tool invocation in the chat).
 
 The model should call `mnemo_recall` and surface "concise replies." That round-trip across separate chats confirms persistence.
 
-## Optional: brain lane and wiki tools
+## Optional: brain file and wiki tools
 
 The bridge can expose project-context tools when you set extra env vars:
 
@@ -145,7 +145,7 @@ Use `separate` if you also run other agents (Claude Desktop, OpenClaw, Claude Co
 | `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex API address |
 | `MNEMO_AGENT_ID` | `openclaw` (rename to `lmstudio`) | This agent's identity in the memory system |
 | `MNEMO_SHARE` | `separate` | Cross-agent sharing mode |
-| `BRAIN_DIR` | unset | Optional — enables brain-lane tools when set |
+| `BRAIN_DIR` | unset | Optional — enables brain-file tools when set |
 | `WIKI_DIR` | unset | Optional — enables wiki tools when set |
 
 ## How It Works
@@ -161,7 +161,7 @@ All requests have a 10-second timeout. The bridge itself logs to stderr (visible
 
 ## Workflow
 
-For day-to-day use patterns, see the [Session Guide](../../SESSION-GUIDE.md). It covers when to recall, when to save, how to structure a brain lane, and per-platform boot snippets.
+For day-to-day use patterns, see the [Session Guide](../../SESSION-GUIDE.md). It covers when to recall, when to save, how to structure a brain file, and per-platform boot snippets.
 
 ## Next Step
 

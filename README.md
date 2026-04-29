@@ -344,7 +344,7 @@ By default, **9 tools** that work for any user:
 
 The bridge also detects two optional dirs and registers more tools when present:
 
-- Set `BRAIN_DIR` to a brain-lane checkout (use the [mnemo-plan template](https://github.com/GuyMannDude/mnemo-plan) for a clean starting point) → adds `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
+- Set `BRAIN_DIR` to a brain-file checkout (use the [mnemo-plan template](https://github.com/GuyMannDude/mnemo-plan) for a clean starting point) → adds `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
 - Set `WIKI_DIR` to a wiki dir → adds `wiki_search`, `wiki_read`, `wiki_index`.
 
 If the directory doesn't exist, those tools simply don't register — the model never sees them. Most users stay on the 9-tool default and that's the right call.
@@ -454,7 +454,7 @@ mnemo-cortex health check
 =========================
 
 Core Services
-  API server (http://artforge:50001) ...... OK (v2.1.0, 156 memories, 42ms)
+  API server (http://localhost:50001) ..... OK (v2.6.4, 156 memories, 42ms)
   Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
   Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
 
