@@ -33,6 +33,10 @@
 
 📦 **[AnythingLLM → desktop GUI, multi-workspace](integrations/anythingllm/)** — Drop-in MCP config + Automatic mode. No `@agent` prefix needed.
 
+🤖 **[Agent Zero → autonomous Docker agents](integrations/agent-zero/)** — In-container MCP setup. Cross-agent memory between research, courier, code-exec bots.
+
+🦣 **[Ollama Desktop → built-in `ollama launch openclaw`](integrations/ollama-desktop/)** — Local LLM runtime + OpenClaw + Mnemo. Verified on Windows + Linux.
+
 🦙 **[Any Local LLM → MCP setup](#use-with-any-local-llm)** — Open WebUI, llama.cpp, Ollama, LobeChat, Jan, and more
 
 📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
