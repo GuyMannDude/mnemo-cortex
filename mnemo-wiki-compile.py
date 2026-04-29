@@ -57,10 +57,10 @@ WIKI_MODEL = os.getenv("MNEMO_WIKI_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Discord (reuses Sparks Bus config — same channels file, same token)
-DISCORD_TOKEN_FILE = Path(os.getenv("DISCORD_TOKEN_FILE", "/home/guy/.sparks/discord-token"))
+DISCORD_TOKEN_FILE = Path(os.getenv("DISCORD_TOKEN_FILE", str(Path.home() / ".sparks/discord-token")))
 CHANNELS_FILE = Path(os.getenv(
     "CHANNELS_FILE",
-    "/home/guy/github/sparks-brain-guy/brain/discord-channels.json",
+    str(Path.home() / "mnemo-plan/discord-channels.json"),
 ))
 ALERTS_CHANNEL = os.getenv("ALERTS_CHANNEL", "alerts")
 
