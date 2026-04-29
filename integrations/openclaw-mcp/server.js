@@ -17,9 +17,12 @@ import { execSync } from "node:child_process";
 
 const MNEMO_URL = process.env.MNEMO_URL || "http://localhost:50001";
 const AGENT_ID = process.env.MNEMO_AGENT_ID || "openclaw";
+// BRAIN_DIR defaults to ~/mnemo-plan/brain (matches the public mnemo-plan
+// template repo at github.com/GuyMannDude/mnemo-plan). Set BRAIN_DIR
+// explicitly in your MCP config to point at any other brain checkout.
 const BRAIN_DIR =
   process.env.BRAIN_DIR ||
-  join(process.env.HOME || ".", "github/sparks-brain-guy/brain");
+  join(process.env.HOME || ".", "mnemo-plan/brain");
 const WIKI_DIR = process.env.WIKI_DIR || join(process.env.HOME || ".", "wiki");
 const DREAM_DIR =
   process.env.DREAM_DIR || join(process.env.HOME || ".", ".agentb/dreams");
