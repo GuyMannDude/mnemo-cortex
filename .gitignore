@@ -4,6 +4,8 @@ node_modules/
 package-lock.json
 .venv/
 mnemo_cortex.egg-info/
+dist/
+build/
 ~/
 tests/ongoing/
 

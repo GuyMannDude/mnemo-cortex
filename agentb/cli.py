@@ -53,7 +53,7 @@ from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="2.2.0", prog_name="mnemo-cortex")
+@click.version_option(version="2.6.4", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
@@ -113,8 +113,34 @@ def init():
     # Step 3: Server settings
     console.print()
     console.print("[bold cyan]Step 3/4: Server Settings[/]")
+    console.print(
+        "[dim]The server defaults to loopback (127.0.0.1) — only this machine can reach it.\n"
+        "Bind to 0.0.0.0 only if you need other machines on your network to connect,\n"
+        "and set an auth token in that case.[/dim]"
+    )
+    host = Prompt.ask("Bind host", default="127.0.0.1")
     port = Prompt.ask("Port", default="50001")
-    auth = Prompt.ask("API auth token (leave blank for none)", default="")
+
+    # Auth: blank is OK on loopback, REQUIRED off-loopback.
+    is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    auth_prompt = (
+        "API auth token (blank OK for loopback)" if is_loopback
+        else "API auth token (REQUIRED — server is bound off-loopback)"
+    )
+    while True:
+        auth = Prompt.ask(auth_prompt, default="")
+        if is_loopback or auth.strip():
+            break
+        console.print(
+            "[red]Auth token is required when host is not loopback. "
+            "Set one, or change host back to 127.0.0.1.[/red]"
+        )
+
+    # CORS: locked-down list when loopback, broader (but not wildcard) off-loopback.
+    if is_loopback:
+        cors_list = '["http://127.0.0.1", "http://localhost"]'
+    else:
+        cors_list = f'["http://{host}", "http://localhost"]'
 
     # Step 4: Agent setup
     console.print()
@@ -176,9 +202,9 @@ def init():
         "",
         "# Server",
         "server:",
-        "  host: 0.0.0.0",
+        f"  host: {host}",
         f"  port: {port}",
-        '  cors_origins: ["*"]',
+        f"  cors_origins: {cors_list}",
     ])
     if auth:
         yaml_lines.append(f"  auth_token: {auth}")

@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnemo-cortex"
-version = "2.4.1"
+version = "2.6.4"
 description = "Don't Fear the /new! Memory coprocessor for AI agents. SQLite-backed total recall."
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Guy Hutchins", email = "guy@projectsparks.ai"},
 ]
@@ -18,7 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -30,12 +29,21 @@ dependencies = [
     "uvicorn>=0.30",
     "pydantic>=2.8",
     "pyyaml>=6.0",
+    "click>=8.1",
+    "rich>=13.0",
+    "httpx>=0.25",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+]
+# Sparks Bus watcher script ships in the package but is opt-in:
+# install with `pip install mnemo-cortex[sparks-bus]` to pull `requests`.
+sparks-bus = [
+    "requests>=2.28",
 ]
 
 [project.urls]
@@ -49,4 +57,8 @@ mnemo-cortex = "agentb.cli:main"
 mnemo = "agentb.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["agentb*", "mnemo_v2*", "passport*"]
+include = ["agentb*", "mnemo_v2*", "passport*", "sparks_bus*"]
+
+[tool.setuptools.package-data]
+mnemo_v2 = ["db/schema.sql"]
+sparks_bus = ["schema.sql"]
