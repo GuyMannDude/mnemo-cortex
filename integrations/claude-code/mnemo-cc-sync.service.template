@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/github/mnemo-cortex/integrations/claude-code/mnemo-cc-artforge-sync-loop.sh
+ExecStart=%h/github/mnemo-cortex/integrations/claude-code/mnemo-cc-sync-loop.sh
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -12,7 +12,7 @@ Environment=PYTHONUNBUFFERED=1
 # Environment=MNEMO_URL=http://localhost:50001
 # Environment=MNEMO_AGENT_ID=cc
 # Environment=MNEMO_CC_SESSIONS_DIR=%h/.claude/projects
-# Environment=MNEMO_CC_OFFSET_FILE=%h/.mnemo-cc/cc-artforge-sync.offset.json
+# Environment=MNEMO_CC_OFFSET_FILE=%h/.mnemo-cc/cc-sync.offset.json
 # Environment=MNEMO_CC_SYNC_INTERVAL=60
 
 [Install]

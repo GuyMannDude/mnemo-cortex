@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mnemo-cc-sync-watchdog — health check for mnemo-cc-artforge-sync.service.
+# mnemo-cc-sync-watchdog — health check for mnemo-cc-sync.service.
 #
 # Verifies:
 #   1. The systemd service is active
@@ -11,15 +11,15 @@
 # systemd OnFailure=, healthchecks.io, or a plain cron + email.
 #
 # Configuration (env vars, all optional):
-#   MNEMO_CC_SERVICE       systemd unit name (default: mnemo-cc-artforge-sync.service)
-#   MNEMO_CC_OFFSET_FILE   Sync offset state file (default: ~/.mnemo-cc/cc-artforge-sync.offset.json)
+#   MNEMO_CC_SERVICE       systemd unit name (default: mnemo-cc-sync.service)
+#   MNEMO_CC_OFFSET_FILE   Sync offset state file (default: ~/.mnemo-cc/cc-sync.offset.json)
 #   MNEMO_CC_SESSIONS_DIR  Where Claude Code stores .jsonl files (default: ~/.claude/projects)
 #   MNEMO_CC_STALE_S       Seconds after which sync is considered stale (default: 1800 = 30 min)
 
 set -e
 
-SERVICE=${MNEMO_CC_SERVICE:-mnemo-cc-artforge-sync.service}
-OFFSET=${MNEMO_CC_OFFSET_FILE:-$HOME/.mnemo-cc/cc-artforge-sync.offset.json}
+SERVICE=${MNEMO_CC_SERVICE:-mnemo-cc-sync.service}
+OFFSET=${MNEMO_CC_OFFSET_FILE:-$HOME/.mnemo-cc/cc-sync.offset.json}
 SESSIONS_DIR=${MNEMO_CC_SESSIONS_DIR:-$HOME/.claude/projects}
 THRESHOLD_S=${MNEMO_CC_STALE_S:-1800}
 

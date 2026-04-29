@@ -13,8 +13,8 @@ Thanks for wanting to help! Mnemo Cortex is a community project and we welcome c
 Open an issue with:
 - What you expected to happen
 - What actually happened
-- Your `agentb.yaml` config (redact API keys!)
-- Output of `mnemo-cortex status`
+- Your `~/.agentb/agentb.yaml` config (redact API keys!)
+- Output of `mnemo-cortex doctor`
 
 ### Add a Provider
 Want to add support for a new LLM or embedding provider? Great — it's designed for this.
@@ -24,14 +24,15 @@ Want to add support for a new LLM or embedding provider? Great — it's designed
 3. Implement `generate()` or `embed()` and `health_check()`
 4. Add it to `REASONING_MAP` or `EMBEDDING_MAP`
 5. Add a config example to `agentb.yaml.example`
-6. Write a test in `tests/test_agentb.py`
+6. Write a test in `tests/`
 
-### Add a Framework Adapter
-Mnemo Cortex works with any agent framework. If you use one we don't have an adapter for:
+### Add an Integration
+Mnemo Cortex works with any MCP-capable agent host. If you use one we don't have an integration for:
 
-1. Create `adapters/your-framework/`
-2. Add a SKILL.md, hook, or integration guide
-3. Document the setup in the adapter README
+1. Create `integrations/your-host/`
+2. Write a `README.md` covering install, verify, gotchas, and env vars
+3. Add a "Next step" pointer to `THE-LANE-PROTOCOL.md` at the end (matches the rest of the integrations)
+4. Open a PR — we'll add it to the README's "Get Started" list
 
 ### Improve the Core
 The roadmap is in the README. Pick something from the TODO list or propose your own improvement.
@@ -41,24 +42,24 @@ The roadmap is in the README. Pick something from the TODO list or propose your 
 ```bash
 git clone https://github.com/GuyMannDude/mnemo-cortex.git
 cd mnemo-cortex
-python3 -m venv venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-# Run tests
-PYTHONPATH=. pytest tests/ -v
+# Initialize config + start the server
+mnemo-cortex init
+mnemo-cortex start --foreground
 
-# Run the server locally
-cp agentb.yaml.example agentb.yaml
-python -m agentb.server
+# Run tests (in a second terminal)
+pytest tests/ -v
 ```
 
 ## Code Style
 
-- Python 3.10+ (type hints, f-strings, pathlib)
+- Python 3.11+ (type hints, f-strings, pathlib)
 - Functions under 50 lines when possible
 - Docstrings on public classes and functions
-- Tests for new features (we're at 56 and counting)
+- Tests for new features
 
 ## Pull Request Process
 

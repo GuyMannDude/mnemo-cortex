@@ -74,6 +74,8 @@ Model configuration is done in Mnemo Cortex itself (see main README), not in the
 
 The hooks above require Claude Code to run the writeback manually at session end. For fully automatic ingestion, use the **session sync** — it reads Claude Code's JSONL session files and POSTs structured memories to Mnemo Cortex's `/writeback` endpoint every 60 seconds. Memories are immediately recallable across agents (no overnight summarization wait).
 
+> 📦 **Upgrading from `mnemo-cc-artforge-sync.*`?** The scripts were renamed (the literal "artforge" was an internal hostname leak). The Python sync auto-migrates your offset file on first run. You'll need to re-create your systemd unit from the new `mnemo-cc-sync.service.template`; the old `mnemo-cc-artforge-sync.service` unit won't auto-rename.
+
 ### Setup
 
 1. Make sure Mnemo Cortex is reachable from this machine. Quick check:
@@ -83,9 +85,9 @@ The hooks above require Claude Code to run the writeback manually at session end
 
 2. Test the sync manually (`--force` flushes regardless of message count):
    ```bash
-   python3 integrations/claude-code/mnemo-cc-artforge-sync.py --force
+   python3 integrations/claude-code/mnemo-cc-sync.py --force
    ```
-   Expected output: `[cc-artforge-sync] posted N msgs → memory_id=<id>`.
+   Expected output: `[cc-sync] posted N msgs → memory_id=<id>`.
 
 3. Verify the memory landed:
    ```bash
@@ -103,26 +105,26 @@ All env-var, all optional:
 | `MNEMO_URL` | `http://localhost:50001` | Mnemo Cortex base URL |
 | `MNEMO_AGENT_ID` | `cc` | Agent ID for writebacks |
 | `MNEMO_CC_SESSIONS_DIR` | `~/.claude/projects` | Where Claude Code stores `.jsonl` |
-| `MNEMO_CC_OFFSET_FILE` | `~/.mnemo-cc/cc-artforge-sync.offset.json` | Sync offset state |
+| `MNEMO_CC_OFFSET_FILE` | `~/.mnemo-cc/cc-sync.offset.json` | Sync offset state |
 | `MNEMO_CC_SYNC_INTERVAL` | `60` | Seconds between syncs (loop only) |
 
 ### Install as a systemd service (Linux)
 
-A template is provided at `mnemo-cc-artforge-sync.service.template`. Copy it into your user units dir, edit any env vars you need to override, then enable:
+A template is provided at `mnemo-cc-sync.service.template`. Copy it into your user units dir, edit any env vars you need to override, then enable:
 
 ```bash
-cp integrations/claude-code/mnemo-cc-artforge-sync.service.template \
-   ~/.config/systemd/user/mnemo-cc-artforge-sync.service
+cp integrations/claude-code/mnemo-cc-sync.service.template \
+   ~/.config/systemd/user/mnemo-cc-sync.service
 
 # Optional: edit env vars
-$EDITOR ~/.config/systemd/user/mnemo-cc-artforge-sync.service
+$EDITOR ~/.config/systemd/user/mnemo-cc-sync.service
 
 systemctl --user daemon-reload
-systemctl --user enable --now mnemo-cc-artforge-sync.service
-systemctl --user status mnemo-cc-artforge-sync.service
+systemctl --user enable --now mnemo-cc-sync.service
+systemctl --user status mnemo-cc-sync.service
 ```
 
-The service runs `mnemo-cc-artforge-sync-loop.sh` which calls the Python sync every 60s and force-flushes on `SIGTERM` so nothing is stranded on shutdown.
+The service runs `mnemo-cc-sync-loop.sh` which calls the Python sync every 60s and force-flushes on `SIGTERM` so nothing is stranded on shutdown.
 
 ### Health monitoring (recommended)
 
@@ -159,7 +161,7 @@ You can run both — the sync captures continuously, and the hooks add high-sign
 
 ### Legacy: `mnemo-watcher-cc.sh` (deprecated)
 
-The older `mnemo-watcher-cc.sh` writes raw messages to a local SQLite via the `mnemo-cortex-v2` codebase. **It does not feed the central Mnemo Cortex API**, so memories ingested by it are not recallable across agents in v2.6+. The script is preserved for users still running v2 setups but will be removed in a future release. Migrate to `mnemo-cc-artforge-sync` per the steps above.
+The older `mnemo-watcher-cc.sh` writes raw messages to a local SQLite via the `mnemo-cortex-v2` codebase. **It does not feed the central Mnemo Cortex API**, so memories ingested by it are not recallable across agents in v2.6+. The script is preserved for users still running v2 setups but will be removed in a future release. Migrate to `mnemo-cc-sync` per the steps above.
 
 ## Files
 

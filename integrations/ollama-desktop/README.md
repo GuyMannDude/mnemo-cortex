@@ -28,7 +28,7 @@ If you'd rather have a desktop GUI chat with native MCP tool support — where t
 - **A running Mnemo Cortex server** — see the [main install guide](../../README.md). Local (`http://localhost:50001`) or remote both work.
 - **A tool-capable model pulled** — `ollama pull qwen3:8b` is the proven tool-caller. Llama 3.2 Instruct, Mistral 7B v0.3, and Hermes-3 also work. See [Gotchas](#gotchas).
 
-## Install (verified path on Windows 11 + IGOR-2, 2026-04-29)
+## Install (verified path on Windows 11, 2026-04-29)
 
 ### 1. Install OpenClaw
 

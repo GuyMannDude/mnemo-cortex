@@ -95,7 +95,7 @@ This works but adds friction to every memory-relevant message. Automatic mode wi
 
 ## Gotchas
 
-These are **verified failures from real installs** (IGOR-2 testing, 2026-04-27). Not theoretical.
+These are **verified failures from real installs** (Windows 11 testing, 2026-04-27). Not theoretical.
 
 ### 1. Non-tool-capable models silently fake success
 

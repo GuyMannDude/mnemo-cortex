@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mnemo-cc-artforge-sync — push Claude Code session activity to Mnemo Cortex.
+mnemo-cc-sync — push Claude Code session activity to Mnemo Cortex.
 
 This is the modern session-watcher path. It reads Claude Code's JSONL session
 files and POSTs structured memories to Mnemo Cortex's /writeback endpoint, so
@@ -16,13 +16,13 @@ Configuration (all via env vars, all optional):
     MNEMO_CC_SESSIONS_DIR  Where Claude Code stores .jsonl session files
                            (default: ~/.claude/projects)
     MNEMO_CC_OFFSET_FILE   Sync offset state file
-                           (default: ~/.mnemo-cc/cc-artforge-sync.offset.json)
+                           (default: ~/.mnemo-cc/cc-sync.offset.json)
 
 Run modes:
-    python3 mnemo-cc-artforge-sync.py            # batched: post when >=6 new msgs
-    python3 mnemo-cc-artforge-sync.py --force    # force-flush regardless of count
+    python3 mnemo-cc-sync.py            # batched: post when >=6 new msgs
+    python3 mnemo-cc-sync.py --force    # force-flush regardless of count
 
-Use the companion `mnemo-cc-artforge-sync-loop.sh` for periodic invocation
+Use the companion `mnemo-cc-sync-loop.sh` for periodic invocation
 under systemd, or invoke from a cron / scheduler of your choice.
 """
 
@@ -42,8 +42,22 @@ SESSIONS_DIR = Path(os.environ.get(
 ))
 OFFSET_FILE = Path(os.environ.get(
     "MNEMO_CC_OFFSET_FILE",
-    str(Path.home() / ".mnemo-cc/cc-artforge-sync.offset.json"),
+    str(Path.home() / ".mnemo-cc/cc-sync.offset.json"),
 ))
+
+# One-time migration from the pre-rename default path. The script used to be
+# named mnemo-cc-artforge-sync.py and wrote its offset file to
+# ~/.mnemo-cc/cc-artforge-sync.offset.json. If we find the old file and the
+# user hasn't overridden MNEMO_CC_OFFSET_FILE, move it to the new default
+# so existing installs don't reprocess their entire JSONL backlog.
+_LEGACY_OFFSET = Path.home() / ".mnemo-cc/cc-artforge-sync.offset.json"
+if (
+    not os.environ.get("MNEMO_CC_OFFSET_FILE")
+    and not OFFSET_FILE.exists()
+    and _LEGACY_OFFSET.exists()
+):
+    OFFSET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _LEGACY_OFFSET.rename(OFFSET_FILE)
 
 # Batching policy
 MIN_TURNS_PER_BATCH = 6
@@ -192,7 +206,7 @@ def post_to_mnemo(session_id: str, summary: str, key_facts: list) -> dict:
 def main(force: bool = False) -> int:
     jsonl = get_latest_session_jsonl()
     if not jsonl:
-        print(f"[cc-artforge-sync] no session jsonl found under {SESSIONS_DIR}", file=sys.stderr)
+        print(f"[cc-sync] no session jsonl found under {SESSIONS_DIR}", file=sys.stderr)
         return 0
 
     session_id = jsonl.stem
@@ -216,7 +230,7 @@ def main(force: bool = False) -> int:
     try:
         result = post_to_mnemo(session_id, summary, key_facts)
     except (urllib.error.URLError, TimeoutError) as e:
-        print(f"[cc-artforge-sync] POST to {MNEMO_URL}/writeback failed: {e}", file=sys.stderr)
+        print(f"[cc-sync] POST to {MNEMO_URL}/writeback failed: {e}", file=sys.stderr)
         return 1  # Don't update offset — try again next tick
 
     state.update({
@@ -227,7 +241,7 @@ def main(force: bool = False) -> int:
     })
     save_state(state)
 
-    print(f"[cc-artforge-sync] posted {len(messages)} msgs → memory_id={result.get('memory_id', '?')}")
+    print(f"[cc-sync] posted {len(messages)} msgs → memory_id={result.get('memory_id', '?')}")
     return 0
 
 

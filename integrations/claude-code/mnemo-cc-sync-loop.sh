@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# mnemo-cc-artforge-sync-loop — periodic Claude Code → Mnemo Cortex sync.
+# mnemo-cc-sync-loop — periodic Claude Code → Mnemo Cortex sync.
 #
-# Calls mnemo-cc-artforge-sync.py every ${INTERVAL} seconds. Designed to run
+# Calls mnemo-cc-sync.py every ${INTERVAL} seconds. Designed to run
 # under systemd with Restart=on-failure so it self-heals from transient errors.
 #
-# Configuration (env vars, all optional — see mnemo-cc-artforge-sync.py):
+# Configuration (env vars, all optional — see mnemo-cc-sync.py):
 #   MNEMO_URL              Mnemo Cortex base URL (default: http://localhost:50001)
 #   MNEMO_AGENT_ID         Agent ID (default: cc)
 #   MNEMO_CC_SESSIONS_DIR  Where Claude Code stores .jsonl files
@@ -15,11 +15,11 @@
 
 INTERVAL=${MNEMO_CC_SYNC_INTERVAL:-60}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SYNC="$SCRIPT_DIR/mnemo-cc-artforge-sync.py"
+SYNC="$SCRIPT_DIR/mnemo-cc-sync.py"
 
 trap 'python3 "$SYNC" --force; exit 0' TERM INT
 
 while true; do
-    python3 "$SYNC" || echo "[cc-artforge-sync-loop] sync failed (will retry)"
+    python3 "$SYNC" || echo "[cc-sync-loop] sync failed (will retry)"
     sleep "$INTERVAL"
 done

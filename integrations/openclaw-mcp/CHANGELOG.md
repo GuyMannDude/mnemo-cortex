@@ -1,5 +1,13 @@
 # Changelog
 
+> **Note on version history:** The bridge tracks the main `mnemo-cortex`
+> package version (currently 2.6.4). Versions between 2.0.1 and 2.6.4
+> shipped server-side and tooling changes (Dreaming, WikAI, Sparks Bus,
+> Developer's Passport, new host integrations) that didn't materially
+> change bridge behavior — the bridge continued to work unchanged through
+> those releases. The full history is in the main repo
+> [CHANGELOG.md](../../CHANGELOG.md).
+
 ## 2.6.4 — 2026-04-28
 
 **Fixed:** Silent crash diagnostics. Bridge now logs cause when it exits.

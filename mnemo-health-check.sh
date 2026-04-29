@@ -8,7 +8,7 @@
 #
 #  Usage:
 #    mnemo-health-check.sh                        # auto-detect URL
-#    mnemo-health-check.sh http://artforge:50001   # explicit URL
+#    mnemo-health-check.sh http://localhost:50001   # explicit URL
 #
 #  Checks:
 #    1. Server reachable at /health
