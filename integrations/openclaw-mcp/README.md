@@ -147,6 +147,10 @@ Give each bot a unique `MNEMO_AGENT_ID`. They all share the same Mnemo Cortex da
 
 For day-to-day use patterns — when to recall, when to save, how to structure a brain lane, common mistakes — see the [Session Guide](../../SESSION-GUIDE.md).
 
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**
+
 ## License
 
 MIT

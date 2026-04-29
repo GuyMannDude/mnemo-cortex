@@ -172,6 +172,10 @@ The bridge runs as a child process of Agent Zero, connected via stdio. Each tool
 
 See the [Session Guide](../../SESSION-GUIDE.md). Same patterns apply whether your agent is autonomous or human-driven.
 
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**
+
 ## License
 
 MIT

@@ -45,6 +45,14 @@
 
 ---
 
+### 📜 How to Use Mnemo Effectively
+
+Read **[THE-LANE-PROTOCOL.md](THE-LANE-PROTOCOL.md)** — the operating practice for running agents with persistent memory. Feed it to your agent or follow it yourself. It takes 5 minutes per session and makes every cold start feel warm.
+
+The protocol pairs with this product the way a recipe pairs with ingredients: Mnemo gives you the memory store, the Lane Protocol gives you the loop that makes it pay off. Distilled from real multi-agent sessions — terminal agents, chat agents, and autonomous workers running the same six-step ritual.
+
+---
+
 ### Dreaming Mnemo — Cross-Agent Overnight Synthesis
 
 Every night, Mnemo reads every connected agent's memories and synthesizes them into a single brief. Each agent wakes up knowing what the others did. No manual relay. No copy-paste. It just happens.

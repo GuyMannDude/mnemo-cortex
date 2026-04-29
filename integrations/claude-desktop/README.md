@@ -128,6 +128,10 @@ curl http://localhost:50001/health
 
 **Manual install: Node not found** — Node.js 18+ must be on `PATH`. On Windows, you may need the full path to `node.exe` in the `command` field.
 
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**
+
 ---
 
 *Part of [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex) by [Project Sparks](https://projectsparks.ai).*

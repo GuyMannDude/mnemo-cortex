@@ -192,3 +192,7 @@ curl http://localhost:50001/health
 **No context on startup** — You haven't run any writeback yet. After your first session writeback, future startups will have context.
 
 **Writeback fails** — Check the server logs. If the server is temporarily down, the writeback is saved to `~/.mnemo-cc/queue/` and can be replayed later.
+
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**

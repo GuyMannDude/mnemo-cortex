@@ -180,6 +180,10 @@ AnythingLLM spawns the Mnemo Cortex bridge (`openclaw-mcp/server.js`) as a child
 
 See the [Session Guide](../../SESSION-GUIDE.md) for day-to-day use patterns — when to recall, when to save, how to structure a brain lane.
 
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**
+
 ## License
 
 MIT

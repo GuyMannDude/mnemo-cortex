@@ -205,6 +205,10 @@ Ollama is the LLM. OpenClaw is the agent (handles tool calls, conversation state
 
 For day-to-day use patterns, see the [Session Guide](../../SESSION-GUIDE.md). Same workflow applies whether your LLM is Claude, GPT, Gemini, or local Ollama.
 
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**
+
 ## License
 
 MIT

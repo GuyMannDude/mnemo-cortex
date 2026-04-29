@@ -2,6 +2,8 @@
 
 > You write it, agents read it. They remember, you don't repeat yourself.
 
+> 📜 **For the full operating practice behind these instructions, see [THE-LANE-PROTOCOL.md](THE-LANE-PROTOCOL.md).** This guide tells the model what to do; the Lane Protocol tells the human (and the model) how to operate the loop.
+
 This guide covers how to use Mnemo Cortex with any LLM agent. Install 
 instructions are in the main README. This is about **workflow** — how 
 your agent should think about memory, and what to paste into your 

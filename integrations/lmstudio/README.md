@@ -163,6 +163,10 @@ All requests have a 10-second timeout. The bridge itself logs to stderr (visible
 
 For day-to-day use patterns, see the [Session Guide](../../SESSION-GUIDE.md). It covers when to recall, when to save, how to structure a brain lane, and per-platform boot snippets.
 
+## Next Step
+
+**Read [THE-LANE-PROTOCOL.md](../../THE-LANE-PROTOCOL.md) to learn the session ritual that makes Mnemo actually work.**
+
 ## License
 
 MIT
