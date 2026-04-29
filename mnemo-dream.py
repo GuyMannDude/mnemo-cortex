@@ -42,8 +42,8 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-AGENTB_DATA_DIR = Path(os.getenv("AGENTB_DATA_DIR", "/home/guy/.agentb"))
-MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "/home/guy/.mnemo-v2/mnemo.sqlite3"))
+AGENTB_DATA_DIR = Path(os.getenv("AGENTB_DATA_DIR", "~/.agentb")).expanduser()
+MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "~/.mnemo-v2/mnemo.sqlite3")).expanduser()
 DREAM_DIR = AGENTB_DATA_DIR / "dreams"
 DREAMER_MEMORY_DIR = AGENTB_DATA_DIR / "memory" / "dreamer"
 

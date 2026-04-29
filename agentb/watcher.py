@@ -491,7 +491,7 @@ if __name__ == "__main__":
 #
 #  [Service]
 #  Type=simple
-#  ExecStart=/usr/bin/python3 /home/guy/mnemo-cortex/agentb/watcher.py
+#  ExecStart=/usr/bin/python3 ~/mnemo-cortex/agentb/watcher.py
 #  Restart=always
 #  RestartSec=5
 #  Environment=MNEMO_URL=http://localhost:50001

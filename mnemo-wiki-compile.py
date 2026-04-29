@@ -40,9 +40,9 @@ import httpx
 # Config — mirrors mnemo-dream.py for consistency
 # ---------------------------------------------------------------------------
 
-AGENTB_DATA_DIR = Path(os.getenv("AGENTB_DATA_DIR", "/home/guy/.agentb"))
-MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "/home/guy/.mnemo-v2/mnemo.sqlite3"))
-WIKI_DIR = Path(os.getenv("WIKI_DIR", "/home/guy/wiki"))
+AGENTB_DATA_DIR = Path(os.getenv("AGENTB_DATA_DIR", "~/.agentb")).expanduser()
+MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "~/.mnemo-v2/mnemo.sqlite3")).expanduser()
+WIKI_DIR = Path(os.getenv("WIKI_DIR", "~/wiki")).expanduser()
 
 # Compiler writes only to these sections. `sources/` is owned by the
 # file-inventory job, not us.
