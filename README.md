@@ -655,6 +655,21 @@ Each integration is a one-line MCP config or a drag-and-drop bundle. The server 
 
 For other MCP-capable hosts (Open WebUI, llama.cpp, LobeChat, Jan, generic MCP clients), see [Use With Any Local LLM](#-use-with-any-local-llm) above.
 
+### Step 6: (Recommended) Set up a brain repo
+
+Mnemo gives your agent persistent *memory*. A brain repo gives it persistent *current state* — the project pad your agent reads at session start to know what's in flight without re-reading every memory.
+
+Fork the [mnemo-plan template](https://github.com/GuyMannDude/mnemo-plan) and point your bridge's `BRAIN_DIR` env var at it:
+
+```bash
+# In your MCP config or systemd unit:
+BRAIN_DIR=/absolute/path/to/your/mnemo-plan
+```
+
+The bridge auto-enables brain-file tools (`read_brain_file`, `write_brain_file`, `list_brain_files`) when `BRAIN_DIR` exists. If it doesn't, those tools simply don't register — no install friction.
+
+For the operating practice — when to read what, when to write what, the six-step session ritual — see **[THE-LANE-PROTOCOL.md](THE-LANE-PROTOCOL.md)**.
+
 ## Troubleshooting
 
 **Recall / cross-agent search returns "No chunks"**

@@ -20,24 +20,24 @@ Mnemo Cortex gives your agent two things:
 Memories accumulate across sessions. They're searchable by any agent 
 you authorize.
 
-**Brain lane** — a markdown file of what's true *right now*. Current 
+**Brain file** — a markdown file of what's true *right now*. Current 
 project status, priorities, open threads. Your agent reads it at 
 session start and rewrites it at session end. Old info gets replaced, 
 not appended.
 
-Both matter. Memory without a brain lane means your agent remembers 
-events but doesn't know what's current. A brain lane without memory 
+Both matter. Memory without a brain file means your agent remembers 
+events but doesn't know what's current. A brain file without memory 
 means your agent knows today's state but can't recall how it got there.
 
 ### When to use what
 
 | | Persists across sessions | Just this session |
 |---|---|---|
-| **What's true now** | Brain lane | Working memory (context window) |
+| **What's true now** | Brain file | Working memory (context window) |
 | **What happened** | `mnemo_save` | Auto-capture / conversation flow |
 
 - Recording a decision or a shipped deliverable → **mnemo_save**
-- Updating project status or priorities → **brain lane write**
+- Updating project status or priorities → **brain file write**
 - Routine conversation that doesn't need to survive → let the context window handle it
 
 ---
@@ -48,7 +48,7 @@ Three phases. Works for any agent on any LLM.
 
 ### Start — before doing work
 
-1. **Read your brain lane.** Know who you are, what's current, what 
+1. **Read your brain file.** Know who you are, what's current, what 
    the priorities are.
 
 2. **Recall from Mnemo.** Check what's already been decided or done. 
@@ -78,7 +78,7 @@ What's NOT worth saving:
    what's left open. This is what future sessions (yours or other 
    agents') will find when they recall.
 
-5. **Update your brain lane.** Rewrite what changed. The next session 
+5. **Update your brain file.** Rewrite what changed. The next session 
    should open this file and know exactly what's current.
 
 6. **Verify.** Recall what you just saved. Quick sanity check that 
@@ -110,7 +110,7 @@ Add this to your `CLAUDE.md`:
 You have persistent memory via Mnemo Cortex MCP tools.
 
 Session start:
-- Read your brain lane with read_brain_file
+- Read your brain file with read_brain_file
 - Call mnemo_recall on your current task before starting work
 
 During work:
@@ -120,7 +120,7 @@ During work:
 
 Session end:
 - mnemo_save a final summary (what shipped, what's open, what's next)
-- Update your brain lane with write_brain_file
+- Update your brain file with write_brain_file
 - Verify with mnemo_recall on your summary
 
 Your local memory (~/.claude/projects/) is auto-loaded by Claude Code 
@@ -153,7 +153,7 @@ You have persistent cross-session memory via Mnemo Cortex MCP tools.
 
 Every session:
 - Call mnemo_recall on your current task before doing work
-- Read your brain lane file for current project state
+- Read your brain file for current project state
 
 During work:
 - Call mnemo_save immediately at decision points. Include what you 
@@ -162,7 +162,7 @@ During work:
 Session end:
 - mnemo_save a summary: what you accomplished, decisions made, 
   open threads
-- Update your brain lane file with current state
+- Update your brain file with current state
 - Verify by recalling your summary
 
 MEMORY.md is your local workspace memory. Mnemo Cortex is your 
@@ -184,7 +184,7 @@ This project uses Mnemo Cortex for persistent memory via MCP.
 
 When starting work on a task:
 - Call mnemo_recall with the task topic to check prior decisions
-- Read the brain lane file for current project state
+- Read the brain file for current project state
 
 When you make a meaningful decision or complete something:
 - Call mnemo_save immediately with a summary and key_facts
@@ -192,7 +192,7 @@ When you make a meaningful decision or complete something:
 
 When finishing a session or switching tasks:
 - Save a summary of what was done and what's still open
-- Update the brain lane file with current status
+- Update the brain file with current status
 ```
 
 ### Windsurf
@@ -215,7 +215,7 @@ Save to Mnemo (mnemo_save) when you:
 - Rule out an approach (so it's not re-tried)
 - End a session (summary of what shipped and what's open)
 
-Read and update the brain lane file at session start and end to 
+Read and update the brain file at session start and end to 
 maintain current project state.
 ```
 
@@ -232,7 +232,7 @@ You have persistent memory via Mnemo Cortex (REST API or MCP).
 
 Before starting work:
 - Query Mnemo for prior decisions on your current task
-- Read the brain lane file for current project state
+- Read the brain file for current project state
 
 During work:
 - Save to Mnemo at decision points — what you decided and why
@@ -240,7 +240,7 @@ During work:
 
 At session end:
 - Save a final summary: accomplishments, decisions, open items
-- Update the brain lane with current state
+- Update the brain file with current state
 ```
 
 ### Any LLM via REST (no MCP)
@@ -253,7 +253,7 @@ exposes a REST API. The relevant endpoints are:
 | `/health` | GET | Is the server up? |
 | `/writeback` | POST | Save a memory (summary + key_facts) |
 | `/context` | POST | Recall + search (returns relevant memories) |
-| `/preflight` | POST | Pre-task context bundle (recall + brain lane) |
+| `/preflight` | POST | Pre-task context bundle (recall + brain file) |
 
 **Save (writeback) shape:**
 ```json
@@ -292,18 +292,18 @@ When you make a decision or complete something:
 
 At session end:
 - POST /writeback with a session summary
-- Update your brain lane file (separate from the API)
+- Update your brain file (separate from the API)
 ```
 
-> Cross-agent search and brain-lane file tools are MCP-only today. If 
+> Cross-agent search and brain-file tools are MCP-only today. If 
 > you need them via REST, the bridge in `integrations/openclaw-mcp/` 
 > is a small Node service you can run as a translator.
 
 ---
 
-## Setting Up Your Brain Lane
+## Setting Up Your Brain Repo
 
-Your brain lane is a markdown file in a Git repo. Fork the 
+Your brain file is a markdown file in a Git repo. Fork the 
 [mnemo-plan](https://github.com/GuyMannDude/mnemo-plan) template 
 to get started, or create your own with this structure:
 
@@ -335,7 +335,7 @@ Point your Mnemo MCP config at this repo via the `BRAIN_DIR` env var:
 BRAIN_DIR=/home/you/my-project-brain/brain
 ```
 
-The bridge auto-enables brain-lane tools (`read_brain_file`, 
+The bridge auto-enables brain-file tools (`read_brain_file`, 
 `write_brain_file`, `list_brain_files`) when `BRAIN_DIR` points at an 
 existing directory. If the dir doesn't exist, those tools simply 
 don't register — no config errors, no install friction.
@@ -385,7 +385,7 @@ all agents). The share toggle is per-session so privacy is opt-in.
 
 - Each agent gets a unique `agent_id` (e.g., `builder`, `strategist`, 
   `support-bot`)
-- Each agent has its own brain lane file (`builder.md`, 
+- Each agent has its own brain file (`builder.md`, 
   `strategist.md`)
 - Shared project files live in `projects/` where any agent can 
   read and update
@@ -395,7 +395,7 @@ all agents). The share toggle is per-session so privacy is opt-in.
 **Rules for shared memory:**
 
 - Save to your own lane. Read from anyone's.
-- Don't overwrite another agent's brain lane file.
+- Don't overwrite another agent's brain file.
 - Shared project files (`projects/*.md`) are fair game for any agent 
   to update — but note who changed what.
 
@@ -407,7 +407,7 @@ all agents). The share toggle is per-session so privacy is opt-in.
 and decisions, not process. "We discussed three options" is noise. 
 "We chose option B because of latency constraints" is signal.
 
-**Using the brain lane as a diary.** The brain lane is current state, 
+**Using the brain file as a diary.** The brain file is current state, 
 not history. Don't append timestamped entries forever — rewrite 
 sections to reflect what's true now. History belongs in Mnemo memory.
 
@@ -444,5 +444,5 @@ memories that say "looked at the deployment script."
 ---
 
 *This guide ships with [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex). 
-For installation, see the main README. For the brain lane template, 
+For installation, see the main README. For the brain repo template, 
 see [mnemo-plan](https://github.com/GuyMannDude/mnemo-plan).*

@@ -1,6 +1,12 @@
 # Monitoring & Health Checks
 
-Mnemo Cortex ships with two tools for keeping your memory system healthy.
+Mnemo Cortex ships with three tools for keeping your memory system healthy:
+
+| Tool | What it's for |
+|---|---|
+| `mnemo-cortex doctor` | Comprehensive diagnostic — 10 checks across server, models, agents, ingest, port conflicts, daemons. Use when something seems wrong. |
+| `mnemo-cortex health` | Focused check — agent recall tests + MCP config registration + watcher service status. Use to verify each agent can save and recall. |
+| `mnemo-health-check.sh` | Minimal shell script returning exit 0/1. Use for unattended cron monitoring, paired with CronAlarm or your existing tooling. |
 
 ## Doctor — Full Diagnostic
 
@@ -27,7 +33,6 @@ What it checks:
 | 4 | Embedding model | Is the embedding model loaded? |
 | 5 | Registered agents | Which agent IDs are configured? |
 | 6 | Session statistics | Hot/warm/cold session counts |
-| 7 | Circuit breaker | Any failovers or tripped circuits? |
 | 7 | Live context query | Can we actually run a semantic search? (not just /health) |
 | 8 | Live ingest test | Can we write to the live wire? |
 | 9 | Port conflict | Is a zombie server intercepting requests? |
@@ -43,13 +48,13 @@ Example output:
   ║  Comprehensive Health Diagnostic              ║
   ╚═══════════════════════════════════════════════╝
 
-  Target: http://artforge:50001
+  Target: http://localhost:50001
 
   1. Server Reachability
-  ✅ Server responding at http://artforge:50001
+  ✅ Server responding at http://localhost:50001
 
   2. API Status
-  ✅ Status: ok — Version: 0.6.0
+  ✅ Status: ok — Version: 2.6.4
 
   3. Reasoning Model
   ✅ Reasoning: ollama/qwen2.5:32b-instruct — healthy
@@ -66,8 +71,8 @@ Example output:
   🟢 ALL CHECKS PASSED
   Mnemo Cortex is fully healthy.
 
-  Server:  http://artforge:50001
-  Version: 0.6.0
+  Server:  http://localhost:50001
+  Version: 2.6.4
   Agents:  rocky,default,alice
   Sessions: 8 hot / 8 warm / 0 cold
   ═══════════════════════════════════════════════
@@ -104,7 +109,7 @@ The health check script works with whatever monitoring you already use:
 
 **Option 1: CronAlarm (recommended)**
 Our companion project for cron job monitoring. One install, Discord/SMS/Telegram
-alerts on any failure. [github.com/projectsparks/cronalarm](https://github.com/projectsparks/cronalarm)
+alerts on any failure. [github.com/GuyMannDude/cronalarm](https://github.com/GuyMannDude/cronalarm)
 
 **Option 2: Plain cron + email**
 ```bash

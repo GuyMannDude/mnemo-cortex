@@ -1,6 +1,6 @@
 # The Lane Protocol
 
-> The operating practice that goes with [mnemo-plan](README.md) and [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex). The structure tells you what files to have. This tells you how to live in them.
+> The operating practice that goes with [mnemo-plan](https://github.com/GuyMannDude/mnemo-plan) and [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex). The structure tells you what files to have. This tells you how to live in them.
 
 > 💡 **Paste this into your agent.** This document works as a boot file or system-prompt include. The protocol works whether the human follows it, the agent follows it, or both. Feeding it to your agent means the ritual runs even when you forget.
 
@@ -90,7 +90,7 @@ The lane is short — one or two screens. It's not a diary. It's the current ope
 
 If your lane is longer than two screens, you're probably journaling. Trim it.
 
-See [`agent-lanes/EXAMPLE-AGENT.md`](agent-lanes/EXAMPLE-AGENT.md) for a starter template.
+See [`agent-lanes/EXAMPLE-AGENT.md`](https://github.com/GuyMannDude/mnemo-plan/blob/master/agent-lanes/EXAMPLE-AGENT.md) for a starter template.
 
 ---
 
@@ -119,7 +119,7 @@ If your sessions feel less oriented over time, one of those three is happening.
 ## The trinity
 
 - **[Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex)** — memory store. The *why*.
-- **[mnemo-plan](README.md)** — brain layout. The *what*.
+- **[mnemo-plan](https://github.com/GuyMannDude/mnemo-plan)** — brain layout. The *what*.
 - **The Lane Protocol** — session ritual. The *how*.
 
 Each layer has a job. Skip any one and the system gets weaker. Run all three and a fresh session walks in oriented every time.

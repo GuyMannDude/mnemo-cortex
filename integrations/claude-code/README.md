@@ -8,6 +8,17 @@ Gives Claude Code persistent memory that survives across sessions. Every session
 - **Claude Code** installed
 - **curl** and **python3** on your PATH
 
+## Choose Your Path
+
+Two install paths, both work — pick one or run both:
+
+- **Hooks** (explicit, on session boundaries) — `mnemo-startup.sh` runs at session start, `mnemo-writeback.sh` at session end. Setup: `bash install.sh`. Manual writeback at session end is required. Best for high-signal session summaries.
+- **Sync service** (automatic, every 60s) — A systemd service POSTs your session activity to Mnemo continuously. Setup: copy a service template. Runs in the background. Best for unattended capture between manual saves.
+
+If you're not sure, install **hooks** first — fewer moving parts. Add the **sync service** later when you want automatic continuous capture as a safety net. The full comparison table is in [Hooks vs Sync](#hooks-vs-sync) further down.
+
+> ⚠️ The legacy `mnemo-watcher-cc.sh` is **deprecated** and should not be used in v2.6+ setups. It writes to a local SQLite that the central Mnemo Cortex API doesn't read. Migrate to the sync service if you were using it.
+
 ## Install
 
 From the repo:
