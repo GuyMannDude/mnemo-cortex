@@ -566,7 +566,7 @@ def watch(backfill, backfill_count, foreground):
         console.print()
 
     env = os.environ.copy()
-    env.setdefault("MNEMO_URL", "http://artforge:50001")
+    env.setdefault("MNEMO_URL", "http://localhost:50001")
     env.setdefault("MNEMO_AGENT_ID", "rocky")
 
     watcher_script = Path(__file__).parent / "watcher.py"

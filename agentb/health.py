@@ -373,7 +373,7 @@ def health(url, as_json, agents_only, services_only, quiet, mcp_paths, timeout):
       mnemo-cortex health --services              # only watcher services
       mnemo-cortex health --quiet                 # exit code only
       mnemo-cortex health --check-mcp ~/.openclaw/openclaw.json
-      mnemo-cortex health http://artforge:50001   # explicit URL
+      mnemo-cortex health http://localhost:50001  # explicit URL
 
     \b
     Exit codes:

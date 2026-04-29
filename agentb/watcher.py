@@ -15,7 +15,7 @@ Usage:
 Or install as a systemd service (see bottom of file).
 
 Environment:
-    MNEMO_URL        - Mnemo Cortex server (default: http://artforge:50001)
+    MNEMO_URL        - Mnemo Cortex server (default: http://localhost:50001)
     MNEMO_AGENT_ID   - Agent ID for tenant isolation (default: rocky)
     MNEMO_AUTH_TOKEN  - API auth token if configured
     OPENCLAW_SESSIONS - Path to OpenClaw sessions dir
@@ -38,7 +38,7 @@ import httpx
 #  Config
 # ─────────────────────────────────────────────
 
-MNEMO_URL = os.environ.get("MNEMO_URL", "http://artforge:50001")
+MNEMO_URL = os.environ.get("MNEMO_URL", "http://localhost:50001")
 AGENT_ID = os.environ.get("MNEMO_AGENT_ID", "rocky")
 AUTH_TOKEN = os.environ.get("MNEMO_AUTH_TOKEN", "")
 
@@ -494,7 +494,7 @@ if __name__ == "__main__":
 #  ExecStart=/usr/bin/python3 /home/guy/mnemo-cortex/agentb/watcher.py
 #  Restart=always
 #  RestartSec=5
-#  Environment=MNEMO_URL=http://artforge:50001
+#  Environment=MNEMO_URL=http://localhost:50001
 #  Environment=MNEMO_AGENT_ID=rocky
 #  Environment=PYTHONUNBUFFERED=1
 #

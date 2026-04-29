@@ -8,7 +8,7 @@ Add to cli.py by importing and registering:
     main.add_command(doctor)
 
 Can also be run standalone:
-    python -m agentb.doctor http://artforge:50001
+    python -m agentb.doctor http://localhost:50001
 """
 
 import os
@@ -274,7 +274,7 @@ def doctor(url, as_json, timeout, skip_ingest):
     \b
     Usage:
       mnemo-cortex doctor                          # auto-detect URL
-      mnemo-cortex doctor http://artforge:50001    # explicit URL
+      mnemo-cortex doctor http://localhost:50001   # explicit URL
       mnemo-cortex doctor --json                   # machine-readable
       mnemo-cortex doctor --skip-ingest            # skip write test
     """

@@ -39,8 +39,6 @@
 
 🦙 **[Any Local LLM → MCP setup](#use-with-any-local-llm)** — Open WebUI, llama.cpp, Ollama, LobeChat, Jan, and more
 
-📋 **[What can it do? → Read the full Capabilities doc](CAPABILITIES.md)**
-
 🧭 **[How should my agent use it? → Session Guide](SESSION-GUIDE.md)** — Workflow patterns, per-platform boot snippets, common mistakes
 
 ---
@@ -399,8 +397,6 @@ We did not invent this. We adopted the best ideas in the air, credited them open
 
 ### *A Crustacean That Never Forgets* 🧠🦞
 
-🤖 **ClaudePilot Enabled** — [AI-guided installation](CLAUDEPILOT.md). Designed for Claude (free). Works with ChatGPT, Gemini, and others.
-
 Proven on two live agents — Rocky with six weeks of recall, Alice with one.
 
 ```
@@ -571,241 +567,93 @@ Proven on two live OpenClaw agents:
 
 ## Install Guide
 
-> 🤖 **ClaudePilot Enabled** — [Follow the guide in CLAUDEPILOT.md](CLAUDEPILOT.md) and paste it into [claude.ai](https://claude.ai). Claude becomes your personal installer. No experience needed. Works with ChatGPT, Gemini, and others.
+Five steps from a fresh checkout to a running server connected to your agent. The CLI handles everything — `mnemo-cortex init` writes the config, `mnemo-cortex start` launches the API server, `mnemo-cortex health` verifies, and you point your agent at it via the matching integration.
 
 ### Platforms
 
-Mnemo Cortex runs on **Linux, macOS, and Windows**. The core (Python + SQLite) is cross-platform. Platform-specific differences:
+Mnemo Cortex runs on **Linux, macOS, and Windows**. The core (Python + SQLite) is cross-platform. Platform differences are mostly about how you keep the server running across reboots:
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
-| **Server** | systemd | launchd / manual | Task Scheduler / manual |
+| **Server lifecycle** | systemd / manual | launchd / manual | Task Scheduler / manual |
 | **Claude Code** | Full support | Full support | Full support |
-| **Claude Desktop** | Full support | Full support | Full support |
+| **Claude Desktop** | `.mcpb` bundle | `.mcpb` bundle | `.mcpb` bundle |
 | **OpenClaw** | Full support | Full support | Full support |
 
 ### Prerequisites
 
-- Python 3.11+
-- An OpenClaw agent with session files in `~/.openclaw/agents/<agent>/sessions/` (if using OpenClaw)
-- OpenRouter API key (for LLM-backed summaries; falls back to deterministic if unavailable)
+- **Python 3.11+** — for the server
+- **Ollama** *(recommended)* — local reasoning + embedding models, free, fully private. The `init` wizard also accepts OpenAI / Google / Anthropic / OpenRouter API keys if you'd rather use a cloud model.
+- **Node.js 18+** *(only when running an MCP-bridge integration: Claude Desktop, LM Studio, OpenClaw, etc.)*
 
-### Step 1: Clone and set up
+### Step 1: Install
 
 ```bash
 git clone https://github.com/GuyMannDude/mnemo-cortex.git
 cd mnemo-cortex
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-### Step 2: Create data directory
+This registers two CLI commands: `mnemo-cortex` and the shorter alias `mnemo`.
+
+### Step 2: Initialize
 
 ```bash
-mkdir -p ~/.mnemo-v2
+mnemo-cortex init
 ```
 
-### The Sparks Patch Method
+Interactive wizard. Picks your reasoning model (preflight checks), embedding model (semantic search), server bind address, port, and any agents you want to register up front. Defaults are sensible for a single-machine local install: Ollama for both models, `127.0.0.1:50001`, no auth token (loopback only).
 
-When editing config files (scripts, .env, openclaw.json, etc.), don't replace the whole file. Instead, show three things:
+The wizard writes the config to `~/.agentb/agentb.yaml` and creates the data directory at `~/.agentb/data/`.
 
-**1. FIND THIS** — a few lines of the existing file so you can find the exact spot:
-```
-"settings": {
-  "model": "old-model-name",    ← this is what you're changing
-  "temperature": 0.7
-}
-```
-
-**2. CHANGE TO THIS** — just the line(s) that change:
-```
-  "model": "new-model-name",
-```
-
-**3. VERIFY** — the edited section with surrounding context so you can confirm it's right:
-```
-"settings": {
-  "model": "new-model-name",    ← changed
-  "temperature": 0.7
-}
-```
-
-Find the landmark, make the edit, visually confirm it matches. Use this method for every config file edit throughout the installation.
-
-### Step 3: Create watcher script
-
-Create `mnemo-watcher.sh` (adjust paths for your agent):
+### Step 3: Start the server
 
 ```bash
-#!/usr/bin/env bash
-SESSIONS_DIR="$HOME/.openclaw/agents/main/sessions"
-DB="$HOME/.mnemo-v2/mnemo.sqlite3"
-CHECKPOINT="$HOME/.mnemo-v2/watcher.offset"
-AGENT_ID="rocky"  # your agent's name
-INTERVAL=2
-
-cd /path/to/mnemo-cortex
-source .venv/bin/activate
-mkdir -p "$HOME/.mnemo-v2"
-
-LAST_FILE=""
-while true; do
-    NEWEST=$(ls -t "$SESSIONS_DIR"/*.jsonl 2>/dev/null | head -1)
-    if [[ -z "$NEWEST" ]]; then sleep "$INTERVAL"; continue; fi
-    if [[ "$NEWEST" != "$LAST_FILE" ]]; then
-        SESSION_ID=$(basename "$NEWEST" .jsonl)
-        echo "0" > "$CHECKPOINT"
-        LAST_FILE="$NEWEST"
-        echo "[mnemo-watcher] Tracking session: $SESSION_ID"
-    fi
-    python3 -c "
-from mnemo_v2.watch.session_watcher import SessionWatcher
-w = SessionWatcher(\"$DB\", \"$NEWEST\", \"$CHECKPOINT\")
-n = w.poll_once(agent_id=\"$AGENT_ID\", session_id=\"$SESSION_ID\")
-if n > 0:
-    print(f\"[mnemo-watcher] Ingested {n} messages\")
-"
-    sleep "$INTERVAL"
-done
+mnemo-cortex start                 # detached (logs go to ~/.agentb/data/logs/)
+mnemo-cortex start --foreground    # attached, logs to terminal
 ```
 
-### Step 4: Create refresher script
-
-Create `mnemo-refresher.sh`:
+Server listens on `http://localhost:50001` by default. To stop:
 
 ```bash
-#!/usr/bin/env bash
-SESSIONS_DIR="$HOME/.openclaw/agents/main/sessions"
-DB="$HOME/.mnemo-v2/mnemo.sqlite3"
-OUTPUT="$HOME/.openclaw/workspace/MNEMO-CONTEXT.md"
-AGENT_ID="rocky"  # your agent's name
-INTERVAL=5
-
-cd /path/to/mnemo-cortex
-source .venv/bin/activate
-mkdir -p "$HOME/.mnemo-v2"
-
-while true; do
-    NEWEST=$(ls -t "$SESSIONS_DIR"/*.jsonl 2>/dev/null | head -1)
-    if [[ -n "$NEWEST" ]]; then
-        SESSION_ID=$(basename "$NEWEST" .jsonl)
-        python3 -c "
-from mnemo_v2.watch.context_refresher import ContextRefresher
-r = ContextRefresher(\"$DB\", \"$OUTPUT\")
-ok = r.refresh_once(agent_id=\"$AGENT_ID\", session_id=\"$SESSION_ID\")
-if ok:
-    print(\"[mnemo-refresher] MNEMO-CONTEXT.md updated\")
-"
-    fi
-    sleep "$INTERVAL"
-done
+mnemo-cortex stop
 ```
 
-### Step 5: Install as systemd user services
+### Step 4: Verify
+
+Quick health check:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-
-cat > ~/.config/systemd/user/mnemo-watcher.service << 'EOF'
-[Unit]
-Description=Mnemo v2 Session Watcher
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=%h/path/to/mnemo-watcher.sh
-Restart=on-failure
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=default.target
-EOF
-
-cat > ~/.config/systemd/user/mnemo-refresher.service << 'EOF'
-[Unit]
-Description=Mnemo v2 Context Refresher
-After=mnemo-watcher.service
-
-[Service]
-Type=simple
-ExecStart=%h/path/to/mnemo-refresher.sh
-Restart=on-failure
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user daemon-reload
-systemctl --user enable --now mnemo-watcher mnemo-refresher
+mnemo-cortex health
 ```
 
-### Step 6: Patch the bootstrap hook (OpenClaw)
-
-Replace your `mnemo-ingest` handler to read from disk instead of calling the v1 API:
-
-```typescript
-import { HookHandler } from "openclaw/plugin-sdk";
-import { readFileSync } from "fs";
-import { join } from "path";
-
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || join(process.env.HOME || "", ".openclaw", "workspace");
-const CONTEXT_FILE = join(WORKSPACE, "MNEMO-CONTEXT.md");
-
-const handler: HookHandler = async (event) => {
-  if (event.type === "agent" && event.action === "bootstrap") {
-    try {
-      const content = readFileSync(CONTEXT_FILE, "utf-8").trim();
-      if (content && event.context.bootstrapFiles) {
-        event.context.bootstrapFiles.push({ basename: "MNEMO-CONTEXT.md", content });
-      }
-    } catch {}
-  }
-};
-
-export default handler;
-```
-
-### Step 7: Backfill existing sessions
+Deeper diagnostics — port conflicts, model availability, agent recall, watcher status:
 
 ```bash
-source .venv/bin/activate
-for f in ~/.openclaw/agents/main/sessions/*.jsonl; do
-  SID=$(basename "$f" .jsonl)
-  python3 -c "
-from mnemo_v2.watch.session_watcher import SessionWatcher
-from pathlib import Path
-import tempfile, os
-cp = Path(tempfile.mktemp()); cp.write_text('0')
-w = SessionWatcher('$HOME/.mnemo-v2/mnemo.sqlite3', '$f', str(cp))
-n = w.poll_once(agent_id='your-agent', session_id='$SID')
-print(f'Ingested {n} messages from $SID')
-os.unlink(str(cp))
-"
-done
+mnemo-cortex doctor
 ```
 
-### Step 8: Verify
+Both return non-zero exit codes when something's broken, so they work in scripts and CI.
 
-```bash
-# Check services
-systemctl --user status mnemo-watcher mnemo-refresher
+### Step 5: Connect an integration
 
-# Check database
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('$HOME/.mnemo-v2/mnemo.sqlite3')
-for t in ['conversations', 'messages', 'summaries']:
-    n = conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
-    print(f'{t}: {n}')
-"
+The server is now running. Pick your platform and follow its integration guide:
 
-# Check context file
-cat ~/.openclaw/workspace/MNEMO-CONTEXT.md
-```
+| Host | Path |
+|---|---|
+| **Claude Code** | [`integrations/claude-code/`](integrations/claude-code/) — terminal agent, sync service |
+| **Claude Desktop** | [`integrations/claude-desktop/`](integrations/claude-desktop/) — drag-and-drop `.mcpb` bundle |
+| **LM Studio** | [`integrations/lmstudio/`](integrations/lmstudio/) — native MCP, GUI |
+| **AnythingLLM** | [`integrations/anythingllm/`](integrations/anythingllm/) — desktop, multi-workspace |
+| **OpenClaw** | [`integrations/openclaw-mcp/`](integrations/openclaw-mcp/) — one-line MCP config |
+| **Agent Zero** | [`integrations/agent-zero/`](integrations/agent-zero/) — in-container Docker setup |
+| **Ollama Desktop** | [`integrations/ollama-desktop/`](integrations/ollama-desktop/) — `ollama launch` flow |
+
+Each integration is a one-line MCP config or a drag-and-drop bundle. The server is the same; only the bridge config changes.
+
+For other MCP-capable hosts (Open WebUI, llama.cpp, LobeChat, Jan, generic MCP clients), see [Use With Any Local LLM](#-use-with-any-local-llm) above.
 
 ## Troubleshooting
 
