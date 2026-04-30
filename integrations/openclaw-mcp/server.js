@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 
@@ -606,6 +607,24 @@ server.registerTool(
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = null;
 
+    // Pull the brain repo so we read the freshest cross-agent state,
+    // not whatever was last on disk. Best-effort — if pull fails (no
+    // network, dirty tree, etc.) we keep going with local files.
+    let pullStatus = "skipped (no .git)";
+    try {
+      const gitDir = join(BRAIN_DIR, ".git");
+      if (existsSync(gitDir)) {
+        const out = execSync("git pull --ff-only", {
+          cwd: BRAIN_DIR,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        pullStatus = out.split("\n")[0] || "OK";
+      }
+    } catch (e) {
+      pullStatus = `FAILED (${e.message.split("\n")[0]})`;
+    }
+
     try {
       const parts = [];
 
@@ -616,7 +635,10 @@ server.registerTool(
         parts.push("# BRAIN LANE ERROR\nCould not read opie.md: " + e.message);
       }
 
-      for (const file of ["active.md", "people.md", "doctrines.md"]) {
+      // CLAUDE.md is the cross-agent operating doc — Lane Protocol
+      // applied to this brain. Loaded BEFORE active/people/doctrines so
+      // its session ritual frames everything else.
+      for (const file of ["CLAUDE.md", "active.md", "people.md", "doctrines.md"]) {
         try {
           const content = await readFile(join(BRAIN_DIR, file), "utf-8");
           parts.push(`# ${file.toUpperCase()}\n\n` + content);
@@ -704,6 +726,23 @@ Both matter. Auto-capture is the safety net; manual saves are the high-signal me
 - Call \`mnemo_save\` after major decisions, specs, or deliverables
 - Call \`session_end\` before wrapping up — it flushes auto-capture, saves, and commits your brain lane
 - Auto-capture handles the rest
+
+# THE LANE PROTOCOL (read CLAUDE.md above for full details)
+
+The brain you just loaded follows the **Lane Protocol** — a six-step session ritual all three agents (CC, Opie, Rocky) run. Brain pull above: ${pullStatus}.
+
+You've already done steps 1-2 by calling opie_startup (it pulled the repo and loaded your lane + active.md + CLAUDE.md). Continue:
+
+3. **Read task-specific files only as needed** — incidents.md (debugging), stack.md (infra), business.md (clients), etc. Use \`read_brain_file\` on demand; don't try to load everything.
+4. **Work normally** on what Guy needs.
+5. **Write back what changed:**
+   - Mark completed tasks done in \`active.md\` (joint-owned with CC + Rocky)
+   - Update \`incidents.md\` if a new bug or trap surfaced
+   - \`mnemo_save\` the *why* of any non-obvious decisions
+   - Update your own lane file (\`opie.md\`) last — bump the date, note what changed
+6. **\`session_end\`** — flushes auto-capture, saves the summary, commits + pushes the brain.
+
+**Never write** \`cc-session.md\` or \`rocky.md\` — those are CC's and Rocky's lanes (read-only for you). \`CLAUDE.md\` edits are CC's by convention.
 
 `;
 
