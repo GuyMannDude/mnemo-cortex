@@ -229,16 +229,33 @@ Or set `MNEMO_SHARE: always` in your config to skip the toggle. Set
 
 ## Curator interaction (Hermes v0.12.0+)
 
-Hermes v0.12.0 added an autonomous "Curator" that grades, consolidates,
-and prunes Hermes's local skill library on a 7-day cycle. The Curator
-runs only against Hermes's own skills directory (`~/.hermes/skills/`) —
-**it does not touch Mnemo's memory store.** The two systems are separate
-files on disk. Mnemo memories are durable regardless of Curator activity.
+Hermes v0.12.0 added an autonomous "Curator" that runs on a 7-day cycle to
+grade, consolidate, and archive **agent-created** skills in
+`~/.hermes/skills/`. Per Hermes's own help text (`hermes curator --help`):
 
-If you write a skill that wraps a Mnemo MCP tool (e.g. a "/save-decision"
-skill that calls `mnemo_save` with a specific format), the Curator may
-grade or refactor that skill. The underlying `mnemo_save` call still
-works — only your skill wrapper is at risk.
+> Bundled and hub-installed skills are never touched. Archives are
+> recoverable; auto-deletion never happens.
+
+**Mnemo Cortex memory is outside the Curator's domain entirely.** Mnemo's
+data lives in `~/.agentb/` (or wherever your `data_dir:` points), not in
+`~/.hermes/skills/`. Saved memories survive Curator runs.
+
+**MCP tools (Mnemo's `mnemo_save`/`recall`/etc., or any other server's
+tools) are also outside the Curator's domain.** Tools register at MCP
+discovery time and live as server-side handlers, not skill files. The
+Curator can't see them, can't prune them, can't refactor them.
+
+The only Curator interaction possible is: if Hermes auto-generates a
+**skill** that wraps an MCP tool (e.g., promoting a successful "save my
+weekly decisions" pattern into a reusable skill file), the Curator will
+later grade that skill on the standard cycle:
+
+- 7 days: graded against the rubric
+- 30 days unused: marked stale
+- 90 days unused: archived (recoverable, never deleted)
+
+The underlying MCP tool keeps working regardless. Only the skill wrapper
+is at risk, and "at risk" means archived-with-recovery, not deleted.
 
 ## Troubleshooting
 
