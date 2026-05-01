@@ -1,0 +1,36 @@
+# Hermes Agent — Mnemo Cortex MCP server entry
+# Merge this into your existing ~/.hermes/config.yaml under mcp_servers.
+# If you don't have one yet, this whole file IS your config.yaml.
+
+mcp_servers:
+  mnemo:
+    # The bridge is a Node.js stdio MCP server bundled with mnemo-cortex.
+    # Replace the path below with your actual mnemo-cortex checkout location.
+    command: node
+    args:
+      - /absolute/path/to/mnemo-cortex/integrations/openclaw-mcp/server.js
+    env:
+      # Where your Mnemo Cortex API is running. Default: localhost:50001
+      MNEMO_URL: http://localhost:50001
+
+      # Identifies this Hermes instance to Mnemo. Memories are scoped per
+      # agent — pick a name (e.g. "hermes", "hermes-laptop", your handle).
+      MNEMO_AGENT_ID: hermes
+
+      # Cross-agent memory sharing mode:
+      #   separate  — only see your own agent's memories (default, safest)
+      #   always    — see all agents' memories every search
+      #   never     — even mnemo_share toggle is blocked
+      MNEMO_SHARE: separate
+
+      # Optional: point at a brain repo to enable read_brain_file /
+      # write_brain_file / list_brain_files / opie_startup / session_end.
+      # See https://github.com/GuyMannDude/mnemo-plan for the brain layout.
+      # BRAIN_DIR: /path/to/your/brain
+
+      # Optional: point at a wiki dir to enable wiki_search / wiki_read /
+      # wiki_index. The bridge skips these tools when the dir is missing.
+      # WIKI_DIR: /path/to/your/wiki
+
+    timeout: 60          # per-tool-call timeout (seconds)
+    connect_timeout: 30  # initial connection + tool discovery timeout
