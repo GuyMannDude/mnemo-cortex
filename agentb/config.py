@@ -108,6 +108,19 @@ class AgentConfig:
     read_only: bool = False
 
 
+
+@dataclass
+class Mem0Config:
+    enabled: bool = False
+    api_key: str = ""
+    api_base: str = "https://api.mem0.ai/v1"
+    user_id: str = ""
+    fallback_only: bool = True
+    sync_writes: bool = False
+    min_relevance: float = 0.3
+    max_results: int = 3
+    timeout: float = 5.0
+
 @dataclass
 class AgentBConfig:
     reasoning: ResilientProviderConfig = field(default_factory=ResilientProviderConfig)
@@ -119,6 +132,7 @@ class AgentBConfig:
     log_level: str = "info"
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     personas: dict[str, PersonaConfig] = field(default_factory=dict)
+    mem0: Mem0Config = field(default_factory=Mem0Config)
 
 
 def _resolve_env(value) -> str:
@@ -230,6 +244,19 @@ def _parse_config(raw: dict) -> AgentBConfig:
                     persona=adata.get("persona", "default"),
                     read_only=adata.get("read_only", False),
                 )
+    if "mem0" in raw and raw["mem0"]:
+        m = raw["mem0"]
+        cfg.mem0 = Mem0Config(
+            enabled=m.get("enabled", False),
+            api_key=_resolve_env(m.get("api_key", "")),
+            api_base=_resolve_env(m.get("api_base", "https://api.mem0.ai/v1")),
+            user_id=_resolve_env(m.get("user_id", "")),
+            fallback_only=m.get("fallback_only", True),
+            sync_writes=m.get("sync_writes", False),
+            min_relevance=m.get("min_relevance", 0.3),
+            max_results=m.get("max_results", 3),
+            timeout=m.get("timeout", 5.0),
+        )
     return _apply_defaults(cfg)
 
 

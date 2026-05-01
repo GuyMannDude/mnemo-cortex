@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.6.5 (2026-05-01)
+
+Two install-blocking fixes found while wiring Hermes Agent against the public
+package. Both were silent in 2.6.4 — the package installed, but
+`mnemo-cortex start` crashed at import time, and even if it had started, the
+`--port` flag was dead code.
+
+- **ImportError on startup fixed.** `agentb/server.py` imported `Mem0Config`
+  from `agentb.config`, but the class was never defined there and
+  `agentb/mem0_bridge.py` was never committed. Result: any fresh
+  `pip install mnemo-cortex && mnemo-cortex start` died with
+  `ImportError: cannot import name 'Mem0Config' from 'agentb.config'`. The
+  Mem0 dataclass + AgentBConfig field + YAML loader + `Mem0Bridge` class are
+  now present in the repo. Mem0 is opt-in (`enabled: false` by default), so
+  users who don't configure Mem0 simply never trigger the upstream code path.
+- **`--port` flag now overrides config.** `mnemo-cortex start --port 50002`
+  previously captured the value but never passed it to the server subprocess
+  — the bind port came exclusively from `agentb.yaml`'s `server.port`. The
+  CLI now exports `MNEMO_PORT` to the subprocess env, and `agentb/server.py`
+  honors it as an override over `cfg.server.port`. The yaml stays
+  authoritative when the flag is omitted.
+
+No 2.6.4 CHANGELOG entry exists; it shipped as a version bump without a
+release note. Anything that landed between 2.6.3 and 2.6.5 is in `git log`.
+
 ## v2.6.3 (2026-04-27)
 
 Audit-driven catalog polish (Opie's compliance pass). Two real fixes plus

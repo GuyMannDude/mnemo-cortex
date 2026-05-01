@@ -312,6 +312,8 @@ def start(foreground, port):
 
     env = os.environ.copy()
     env["AGENTB_CONFIG"] = str(CONFIG_FILE)
+    if port is not None:
+        env["MNEMO_PORT"] = str(port)
 
     cmd = [sys.executable, "-m", "agentb.server"]
 

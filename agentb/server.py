@@ -13,6 +13,7 @@ Five endpoints. Any LLM. Total recall.
 https://github.com/GuyMannDude/mnemo-cortex
 """
 
+import os
 import json
 import time
 import hashlib
@@ -627,5 +628,6 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     cfg = load_config()
-    uvicorn.run("agentb.server:app", host=cfg.server.host, port=cfg.server.port,
+    port = int(os.environ["MNEMO_PORT"]) if os.environ.get("MNEMO_PORT") else cfg.server.port
+    uvicorn.run("agentb.server:app", host=cfg.server.host, port=port,
                 reload=False, log_level=cfg.log_level)
