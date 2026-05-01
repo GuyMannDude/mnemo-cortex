@@ -29,23 +29,40 @@ Hermes patching — config-only.
 
 ## Install
 
-### 1. Get Mnemo Cortex running
+### Quick path — run the installer
 
-If you don't have a Mnemo Cortex server yet:
+If you already have a Mnemo Cortex server running and Hermes installed:
+
+```bash
+git clone https://github.com/GuyMannDude/mnemo-cortex.git
+cd mnemo-cortex/integrations/hermes
+bash install.sh
+```
+
+The installer prompts for your Mnemo URL, agent ID, and share mode, runs
+`npm install` on the bridge, registers the `mnemo` MCP server with Hermes
+via `hermes mcp add`, and verifies the wire with `hermes mcp test mnemo`.
+Done.
+
+If you don't have a Mnemo Cortex server yet, install it first:
 
 ```bash
 pip install mnemo-cortex
-mnemo-cortex init           # interactive — picks providers, writes ~/.config/agentb/agentb.yaml
+mnemo-cortex init           # interactive — picks providers
 mnemo-cortex start          # default port 50001
 mnemo-cortex health         # verify it's up
 ```
 
-> Already running it? Skip to step 2.
+Then run the installer above.
 
-### 2. Install the bridge
+### Manual path — for the curious or unusual setups
 
-The bridge is in this repo. Clone the repo (or use an existing checkout)
-and `npm install` the bridge dependencies:
+If you'd rather wire it up by hand (or the installer doesn't fit your
+environment), here's what it does:
+
+#### 1. Install the bridge
+
+The bridge is a Node stdio MCP server bundled in the mnemo-cortex repo:
 
 ```bash
 git clone https://github.com/GuyMannDude/mnemo-cortex.git
@@ -53,36 +70,28 @@ cd mnemo-cortex/integrations/openclaw-mcp
 npm install
 ```
 
-Two npm dependencies: `@modelcontextprotocol/sdk` and `zod`. No OpenClaw
-runtime dependency — the folder name is historical.
+Two npm deps: `@modelcontextprotocol/sdk` and `zod`. Zero OpenClaw runtime
+dependency — the folder name is historical.
 
-> Note the absolute path to `server.js` — you'll need it in step 3.
+#### 2. Register with Hermes
 
-### 3. Tell Hermes about it
+Hermes ships with a built-in `mcp add` command. From anywhere on your shell:
 
-Edit `~/.hermes/config.yaml` (Hermes creates this on first run; if it's
-missing, just create it). Add an `mcp_servers` block:
-
-```yaml
-mcp_servers:
-  mnemo:
-    command: node
-    args:
-      - /absolute/path/to/mnemo-cortex/integrations/openclaw-mcp/server.js
-    env:
-      MNEMO_URL: http://localhost:50001
-      MNEMO_AGENT_ID: hermes
-      MNEMO_SHARE: separate
-    timeout: 60
-    connect_timeout: 30
+```bash
+hermes mcp add mnemo \
+    --command node \
+    --args /absolute/path/to/mnemo-cortex/integrations/openclaw-mcp/server.js \
+    --env MNEMO_URL=http://localhost:50001 MNEMO_AGENT_ID=hermes MNEMO_SHARE=separate
 ```
 
-Replace `/absolute/path/to/mnemo-cortex` with your real path. Pick any
-`MNEMO_AGENT_ID` you like — memories are scoped to it.
+Replace the path with where you cloned the repo. Pick any `MNEMO_AGENT_ID`
+you like — memories are scoped to it.
 
-A complete starter config is in [`config.yaml.example`](config.yaml.example).
+This writes the entry into `~/.hermes/config.yaml`. If you'd rather edit
+that file by hand, see [`config.yaml.example`](config.yaml.example) for
+the exact shape.
 
-### 4. Verify
+#### 3. Verify
 
 ```bash
 hermes mcp test mnemo
