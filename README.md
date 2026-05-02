@@ -35,6 +35,8 @@
 
 🤖 **[Agent Zero → autonomous Docker agents](integrations/agent-zero/)** — In-container MCP setup. Cross-agent memory between research, courier, code-exec bots.
 
+🪽 **[Hermes Agent → `hermes mcp add` integration](integrations/hermes/)** — First-class MCP for Nous Research's Hermes Agent (v0.12.0+). Config-only, no patching. Cross-agent memory between Hermes and your other bots.
+
 🦣 **[Ollama Desktop → terminal `ollama launch openclaw`](integrations/ollama-desktop/)** — Ollama as the local LLM, OpenClaw as the MCP host. Note: Ollama Desktop's *own chat window* doesn't support MCP — use the terminal launcher.
 
 🦙 **[Any Local LLM → MCP setup](#use-with-any-local-llm)** — Open WebUI, llama.cpp, Ollama, LobeChat, Jan, and more
