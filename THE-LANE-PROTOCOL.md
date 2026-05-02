@@ -60,6 +60,87 @@ If you find yourself writing the same thing in two places, you're probably doing
 
 ---
 
+## Task structure (optional)
+
+Plain bullets work fine for small lanes:
+
+```markdown
+## In Progress
+- [ ] Test FrankenClaw against Hermes end-to-end
+```
+
+When you have many tasks across multiple agents — or you want agents to coordinate on `active.md` without parsing prose — promote each task to a structured line. The shape comes from how issue trackers let agents coordinate (the pattern [OpenAI's Symphony](https://github.com/openai/symphony) exploits with Linear):
+
+```markdown
+- [ ] [task:fc-hermes-test] (cc, state:up-next) Test FrankenClaw ↔ Hermes end-to-end
+- [ ] [task:lane-symphony] (cc, state:in-progress, blocks:lane-symphony-public) Symphony-shape upgrade to live brain
+- [ ] [task:lane-symphony-public] (cc, state:up-next, blocked-by:lane-symphony) Mirror upgrade to public THE-LANE-PROTOCOL.md
+- [x] [task:codex-login-verify] (cc, state:done, 2026-05-01) Verify codex CLI auth persisted
+```
+
+### The four fields
+
+| Field | Meaning | Example |
+|---|---|---|
+| `[task:slug]` | Stable per-task ID. Kebab-case, semantic, lives the life of the task. | `[task:hoffman-gmc-appeal]` |
+| `(assignee, ...)` | Who owns it right now. One agent name. Other agents read but won't act. | `(cc)`, `(opie)`, `(rocky)` |
+| `state:label` | Where it is in the lifecycle. | `state:in-progress` |
+| `blocks:` / `blocked-by:` | Dependency edges. Use the slug of the other task. | `blocked-by:fc-hermes-test` |
+
+### The state machine
+
+```
+   ┌─────────┐  claim   ┌─────────────┐ request_review ┌────────┐ complete ┌──────┐
+   │ up-next │ ───────▶ │ in-progress │ ─────────────▶ │ review │ ────────▶ │ done │
+   └─────────┘          └──────┬──────┘                └────────┘           └──────┘
+                               │
+                               │ block / park / abandon
+                               ▼
+                     ┌─────────┬────────┬───────────┐
+                     │ blocked │ parked │ wont-fix  │
+                     └─────────┴────────┴───────────┘
+                          │ unblock
+                          └────▶ back to in-progress
+```
+
+- **`up-next`** — queued. Nobody's working on it.
+- **`in-progress`** — claimed. Active work.
+- **`review`** — work done, awaiting human gate or another agent.
+- **`done`** — terminal. Stays in `active.md` briefly, then archives.
+- **`blocked`** — has `blocked-by:` pointing at another task.
+- **`parked`** — paused deliberately. Could resume.
+- **`wont-fix`** — terminal-failure. Decided not to do it.
+
+### The verbs
+
+A small vocabulary for what your file edits *mean* — not tools to invoke, just shared words across agents:
+
+| Verb | What changes in the file |
+|---|---|
+| `claim(slug)` | `assignee` → you, `state` → `in-progress` |
+| `transition(slug, state)` | `state:` field updates |
+| `block(slug, blocker_slug)` | `state:blocked`, add `blocked-by:` |
+| `unblock(slug)` | Drop `blocked-by:`, `state:up-next` |
+| `complete(slug)` | `[x]`, `state:done`, optional `(YYYY-MM-DD)` |
+| `archive(slug)` | Cut from `active.md` (history stays in `git log`) |
+
+### When to skip this
+
+Solo project with a handful of open tasks? Overkill. Reach for structured tasks when:
+
+- Two or more agents touch the same `active.md` and you've felt the friction.
+- You've ever lost track of what was blocking what.
+- You want an agent to claim "the next un-assigned `up-next` task" without parsing prose.
+- You're building toward a [Symphony](https://github.com/openai/symphony)-shaped pipeline that needs structural state to operate.
+
+The structure is opt-in per task. Untagged bullets remain valid. The convention scales with you.
+
+### Why this shape
+
+It's not a coincidence that this looks like an issue tracker. Bugzilla → Jira → Linear → Symphony is the same pattern at every scale: durable state, explicit ownership, legal transitions, audit history, dependency graph, scoped permissions, structural verbs. Those seven properties are what make a tool **agent-substrate-ready**. When `active.md` has them, agents can operate against it without a wrapper.
+
+---
+
 ## Multi-agent: same protocol, different tooling
 
 Multiple agents can run the same protocol. They look different on the outside because their tools differ:
