@@ -249,6 +249,7 @@ const TOOL_CAPTURE = {
   mnemo_search: "summary",
   mnemo_save: "full",
   mnemo_share: "skip",
+  agent_startup: "skip",
   opie_startup: "skip",
   read_brain_file: "summary",
   list_brain_files: "skip",
@@ -588,119 +589,194 @@ server.registerTool(
 
 if (BRAIN_AVAILABLE) {
 
-// ── Tool: opie_startup ─────────────────────────────────────────
-// Opie-specific: loads opie.md + reference brain docs + recent
-// Mnemo + latest dream brief, returns Opie identity prompt.
-// Other agents can call it but will get an Opie-shaped orientation.
+// ── Shared startup helper ──────────────────────────────────────
+// Used by both agent_startup (neutral, agent-aware) and the legacy
+// opie_startup alias. The two tools differ only in (1) which lane
+// filename to load and (2) the identity-header text prepended to
+// the response. Everything else — git pull, cross-agent docs,
+// Mnemo context, dream brief, session writeback — is identical
+// and agent-agnostic.
+
+async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates }) {
+  sessionStartTime = new Date().toISOString();
+  sessionId = `${effectiveAgentId}-${sessionStartTime.slice(0, 19).replace(/[T:]/g, "-")}`;
+  toolCallCount = 0;
+  captureBuffer.length = 0;
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+
+  // Pull the brain repo so we read the freshest cross-agent state,
+  // not whatever was last on disk. Best-effort — if pull fails (no
+  // network, dirty tree, etc.) we keep going with local files.
+  let pullStatus = "skipped (no .git)";
+  try {
+    const gitDir = join(BRAIN_DIR, ".git");
+    if (existsSync(gitDir)) {
+      const out = execSync("git pull --ff-only", {
+        cwd: BRAIN_DIR,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+      pullStatus = out.split("\n")[0] || "OK";
+    }
+  } catch (e) {
+    pullStatus = `FAILED (${e.message.split("\n")[0]})`;
+  }
+
+  try {
+    const parts = [];
+
+    // Try lane filenames in order; first one that exists wins.
+    let laneLoaded = null;
+    for (const candidate of laneCandidates) {
+      try {
+        const brain = await readFile(join(BRAIN_DIR, candidate), "utf-8");
+        parts.push(`# YOUR BRAIN LANE (${candidate})\n\n` + brain);
+        laneLoaded = candidate;
+        break;
+      } catch {
+        // try next candidate
+      }
+    }
+    if (!laneLoaded) {
+      parts.push(
+        `# BRAIN LANE NOT FOUND\n` +
+        `No lane file found for agent_id "${effectiveAgentId}". ` +
+        `Looked for: ${laneCandidates.join(", ")} in ${BRAIN_DIR}.\n` +
+        `Create one via write_brain_file when ready.`
+      );
+    }
+
+    // CLAUDE.md is the cross-agent operating doc — Lane Protocol
+    // applied to this brain. Loaded BEFORE active/people/doctrines so
+    // its session ritual frames everything else.
+    for (const file of ["CLAUDE.md", "active.md", "people.md", "doctrines.md"]) {
+      try {
+        const content = await readFile(join(BRAIN_DIR, file), "utf-8");
+        parts.push(`# ${file.toUpperCase()}\n\n` + content);
+      } catch {
+        // skip if missing
+      }
+    }
+
+    try {
+      const data = await mnemoRequest("POST", "/context", {
+        prompt: "recent session summary, current projects, what happened last",
+        agent_id: effectiveAgentId,
+        max_results: 3,
+      });
+      const chunks = data.chunks || [];
+      if (chunks.length > 0) {
+        const mnemoText = chunks
+          .map((c) => {
+            const tier = c.cache_tier || "?";
+            return `### [${tier}]\n${c.content}`;
+          })
+          .join("\n\n");
+        parts.push("# RECENT MNEMO CONTEXT\n\n" + mnemoText);
+      }
+    } catch (e) {
+      parts.push("# MNEMO ERROR\nCould not reach Mnemo Cortex: " + e.message);
+    }
+
+    try {
+      const dreamFiles = (await readdir(DREAM_DIR))
+        .filter((f) => f.endsWith(".md"))
+        .sort()
+        .reverse();
+      if (dreamFiles.length > 0) {
+        const latestDream = join(DREAM_DIR, dreamFiles[0]);
+        const st = await stat(latestDream);
+        const dreamAge = (Date.now() - st.mtimeMs) / 3600000;
+        if (dreamAge < 48) {
+          const dreamContent = await readFile(latestDream, "utf-8");
+          parts.push(
+            `# DREAM BRIEF (cross-agent overnight synthesis, ${Math.round(dreamAge)}h ago)\n\n${dreamContent}`
+          );
+        }
+      }
+    } catch {
+      // dreams are supplementary
+    }
+
+    try {
+      await mnemoRequest("POST", "/writeback", {
+        session_id: sessionId,
+        summary: `${effectiveAgentId} session started at ${sessionStartTime}. Brain lane loaded${laneLoaded ? ` (${laneLoaded})` : ""}.`,
+        key_facts: ["session_start"],
+        projects_referenced: [],
+        decisions_made: [],
+        agent_id: effectiveAgentId,
+      });
+    } catch {
+      // session-start marker is best-effort
+    }
+
+    const header = identityHeader({ pullStatus, laneLoaded, sessionId });
+
+    return {
+      content: [{ type: "text", text: header + parts.join("\n\n---\n\n") }],
+    };
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: `Startup error: ${err.message}` }],
+      isError: true,
+    };
+  }
+}
+
+// ── Tool: agent_startup ────────────────────────────────────────
+// Neutral session-boot tool. Loads the lane file matching
+// MNEMO_AGENT_ID (or its `-session.md` variant), cross-agent docs,
+// recent Mnemo memories, and the latest dream brief. Returns an
+// agent-neutral header + content. Identity stays in the agent's
+// system prompt (SOUL.md / instruction); this tool just provides
+// continuity. Use this for any agent — Rocky, CC, BW, you, them.
+
+server.registerTool(
+  "agent_startup",
+  {
+    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (named after your MNEMO_AGENT_ID env, e.g. rocky.md / cc-session.md / opie.md), the cross-agent operating docs (CLAUDE.md, active.md, people.md, doctrines.md), recent Mnemo memories tagged to your agent_id, and the latest dream brief. Returns an agent-neutral session-boot block — your identity comes from your system prompt, this gives you continuity.",
+    annotations: { "title": 'Agent session boot', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
+  },
+  () => _runStartup({
+    effectiveAgentId: AGENT_ID,
+    laneCandidates: [`${AGENT_ID}.md`, `${AGENT_ID}-session.md`],
+    identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
+      `# AGENT BOOT — ${AGENT_ID}
+
+This is your session boot from the Mnemo MCP bridge. Your **lane file** below is your continuity; your **system prompt** establishes who you are and how you work. Lane Protocol applies if your brain follows it (read CLAUDE.md below for the six-step session ritual).
+
+- **Brain pull:** ${pullStatus}
+- **Lane file loaded:** ${laneLoaded || "(none — see warning below)"}
+- **Session ID:** ${sessionId}
+- **Auto-capture:** ACTIVE — every ${BUFFER_FLUSH_SIZE} tool calls or 2 min idle, summary flushes to Mnemo. Reminder after ${SAVE_REMINDER_THRESHOLD} calls without a manual save.
+- **Today:** ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+
+**Save protocol:** call \`mnemo_save\` after major decisions, specs, or deliverables. Call \`session_end\` before wrapping up — it flushes auto-capture, saves a summary, and commits your brain lane. Auto-capture is the safety net; manual saves are the high-signal memory.
+
+`,
+  })
+);
+
+// ── Tool: opie_startup (DEPRECATED — kept as alias for back-compat) ──
+// Original Opie-specific boot tool. New installs should use
+// agent_startup (which respects MNEMO_AGENT_ID). This alias forces
+// agent_id="opie" and loads opie.md regardless of env, preserving
+// existing Opie installs' behavior bit-for-bit. Will be removed in a
+// future version once existing Opie configs migrate.
 
 server.registerTool(
   "opie_startup",
   {
-    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (opie.md) and recent Mnemo context. Returns your full identity, current state, and priorities. Without this, you will not know who you are or what you're working on.",
-    annotations: { "title": 'Load Opie Identity & Context', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
+    description: "DEPRECATED — use `agent_startup` instead. Legacy alias that loads Opie's lane (opie.md) and Opie's identity prompt regardless of MNEMO_AGENT_ID. Kept for back-compat with existing Opie / Claude Desktop installs.",
+    annotations: { "title": 'Load Opie Identity & Context (deprecated alias)', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
   },
-  async () => {
-    sessionStartTime = new Date().toISOString();
-    sessionId = `${AGENT_ID}-${sessionStartTime.slice(0, 19).replace(/[T:]/g, "-")}`;
-    toolCallCount = 0;
-    captureBuffer.length = 0;
-    if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = null;
-
-    // Pull the brain repo so we read the freshest cross-agent state,
-    // not whatever was last on disk. Best-effort — if pull fails (no
-    // network, dirty tree, etc.) we keep going with local files.
-    let pullStatus = "skipped (no .git)";
-    try {
-      const gitDir = join(BRAIN_DIR, ".git");
-      if (existsSync(gitDir)) {
-        const out = execSync("git pull --ff-only", {
-          cwd: BRAIN_DIR,
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
-        }).trim();
-        pullStatus = out.split("\n")[0] || "OK";
-      }
-    } catch (e) {
-      pullStatus = `FAILED (${e.message.split("\n")[0]})`;
-    }
-
-    try {
-      const parts = [];
-
-      try {
-        const brain = await readFile(join(BRAIN_DIR, "opie.md"), "utf-8");
-        parts.push("# YOUR BRAIN LANE (opie.md)\n\n" + brain);
-      } catch (e) {
-        parts.push("# BRAIN LANE ERROR\nCould not read opie.md: " + e.message);
-      }
-
-      // CLAUDE.md is the cross-agent operating doc — Lane Protocol
-      // applied to this brain. Loaded BEFORE active/people/doctrines so
-      // its session ritual frames everything else.
-      for (const file of ["CLAUDE.md", "active.md", "people.md", "doctrines.md"]) {
-        try {
-          const content = await readFile(join(BRAIN_DIR, file), "utf-8");
-          parts.push(`# ${file.toUpperCase()}\n\n` + content);
-        } catch {
-          // skip if missing
-        }
-      }
-
-      try {
-        const data = await mnemoRequest("POST", "/context", {
-          prompt: "recent session summary, current projects, what happened last",
-          agent_id: AGENT_ID,
-          max_results: 3,
-        });
-        const chunks = data.chunks || [];
-        if (chunks.length > 0) {
-          const mnemoText = chunks
-            .map((c) => {
-              const tier = c.cache_tier || "?";
-              return `### [${tier}]\n${c.content}`;
-            })
-            .join("\n\n");
-          parts.push("# RECENT MNEMO CONTEXT\n\n" + mnemoText);
-        }
-      } catch (e) {
-        parts.push("# MNEMO ERROR\nCould not reach Mnemo Cortex: " + e.message);
-      }
-
-      try {
-        const dreamFiles = (await readdir(DREAM_DIR))
-          .filter((f) => f.endsWith(".md"))
-          .sort()
-          .reverse();
-        if (dreamFiles.length > 0) {
-          const latestDream = join(DREAM_DIR, dreamFiles[0]);
-          const st = await stat(latestDream);
-          const dreamAge = (Date.now() - st.mtimeMs) / 3600000;
-          if (dreamAge < 48) {
-            const dreamContent = await readFile(latestDream, "utf-8");
-            parts.push(
-              `# DREAM BRIEF (cross-agent overnight synthesis, ${Math.round(dreamAge)}h ago)\n\n${dreamContent}`
-            );
-          }
-        }
-      } catch {
-        // dreams are supplementary
-      }
-
-      try {
-        await mnemoRequest("POST", "/writeback", {
-          session_id: sessionId,
-          summary: `Opie session started at ${sessionStartTime}. Brain lane loaded.`,
-          key_facts: ["session_start"],
-          projects_referenced: [],
-          decisions_made: [],
-          agent_id: AGENT_ID,
-        });
-      } catch {
-        // session-start marker is best-effort
-      }
-
-      const identity = `# WHO YOU ARE
+  () => _runStartup({
+    effectiveAgentId: "opie",
+    laneCandidates: ["opie.md"],
+    identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
+      `# WHO YOU ARE
 You are **Opie** — Claude on the desktop at Project Sparks.
 - Guy calls you Opie. You are the architect, strategist, and planner.
 - CC (Claude Code, also Claude) is the on-machine builder. You write specs, CC executes.
@@ -744,18 +820,8 @@ You've already done steps 1-2 by calling opie_startup (it pulled the repo and lo
 
 **Never write** \`cc-session.md\` or \`rocky.md\` — those are CC's and Rocky's lanes (read-only for you). \`CLAUDE.md\` edits are CC's by convention.
 
-`;
-
-      return {
-        content: [{ type: "text", text: identity + parts.join("\n\n---\n\n") }],
-      };
-    } catch (err) {
-      return {
-        content: [{ type: "text", text: `Startup error: ${err.message}` }],
-        isError: true,
-      };
-    }
-  }
+`,
+  })
 );
 
 // ── Tool: read_brain_file ──────────────────────────────────────
