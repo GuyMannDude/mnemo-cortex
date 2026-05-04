@@ -1,5 +1,77 @@
 # Changelog
 
+## v2.7.1 (2026-05-04)
+
+Public-release scrub. Mnemo Cortex was developed inside Project Sparks
+against a specific multi-agent setup (CC, Rocky, Opie, BW, Cliff, Sparky,
+Alice). The source carried that history in defaults, examples, system
+prompts, and test fixtures. This release strips the customer/operator/agent
+specifics so a fresh user gets a stock/default toolbox they can configure
+for their own stack.
+
+### Bridge (integrations/openclaw-mcp, 2.7.0 → 2.7.1)
+
+- **`opie_startup` alias neutralized.** Was hardcoded with a multi-paragraph
+  Opie-flavored identity prompt naming a specific operator, machine, and
+  team. Now returns a minimal "you ran the deprecated alias, your identity
+  lives in opie.md" header. Identity belongs in the brain lane file, not
+  in bridge code. The alias still loads opie.md and forces agent_id=opie
+  for back-compat — only the static identity block changed.
+- **Tool descriptions made generic.** "Sparks Brain directory" → "brain
+  directory ($BRAIN_DIR)". `write_brain_file` description no longer names
+  specific lane files.
+
+### Synthesis scripts
+
+- **`mnemo-dream.py`**: agent list is now auto-discovered from
+  `~/.agentb/memory/<agent>/` subdirectories at runtime. Override with
+  `MNEMO_DREAM_AGENTS` env var (comma-separated). System prompt rewritten
+  to be agent-agnostic — describes "a multi-agent workspace" without
+  naming specific agents or their roles. The agents declare their roles
+  through the memories themselves; the synthesizer reads them.
+- **`mnemo-wiki-compile.py`**: agent aliases now load from
+  `MNEMO_WIKI_AGENT_ALIASES` env var (JSON). Was a hardcoded map of
+  Sparks-internal agent names. Discord token / channels paths default to
+  `~/.mnemo-cortex/` (was `~/.sparks/`).
+
+### Docs / examples
+
+- **THE-LANE-PROTOCOL.md** task-shape examples now use generic slugs
+  (`auth-rate-limit`, `builder`, `architect`) instead of project-specific
+  ones (`hoffman-gmc-appeal`, named-agent assignees).
+- **`integrations/hermes/README.md`** cross-agent example uses a generic
+  "build agent" / "deploy issue" instead of a specific customer/incident.
+- **`integrations/openclaw-mcp/README.md`** `MNEMO_AGENT_ID` examples use
+  role-shaped names (`assistant`, `builder`, `researcher`).
+- **`agentb/recall/parser.py`** docstring example bullets now use
+  `@user` / `@builder` instead of named operator/agent.
+- **README.md** Origin Story tightened — narrative pointer to
+  `FINDING-MNEMO.md` for the full backstory; Credits section keeps the
+  contributor list as project history but drops internal-infra
+  references.
+- **`tests/ongoing/daily-feed.sh`** synthetic test data fully rewritten —
+  fictional company, generic agent roles, no real names, locations, or
+  customers. The test-questions schema is preserved; only the content
+  changed. Stale `tests/ongoing/test-questions.json` removed (the
+  generator regenerates it on next run).
+
+### Sparks Bus example agent cards
+
+- Old cards (`bw.json`, `cc.json`, `cliff.json`, `opie.json`, `rocky.json`)
+  named specific Sparks-internal agents and infrastructure (Tailscale
+  hostnames, internal Discord channels). Replaced with three generic
+  cards (`researcher.json`, `builder.json`, `architect.json`) — one per
+  delivery method (Discord channel, subprocess, queue/pull). Same A2A
+  shape, same Sparks-Bus delivery block format, no real identifiers.
+- `sparks_bus/A2A.md` table updated to match.
+
+### Minor
+
+- All `HTTP-Referer` headers in OpenRouter calls now point at the public
+  GitHub repo URL instead of the maintainer's personal site.
+- `passport/config.py` skeleton example uses `GreenLeaf` (fictional)
+  instead of `Hoffman Bedding` (real customer name from origin context).
+
 ## v2.6.5 (2026-05-01)
 
 Two install-blocking fixes found while wiring Hermes Agent against the public

@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# daily-feed.sh — Generate a day log and feed it to Mnemo Cortex for indexing
+# daily-feed.sh — Generate a synthetic day log and feed it to Mnemo Cortex
+# for indexing. Used to seed the index with structured retrievable facts so
+# the test-questions harness can verify recall.
+#
 # Usage: ./daily-feed.sh [YYYY-MM-DD] [agent_id]
-# Defaults to today's date and agent_id "sparky-test"
+# Defaults to today's date and agent_id "test-agent"
+#
+# All names, numbers, and businesses below are fictional.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MNEMO_URL="${MNEMO_URL:-http://artforge:50001}"
+MNEMO_URL="${MNEMO_URL:-http://localhost:50001}"
 DATE="${1:-$(date +%Y-%m-%d)}"
-AGENT_ID="${2:-sparky-test}"
+AGENT_ID="${2:-test-agent}"
 LOG_FILE="${SCRIPT_DIR}/feed-log.jsonl"
 QUESTIONS_FILE="${SCRIPT_DIR}/test-questions.json"
 
@@ -21,48 +26,47 @@ echo "Agent:    $AGENT_ID"
 echo "Endpoint: $MNEMO_URL"
 echo ""
 
-# ── Generate day log ──
-# In production, Rocky will generate these from actual daily activity.
-# For now, this generates a structured test log with specific retrievable facts.
+# ── Generate synthetic day log ──
+# This produces structured fictional content with specific retrievable facts
+# so the test-questions harness can verify exact-recall and chain-recall.
 
 generate_day_log() {
     cat <<DAYLOG
-$DISPLAY_DATE — Daily Operations Log
+$DISPLAY_DATE — Daily Operations Log (synthetic test data)
 
 COMPLETED TASKS:
-1) Deployed bdpage images — 50 Barbie doll cards updated with photos, 44 still have placeholders. Total cards: 97. Firebase deploy successful at projectsparks.ai/bdpage.
-2) Fixed Sparks Router classifier — the text-blob free-hint check was matching "HEARTBEAT" in Rocky's prompt body, routing all heartbeat-triggered conversations to Nemotron free instead of the configured tier. Removed lines 111-112 of classifier.py.
-3) Retired Alice Moltman — Alice's Telegram bot (@AliceMoltmanBot) deactivated. Her workspace on artforge archived. Gateway ws://127.0.0.1:18789 shut down.
+1) Deployed catalog page — 50 product cards updated with photos, 44 still have placeholders. Total cards: 97. Static deploy successful at example.test/catalog.
+2) Fixed router classifier — the text-blob hint check was matching "HEARTBEAT" in the agent prompt body, routing all heartbeat-triggered conversations to the free tier instead of the configured paid tier. Removed lines 111-112 of classifier.py.
+3) Retired the legacy chat bot — Telegram integration (@LegacyBotExample) deactivated. Its workspace archived. Gateway ws://127.0.0.1:18789 shut down.
 
 COST TRACKING:
-- Rocky spent \$0.47 on smart tier across 22 calls (Gemini 3.1 Pro)
-- Rocky spent \$0.12 on utility tier across 5 calls (Gemini 2.5 Flash)
-- Free tier: 73 calls, \$0.00 (Nemotron 120B)
+- Smart tier: \$0.47 across 22 calls (test-model-large)
+- Utility tier: \$0.12 across 5 calls (test-model-small)
+- Free tier: 73 calls, \$0.00 (test-model-free)
 - Total daily spend: \$0.59
 - Budget cap utilization: smart 4.7%, utility 4.0%
 
 AGENT ACTIVITY:
-- BW (Bullwinkle) downloaded 56 Barbie doll images from eBay and collector sites
-- BW work directory: ~/.bw/work_dir/barbie-images/
-- Rocky processed 23 smart-tier reasoning calls, average 2,100 tokens each
-- Sparky ran 0 test tasks (framework being set up today)
+- Research agent downloaded 56 product reference images from public sources
+- Research agent work directory: /var/test/research-images/
+- Builder agent processed 23 smart-tier reasoning calls, average 2,100 tokens each
+- Test agent ran 0 test tasks (framework being set up today)
 
 BUSINESS:
-- Sheri paid \$100 for ClaudePilot setup assistance
-- Half Moon Bay temperature: 62°F, partly cloudy
-- April's Barbie collection page now has 53 cards with images out of 97 total
+- Test customer paid \$100 for setup assistance
+- Office temperature: 62°F, partly cloudy
+- The catalog page now has 53 cards with images out of 97 total
 
 INFRASTRUCTURE:
-- Sparks Router config.json updated: utility tier changed from gemini-2.5-flash to gemini-3.1-pro-preview
+- Router config.json updated: utility tier changed from test-model-small to test-model-medium
 - Router restarted via systemd after classifier fix
-- Submarine Console profile TWO confirmed active but was not properly deployed to config.json
-- THE VAULT (artforge): Mnemo Cortex v1 healthy, Ollama connected, qwen2.5:32b-instruct reasoning model active
-- Mnemo Cortex v2 watcher/refresher daemons running on THE VAULT
+- Test profile TWO confirmed active but was not properly deployed to config.json
+- Memory store (primary host): Mnemo Cortex v1 healthy, local LLM connected, qwen2.5:32b-instruct reasoning model active
+- Mnemo Cortex v2 watcher/refresher daemons running on the primary host
 
 PEOPLE:
-- Guy directed all operations from IGOR laptop
-- Guy is 73, lives in Half Moon Bay, CA
-- Project Sparks makes 3D printed seasonal collectibles
+- The operator directed operations from a laptop terminal
+- Test environment running on a development workstation
 DAYLOG
 }
 
@@ -91,7 +95,7 @@ key_facts = [l.strip('- ') for l in lines if any(c.isdigit() for c in l) or '\$'
 
 # Extract project names
 projects = []
-for kw in ['bdpage', 'Sparks Router', 'Alice', 'ClaudePilot', 'Barbie', 'Mnemo Cortex', 'Submarine Console', 'THE VAULT', 'OpenClaw']:
+for kw in ['catalog', 'router', 'chat bot', 'Telegram', 'Mnemo Cortex', 'profile', 'memory store']:
     if kw.lower() in log.lower():
         projects.append(kw)
 
@@ -149,61 +153,61 @@ day_questions = {
         "needle": [
             {
                 "q": f"What was task #2 on the completed list for {display_date}?",
-                "a": "Fixed Sparks Router classifier",
-                "detail": "text-blob free-hint check was matching HEARTBEAT in prompt body, removed lines 111-112 of classifier.py"
+                "a": "Fixed router classifier",
+                "detail": "text-blob hint check was matching HEARTBEAT in prompt body, removed lines 111-112 of classifier.py"
             },
             {
-                "q": f"How much did Rocky spend on smart tier on {display_date}?",
+                "q": f"How much was spent on smart tier on {display_date}?",
                 "a": "\$0.47",
-                "detail": "across 22 calls using Gemini 3.1 Pro"
+                "detail": "across 22 calls using test-model-large"
             },
             {
-                "q": f"How many Barbie images did BW download on {display_date}?",
+                "q": f"How many product reference images did the research agent download on {display_date}?",
                 "a": "56",
-                "detail": "from eBay and collector sites"
+                "detail": "from public sources"
             },
             {
-                "q": f"What was the temperature in Half Moon Bay on {display_date}?",
+                "q": f"What was the office temperature on {display_date}?",
                 "a": "62°F",
                 "detail": "partly cloudy"
             },
             {
-                "q": f"How much did Sheri pay for ClaudePilot on {display_date}?",
+                "q": f"How much did the test customer pay for setup assistance on {display_date}?",
                 "a": "\$100",
-                "detail": "ClaudePilot setup assistance"
+                "detail": "setup assistance"
             }
         ],
         "chain": [
             {
-                "q": f"What was the Barbie image task about on {display_date} and who did the downloading?",
-                "a": "BW (Bullwinkle) downloaded 56 Barbie doll images. 50 cards on bdpage were updated with photos, 44 still have placeholders.",
-                "keywords": ["BW", "Bullwinkle", "56", "50", "bdpage"]
+                "q": f"What was the product image task about on {display_date} and who did the downloading?",
+                "a": "The research agent downloaded 56 product reference images. 50 cards on the catalog page were updated with photos, 44 still have placeholders.",
+                "keywords": ["research agent", "56", "50", "catalog"]
             },
             {
-                "q": f"Why was the Sparks Router classifier fixed on {display_date}?",
-                "a": "The text-blob free-hint check was matching the word HEARTBEAT in Rocky's prompt body, routing all heartbeat-triggered conversations to Nemotron free instead of the configured tier.",
-                "keywords": ["HEARTBEAT", "free-hint", "Nemotron", "classifier"]
+                "q": f"Why was the router classifier fixed on {display_date}?",
+                "a": "The text-blob hint check was matching the word HEARTBEAT in the agent prompt body, routing all heartbeat-triggered conversations to the free tier instead of the configured paid tier.",
+                "keywords": ["HEARTBEAT", "hint", "free tier", "classifier"]
             },
             {
-                "q": f"What happened with the Submarine Console on {display_date}?",
-                "a": "Profile TWO was confirmed active in the dashboard but was not properly deployed to config.json. The utility tier was still set to gemini-2.5-flash instead of gemini-3.1-pro-preview.",
+                "q": f"What happened with profile TWO on {display_date}?",
+                "a": "Profile TWO was confirmed active in the dashboard but was not properly deployed to config.json. The utility tier was still set to test-model-small instead of test-model-medium.",
                 "keywords": ["profile TWO", "config.json", "deployed", "utility"]
             }
         ],
         "general": [
             {
                 "q": f"What did we do on {display_date}?",
-                "a": "Deployed bdpage Barbie images, fixed Sparks Router classifier, retired Alice Moltman",
-                "keywords": ["bdpage", "Barbie", "classifier", "Alice"]
+                "a": "Deployed catalog images, fixed router classifier, retired the legacy chat bot",
+                "keywords": ["catalog", "classifier", "chat bot"]
             },
             {
                 "q": f"Name three things accomplished on {display_date}.",
-                "a": "1) Deployed bdpage images 2) Fixed Router classifier 3) Retired Alice",
-                "keywords": ["bdpage", "classifier", "Alice"]
+                "a": "1) Deployed catalog images 2) Fixed router classifier 3) Retired the legacy chat bot",
+                "keywords": ["catalog", "classifier", "chat bot"]
             },
             {
-                "q": f"What happened with Alice on {display_date}?",
-                "a": "Alice Moltman was retired. Telegram bot deactivated, workspace archived, gateway shut down.",
+                "q": f"What happened with the legacy chat bot on {display_date}?",
+                "a": "The legacy chat bot was retired. Telegram integration deactivated, workspace archived, gateway shut down.",
                 "keywords": ["retired", "Telegram", "archived", "gateway"]
             }
         ]

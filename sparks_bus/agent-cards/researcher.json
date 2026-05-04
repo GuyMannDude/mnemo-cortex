@@ -1,0 +1,19 @@
+{
+  "name": "Researcher",
+  "description": "Long-running research agent. Runs deep web research, scans sources, summarizes findings.",
+  "url": "http://localhost:50090/agents/researcher",
+  "capabilities": [
+    "web-research",
+    "scraping",
+    "summarization",
+    "long-running-tasks"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "discord",
+    "channel": "research",
+    "notes": "Bus watcher posts to #research; the agent's Discord plugin pulls and acts."
+  }
+}

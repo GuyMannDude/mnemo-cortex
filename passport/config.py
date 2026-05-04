@@ -84,7 +84,7 @@ DEFAULT_DENYLIST_SKELETON: dict[str, Any] = {
     # denylist.local.yaml — your private nouns. NEVER synced. NEVER shared.
     # Add terms that should never leave your machine, even in aggregate.
     # Examples:
-    #   clients: ["AcmeBank", "Hoffman Bedding"]
+    #   clients: ["AcmeBank", "GreenLeaf"]
     #   projects: ["ProjectRed"]
     #   employer_internal_domains: ["corp.example.com"]
     #   repos: ["acme-private-monorepo"]
@@ -108,7 +108,7 @@ DEFAULT_REDACTION_MAP_SKELETON: dict[str, Any] = {
     # core, the validator substitutes the category label.
     # Example:
     #   AcmeBank: regulated audiences
-    #   Hoffman Bedding: a retail client
+    #   GreenLeaf: a retail client
     # Nothing here is auto-written — all entries are human-approved.
     # ---
     "version": "0.1",

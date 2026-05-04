@@ -28,7 +28,7 @@ openclaw mcp set mnemo-cortex '{"command":"node","args":["/absolute/path/to/mnem
 Replace:
 - `/absolute/path/to` with where you cloned the repo
 - `MNEMO_URL` with your Mnemo Cortex server address
-- `MNEMO_AGENT_ID` with your bot's name (e.g., `rocky`, `alice`, `sparky`)
+- `MNEMO_AGENT_ID` with your bot's name (e.g., `assistant`, `builder`, `researcher`)
 
 Restart OpenClaw after:
 

@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "mnemo-cortex",
   "display_name": "Mnemo Cortex",
-  "version": "2.6.5",
+  "version": "2.7.1",
   "description": "Persistent memory for Claude. Save, search, and recall across sessions. Works with any Mnemo Cortex server (local or hosted).",
   "long_description": "Mnemo Cortex gives Claude a persistent semantic memory layer that survives across sessions. This bundle registers 9 tools by default (4 memory + 5 Developer's Passport). Up to 8 additional tools (brain-lane CRUD, wiki search, session lifecycle) auto-register at startup if matching directories are found on disk via the optional `BRAIN_DIR` and `WIKI_DIR` env vars — this is what `tools_generated: true` reflects below.\n\nYou need a running Mnemo Cortex server — locally, in Docker, or somewhere reachable on your network. See https://github.com/GuyMannDude/mnemo-cortex for the server install.\n\nFree, self-hosted, fully private. Same memory across Claude Desktop, Claude Code, Ollama, LM Studio, and any other MCP host.",
   "author": {
@@ -82,7 +82,8 @@
     { "name": "passport_list_pending_observations",   "description": "List queued observations awaiting promotion." },
     { "name": "passport_promote_observation",         "description": "Promote a pending observation to a stable claim." },
     { "name": "passport_forget_or_override",          "description": "Deprecate, forget, or replace a stable claim." },
-    { "name": "opie_startup",                         "description": "Conditional (BRAIN_DIR): load brain lane file, recent context, and dream brief at session start." },
+    { "name": "agent_startup",                        "description": "Conditional (BRAIN_DIR): load this agent's brain lane file (named after MNEMO_AGENT_ID), shared docs, recent memories, and the latest dream brief. Returns an agent-neutral session-boot block." },
+    { "name": "opie_startup",                         "description": "DEPRECATED — use agent_startup. Legacy alias that forces agent_id=opie and loads opie.md regardless of MNEMO_AGENT_ID. Kept for back-compat with existing Opie / Claude Desktop installs." },
     { "name": "read_brain_file",                      "description": "Conditional (BRAIN_DIR): read a markdown file from the brain directory." },
     { "name": "list_brain_files",                     "description": "Conditional (BRAIN_DIR): list markdown files in the brain directory." },
     { "name": "write_brain_file",                     "description": "Conditional (BRAIN_DIR): write or update a brain file. Refuses to write CLAUDE.md or cc-session.md." },

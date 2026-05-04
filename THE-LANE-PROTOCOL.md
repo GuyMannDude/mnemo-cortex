@@ -82,8 +82,8 @@ When you have many tasks across multiple agents — or you want agents to coordi
 
 | Field | Meaning | Example |
 |---|---|---|
-| `[task:slug]` | Stable per-task ID. Kebab-case, semantic, lives the life of the task. | `[task:hoffman-gmc-appeal]` |
-| `(assignee, ...)` | Who owns it right now. One agent name. Other agents read but won't act. | `(cc)`, `(opie)`, `(rocky)` |
+| `[task:slug]` | Stable per-task ID. Kebab-case, semantic, lives the life of the task. | `[task:auth-rate-limit]` |
+| `(assignee, ...)` | Who owns it right now. One agent name. Other agents read but won't act. | `(builder)`, `(architect)`, `(reviewer)` |
 | `state:label` | Where it is in the lifecycle. | `state:in-progress` |
 | `blocks:` / `blocked-by:` | Dependency edges. Use the slug of the other task. | `blocked-by:fc-hermes-test` |
 

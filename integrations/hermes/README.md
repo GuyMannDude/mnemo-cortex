@@ -229,7 +229,7 @@ Default behavior (`MNEMO_SHARE: separate`) is privacy-first — your Hermes
 instance only sees its own memories. To search across agents:
 
 ```
-You: "What did Rocky save about the Hoffman Bedding incident?"
+You: "What did the build agent save about last week's deploy issue?"
 Hermes: [calls mnemo_share to enable cross-agent, then mnemo_search]
 ```
 

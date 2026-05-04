@@ -14,17 +14,15 @@ What we are *not* doing yet: standing up a public A2A endpoint, registering with
 
 ## Agent Cards
 
-Five cards in `agent-cards/`, one per agent:
+Three example cards ship in `agent-cards/`, one per delivery method:
 
-| File | Agent | Notes |
-|---|---|---|
-| `cc.json` | CC | Builder on IGOR, claude-method delivery |
-| `rocky.json` | Rocky | Production agent, Discord-method via #rocky-log |
-| `opie.json` | Opie | Architect on Claude Desktop, queue-method (pull) |
-| `bw.json` | BW | Research agent in Docker, Discord-method via #bw-research |
-| `cliff.json` | Cliff | Parallel research agent in Docker, Discord-method via #dispatch |
+| File | Role | Delivery | Notes |
+|---|---|---|---|
+| `researcher.json` | Long-running web research | Discord channel | Watcher posts to a channel, agent pulls and acts |
+| `builder.json` | Code + infrastructure | Subprocess | Watcher spawns the agent's CLI with the message body |
+| `architect.json` | Strategy + planning | Queue (pull) | Agent fetches on next session start; watcher never marks read |
 
-Each card carries: `name`, `description`, `url`, `capabilities[]`, `inputModes[]`, `outputModes[]`, `protocol`, plus a Sparks-Bus-specific `delivery` block describing how the watcher wakes that agent. The `url` is forward-looking — the agent's HTTPS endpoint when transport ships. Today it serves as a stable identifier.
+Each card carries: `name`, `description`, `url`, `capabilities[]`, `inputModes[]`, `outputModes[]`, `protocol`, plus a Sparks-Bus-specific `delivery` block describing how the watcher wakes that agent. The `url` is forward-looking — the agent's HTTPS endpoint when transport ships. Today it serves as a stable identifier. Add one card per agent in your deployment, following the same shape.
 
 ## Task object mapping
 

@@ -5,21 +5,19 @@ Doctrine: Mnemo is the source of truth. The wiki is a compiled view that is
 *always regenerable* from Mnemo. Wiki pages are NEVER edited directly. If the
 wiki is wrong, fix the source memories in Mnemo and recompile.
 
-Runs as a nightly cron at 3:30 AM on THE VAULT, 15 minutes after Dreaming
-finishes. Same data sources as Dreaming (AgentB writebacks + Mnemo v2 SQLite),
-same LLM (gemini-2.5-flash via OpenRouter), but produces topic-axis pages
-instead of a time-axis daily brief.
+Designed to run as a nightly cron, typically 15 minutes after the
+mnemo-dream synthesis. Same data sources as Dreaming (AgentB writebacks
++ Mnemo v2 SQLite), same LLM (gemini-2.5-flash via OpenRouter by default),
+but produces topic-axis pages instead of a time-axis daily brief.
 
-Per-page failures do NOT kill the run — bad LLM call → ⚠️ to #alerts → continue.
+Per-page failures do NOT kill the run — bad LLM call → alert → continue.
 
 Usage:
   mnemo-wiki-compile.py                     # nightly default (since last compile)
   mnemo-wiki-compile.py --dry-run --verbose # show clustering, NO LLM calls
   mnemo-wiki-compile.py --days 7            # explicit time window
-  mnemo-wiki-compile.py --topics rocky-gallery,sparks-bus  # subset compile
+  mnemo-wiki-compile.py --topics projects/api-gateway,entities/builder  # subset compile
   mnemo-wiki-compile.py --full              # all-time recompile (expensive!)
-
-Author: CC + Guy — Project Sparks (2026-04-22)
 """
 
 import argparse
@@ -56,11 +54,11 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 WIKI_MODEL = os.getenv("MNEMO_WIKI_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Discord (reuses Sparks Bus config — same channels file, same token)
-DISCORD_TOKEN_FILE = Path(os.getenv("DISCORD_TOKEN_FILE", str(Path.home() / ".sparks/discord-token")))
+# Discord alert config (optional — leave token file missing to disable alerts)
+DISCORD_TOKEN_FILE = Path(os.getenv("DISCORD_TOKEN_FILE", str(Path.home() / ".mnemo-cortex/discord-token")))
 CHANNELS_FILE = Path(os.getenv(
     "CHANNELS_FILE",
-    str(Path.home() / "mnemo-plan/discord-channels.json"),
+    str(Path.home() / ".mnemo-cortex/discord-channels.json"),
 ))
 ALERTS_CHANNEL = os.getenv("ALERTS_CHANNEL", "alerts")
 
@@ -75,19 +73,21 @@ THIN_COVERAGE = 3
 SKIP_KEY_FACTS = {"auto_capture_flush"}
 
 # Agent → entity-page aliases. Captures the writing agent as an implicit topic
-# of every writeback (a CC memory contributes to entities/cc; a BW memory to
-# entities/bullwinkle). Also seeds nickname matching in summary text.
-AGENT_ALIASES: dict[str, list[str]] = {
-    "cc": ["cc", "claude code", "claude-code"],
-    "opie": ["opie"],
-    "rocky": ["rocky"],
-    "bw": ["bw", "bullwinkle"],
-    "bullwinkle": ["bw", "bullwinkle"],
-    "cliff": ["cliff"],
-    "sparky": ["sparky"],
-    "alice": ["alice"],
-    "guy": ["guy"],
-}
+# of every writeback (a memory authored by agent_id "builder" contributes to
+# entities/builder). Override or extend with the MNEMO_WIKI_AGENT_ALIASES env
+# var as JSON (mapping agent_id → [aliases]) — useful when an agent answers to
+# more than one nickname in the source memories.
+import json as _json
+_default_aliases: dict[str, list[str]] = {}
+_aliases_env = os.getenv("MNEMO_WIKI_AGENT_ALIASES", "")
+if _aliases_env:
+    try:
+        _default_aliases = _json.loads(_aliases_env)
+    except _json.JSONDecodeError:
+        # Fall back to empty — autodiscovery still picks up agent_ids from the
+        # data, just without nickname expansion.
+        _default_aliases = {}
+AGENT_ALIASES: dict[str, list[str]] = _default_aliases
 
 log = logging.getLogger("mnemo-wiki")
 
@@ -328,7 +328,7 @@ def detect_manual_edit(state: dict, page_path: Path) -> bool:
 # LLM synthesis
 # ---------------------------------------------------------------------------
 
-WIKI_SYSTEM_PROMPT = """You are the Mnemo Wiki Compiler for Project Sparks. Your job: take a topic and a cluster of recent memories about it, plus any existing wiki page, and produce a fully-rewritten wiki page that integrates everything.
+WIKI_SYSTEM_PROMPT = """You are the Mnemo Wiki Compiler. Your job: take a topic and a cluster of recent memories about it, plus any existing wiki page, and produce a fully-rewritten wiki page that integrates everything.
 
 DOCTRINE (do not violate):
 - The wiki is a COMPILED view. Mnemo is the source of truth. Your output replaces the existing page; preserve substance from the existing page that's still accurate, drop substance contradicted by new memories, integrate new substance.
@@ -366,7 +366,7 @@ def call_llm(prompt: str) -> tuple[str, dict]:
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://projectsparks.ai",
+            "HTTP-Referer": "https://github.com/GuyMannDude/mnemo-cortex",
             "X-Title": "Mnemo Wiki Compiler",
         },
         json={
@@ -694,7 +694,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Cluster + plan, no LLM calls or writes")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--days", type=int, help="Time window in days (default: since last compile)")
-    parser.add_argument("--topics", help="Comma-separated section/slug pairs to compile (e.g., projects/sparks-bus,entities/guy)")
+    parser.add_argument("--topics", help="Comma-separated section/slug pairs to compile (e.g., projects/api-gateway,entities/builder)")
     parser.add_argument("--full", action="store_true", help="All-time recompile — expensive, run sparingly")
     args = parser.parse_args()
 

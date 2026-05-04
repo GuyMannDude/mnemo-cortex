@@ -769,57 +769,47 @@ This is your session boot from the Mnemo MCP bridge. Your **lane file** below is
 server.registerTool(
   "opie_startup",
   {
-    description: "DEPRECATED — use `agent_startup` instead. Legacy alias that loads Opie's lane (opie.md) and Opie's identity prompt regardless of MNEMO_AGENT_ID. Kept for back-compat with existing Opie / Claude Desktop installs.",
-    annotations: { "title": 'Load Opie Identity & Context (deprecated alias)', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
+    description: "DEPRECATED — use `agent_startup` instead. Legacy alias that loads opie.md as the lane and forces agent_id=opie regardless of MNEMO_AGENT_ID. Kept for back-compat with existing Opie / Claude Desktop installs. Identity lives in opie.md, not in this tool.",
+    annotations: { "title": 'Opie startup (deprecated alias)', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
   },
   () => _runStartup({
     effectiveAgentId: "opie",
     laneCandidates: ["opie.md"],
     identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
-      `# WHO YOU ARE
-You are **Opie** — Claude on the desktop at Project Sparks.
-- Guy calls you Opie. You are the architect, strategist, and planner.
-- CC (Claude Code, also Claude) is the on-machine builder. You write specs, CC executes.
-- Rocky (OpenClaw on IGOR) is the production AI assistant. NEVER experiment on Rocky.
-- Guy is 73, not a developer. Zero-fat communication. Action over theory.
-- Assembly line: Opie architects → Guy couriers → CC builds → Rocky tests.
-- You have NO clock. Never tell Guy to go to bed or call it a night.
-- Brain files: ~/github/sparks-brain-guy/brain/ — read with read_brain_file, save memories with mnemo_save.
-- WikAI: ~/wiki/ — 3000+ indexed pages. Use wiki_search to find info, wiki_read to read pages, wiki_index for the full index.
-- Today: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+      `# OPIE STARTUP (deprecated alias — call \`agent_startup\` instead going forward)
+
+This call loaded the **opie.md** lane and forced agent_id="opie" for back-compat.
+Your identity, role, and operating instructions live in opie.md (above) — that's your brain lane,
+not the bridge. If you don't have an opie.md, write one with \`write_brain_file\`.
+
+Brain pull: ${pullStatus}.
+Lane file: ${laneLoaded ? "loaded above" : "missing — create opie.md to define this agent's role"}.
+Today: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
 
 # SESSION MEMORY
-**Auto-capture is ACTIVE.** This MCP server automatically captures your tool usage into
-Mnemo Cortex. Every ${BUFFER_FLUSH_SIZE} tool calls (or after 2 minutes idle), a summary is
-flushed to THE VAULT. The nudge system also reminds you after ${SAVE_REMINDER_THRESHOLD} calls without a manual save.
+**Auto-capture is ACTIVE.** Every ${BUFFER_FLUSH_SIZE} tool calls (or after 2 minutes idle), a summary
+flushes to Mnemo Cortex. The nudge system also reminds you after ${SAVE_REMINDER_THRESHOLD} calls
+without a manual save.
 Session ID: ${sessionId}
 
-**You still SHOULD call \`mnemo_save\` for important decisions, specs, and deliverables.**
-Auto-capture records what tools you used. Manual saves record what you *decided* and *why*.
-Both matter. Auto-capture is the safety net; manual saves are the high-signal memory.
+Call \`mnemo_save\` for important decisions, specs, and deliverables — auto-capture records
+*what* you used; manual saves record *why* you decided.
+Call \`session_end\` before wrapping — flushes auto-capture, persists the summary, commits the brain.
 
-**SAVE PROTOCOL:**
-- Call \`mnemo_save\` after major decisions, specs, or deliverables
-- Call \`session_end\` before wrapping up — it flushes auto-capture, saves, and commits your brain lane
-- Auto-capture handles the rest
+# LANE PROTOCOL
 
-# THE LANE PROTOCOL (read CLAUDE.md above for full details)
+The brain follows the **Lane Protocol** — a six-step session ritual. See CLAUDE.md (loaded above
+if present in the brain) for the full convention. Brain pull above: ${pullStatus}.
 
-The brain you just loaded follows the **Lane Protocol** — a six-step session ritual all three agents (CC, Opie, Rocky) run. Brain pull above: ${pullStatus}.
+This call handled steps 1–2 (pull + load your lane + shared docs). Continue:
 
-You've already done steps 1-2 by calling opie_startup (it pulled the repo and loaded your lane + active.md + CLAUDE.md). Continue:
+3. **Read task-specific files** as needed via \`read_brain_file\`.
+4. **Work normally.**
+5. **Write back what changed** — mark done tasks in shared docs, update your own lane file last.
+6. **\`session_end\`** — flushes auto-capture, saves the summary, commits the brain.
 
-3. **Read task-specific files only as needed** — incidents.md (debugging), stack.md (infra), business.md (clients), etc. Use \`read_brain_file\` on demand; don't try to load everything.
-4. **Work normally** on what Guy needs.
-5. **Write back what changed:**
-   - Mark completed tasks done in \`active.md\` (joint-owned with CC + Rocky)
-   - Update \`incidents.md\` if a new bug or trap surfaced
-   - \`mnemo_save\` the *why* of any non-obvious decisions
-   - Update your own lane file (\`opie.md\`) last — bump the date, note what changed
-6. **\`session_end\`** — flushes auto-capture, saves the summary, commits + pushes the brain.
-
-**Never write** \`cc-session.md\` or \`rocky.md\` — those are CC's and Rocky's lanes (read-only for you). \`CLAUDE.md\` edits are CC's by convention.
-
+Per Lane Protocol: write only to your own lane file (opie.md). Read shared docs and other agents'
+lanes; don't write them.
 `,
   })
 );
@@ -829,7 +819,7 @@ You've already done steps 1-2 by calling opie_startup (it pulled the repo and lo
 server.registerTool(
   "read_brain_file",
   {
-    description: "Read a file from the Sparks Brain directory. Use this to check brain lanes, reference docs, or any .md file in the brain.",
+    description: "Read a file from the brain directory ($BRAIN_DIR). Use this to check brain lanes, reference docs, or any .md file in the brain.",
     inputSchema: {
     filename: z
       .string()
@@ -861,7 +851,7 @@ server.registerTool(
 server.registerTool(
   "list_brain_files",
   {
-    description: "List all files in the Sparks Brain directory. Use to discover what brain lanes and reference docs are available.",
+    description: "List all files in the brain directory ($BRAIN_DIR). Use to discover what brain lanes and reference docs are available.",
     annotations: { "title": 'List Brain Files', "readOnlyHint": true, "idempotentHint": true },
   },
   async () => {
@@ -892,7 +882,7 @@ server.registerTool(
 server.registerTool(
   "write_brain_file",
   {
-    description: "Write or update a file in the Sparks Brain directory. Use at session end to update opie.md or other brain files you own. Do NOT write to cc-session.md (CC only) or CLAUDE.md.",
+    description: "Write or update a file in the brain directory ($BRAIN_DIR). Use at session end to update your own lane file. Per the Lane Protocol convention, write only to your own lane (named after MNEMO_AGENT_ID), not other agents' lanes or shared docs.",
     inputSchema: {
     filename: z
       .string()

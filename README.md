@@ -418,7 +418,7 @@ The full v2.6 stack:
                     │           Mnemo Cortex Stack            │
                     └─────────────────────────────────────────┘
 
-  Agents (CC, Rocky, Opie, BW, Cliff)
+  Agents (any MCP-capable agent — name them yourself)
     │                                     ┌──────────────┐
     ├── recall / save / search ──────────▶│ Mnemo SQLite │ ◀── Source of Truth
     │                                     │  + FTS5 +    │
@@ -772,7 +772,7 @@ See [`mnemo_v2/db/schema.sql`](mnemo_v2/db/schema.sql) for the full schema. Key 
 
 ## Mnemo Cortex vs OpenClaw Active Memory
 
-OpenClaw 2026.4.10 shipped a native Active Memory plugin. Some people have asked whether it replaces Mnemo Cortex. Short answer: no — they solve different problems. Here's the difference, based on testing both on our Sparky sandbox agent.
+OpenClaw 2026.4.10 shipped a native Active Memory plugin. Some people have asked whether it replaces Mnemo Cortex. Short answer: no — they solve different problems. Here's the difference, based on side-by-side testing on a sandbox agent.
 
 |                     | Active Memory (native)         | Mnemo Cortex (MCP)                          |
 |---------------------|-------------------------------|---------------------------------------------|
@@ -791,21 +791,16 @@ We run both. Active Memory handles per-agent recent context. Mnemo handles every
 
 ## Origin Story
 
-For two years, Guy Hutchins — a maker in Half Moon Bay — acted as the "Human Sync Port" for his AI agents, manually copying transcripts between sessions. Then came OpenClaw, Rocky, and a $100 Claude subscription. In one session, Guy, Rocky, and Opie designed a memory coprocessor that actually worked. They named it Mnemo Cortex.
-
-v2.0 was a team effort: **Opie** (Claude Opus) designed the architecture, **AL** (ChatGPT) built the implementation, **CC** (Claude Code) deployed and integrated it, **Alice** and **Rocky** (OpenClaw agents) served as live test subjects, and **Guy Hutchins** made it all happen.
-
-Read the full story: [Finding Mnemo](FINDING-MNEMO.md)
+Mnemo Cortex started as a memory coprocessor designed by a small multi-agent team: a non-developer operator and several Claude/OpenClaw agents working as architect, builder, and live test subjects. The full backstory — how the architecture got designed, why agents pair-program with humans well, and what failed along the way — is in [Finding Mnemo](FINDING-MNEMO.md).
 
 ## Credits
 
-**The Sparks team:**
-- **Guy Hutchins** — Project lead, testing, and the reason any of this exists
-- **Rocky Moltman** 🦞 — Creative AI partner, first v2.0 production user
+**Project team:**
+- **Guy Hutchins** — Project lead, testing, design partner
 - **Opie** (Claude Opus 4.6 / 4.7) — Architecture design, schema design, compaction strategy
 - **AL** (ChatGPT) — Implementation, watcher/refresher daemons, test suite
-- **CC** (Claude Code) — Deployment, integration, live testing, bug fixes; built WikAI compiler + Sparks Bus
-- **Alice Moltman** — Live test subject on THE VAULT, first v2.0 user
+- **CC** (Claude Code) — Deployment, integration, live testing, bug fixes; built the WikAI compiler and the Sparks Bus integration
+- **Rocky** and **Alice** (OpenClaw agents) — first production users + test subjects
 
 **External inspirations** (the Clapton Method — adopt the best ideas, credit openly, build on top):
 - **Andrej Karpathy** — [LLM Wiki pattern](https://gist.github.com/karpathy), April 2026. Inspired WikAI's compile-don't-rederive design and the "idea file as publishing format" pattern used in `SETUP-PROMPT.md`.

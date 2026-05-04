@@ -1,0 +1,20 @@
+{
+  "name": "Builder",
+  "description": "Code + infrastructure agent. Writes code, runs deploys, debugs, executes shell, talks to APIs.",
+  "url": "http://localhost:50091/agents/builder",
+  "capabilities": [
+    "code",
+    "deploy",
+    "debug",
+    "shell",
+    "git",
+    "mnemo-write"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "subprocess",
+    "notes": "Bus watcher spawns the agent's CLI with the message body as the prompt."
+  }
+}

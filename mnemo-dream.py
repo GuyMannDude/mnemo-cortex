@@ -6,14 +6,18 @@ Reads the day's memories from ALL agents, synthesizes them into a single
 brief, and writes that brief back into AgentB so every agent gets it at
 startup.
 
-Runs as a nightly cron job on THE VAULT.
+Designed to run as a nightly cron job on the host carrying the memory
+sources (typically the same machine running the Mnemo Cortex server).
 
 Data sources:
-  - AgentB writebacks: ~/.agentb/memory/{agent}/*.json  (CC, Rocky, Opie, etc.)
-  - Mnemo v2 SQLite:   ~/.mnemo-v2/mnemo.sqlite3        (Alice — messages + summaries)
+  - AgentB writebacks: ~/.agentb/memory/<agent>/*.json (one dir per agent)
+  - Mnemo v2 SQLite:   ~/.mnemo-v2/mnemo.sqlite3      (messages + summaries)
+
+Agents are discovered automatically from the filesystem — every directory
+under ~/.agentb/memory/ is treated as one agent's lane.
 
 Output:
-  - Writes dream brief to ~/.agentb/memory/dreamer/{dream-id}.json
+  - Writes dream brief to ~/.agentb/memory/dreamer/<dream-id>.json
   - Also writes human-readable markdown to ~/.agentb/dreams/YYYY-MM-DD.md
 
 Usage:
@@ -21,8 +25,6 @@ Usage:
   python3 mnemo-dream.py --dry-run        # Show what would be synthesized, don't write
   python3 mnemo-dream.py --hours 48       # Override time window (default: since last dream)
   python3 mnemo-dream.py --verbose        # Show all harvested memories before synthesis
-
-Author: CC + Guy — Project Sparks
 """
 
 import argparse
@@ -51,16 +53,36 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Agents to harvest from AgentB writebacks
-AGENTB_AGENTS = ["cc", "rocky", "opie", "bw", "cliff", "sparky"]
+# Agents to harvest from AgentB writebacks. Auto-discovered from
+# ~/.agentb/memory/<agent>/ subdirectories at runtime; "dreamer" is the
+# output lane (excluded from harvest). Override with the
+# MNEMO_DREAM_AGENTS env var (comma-separated) if you want to pin the
+# list explicitly.
+def _discover_agentb_agents() -> list[str]:
+    memory_root = AGENTB_DATA_DIR / "memory"
+    if not memory_root.exists():
+        return []
+    return sorted(
+        d.name for d in memory_root.iterdir()
+        if d.is_dir() and d.name != "dreamer"
+    )
 
-# Skip auto-capture noise (rocky's tool call flushes)
-SKIP_AUTO_CAPTURE = False  # Keep everything — Guy said details matter
+
+_pinned = os.getenv("MNEMO_DREAM_AGENTS", "").strip()
+AGENTB_AGENTS = (
+    [a.strip() for a in _pinned.split(",") if a.strip()]
+    if _pinned
+    else _discover_agentb_agents()
+)
+
+# Skip auto-capture noise — keep True to drop tool-call-flush summaries
+# from harvest (the brief stays focused on intentional saves).
+SKIP_AUTO_CAPTURE = False
 
 log = logging.getLogger("mnemo-dream")
 
 # ---------------------------------------------------------------------------
-# Harvest: AgentB writebacks (CC, Rocky, Opie, etc.)
+# Harvest: AgentB writebacks (one directory per agent)
 # ---------------------------------------------------------------------------
 
 def harvest_agentb(since: datetime) -> list[dict]:
@@ -98,7 +120,7 @@ def harvest_agentb(since: datetime) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Harvest: Mnemo v2 SQLite (Alice)
+# Harvest: Mnemo v2 SQLite (messages + summaries)
 # ---------------------------------------------------------------------------
 
 def harvest_mnemo_sqlite(since: datetime) -> list[dict]:
@@ -189,23 +211,15 @@ def get_last_dream_time() -> datetime | None:
 # Synthesize
 # ---------------------------------------------------------------------------
 
-DREAM_SYSTEM_PROMPT = """You are the memory synthesizer for a multi-agent workspace called Project Sparks.
+DREAM_SYSTEM_PROMPT = """You are the memory synthesizer for a multi-agent workspace.
 
-The workspace has these agents:
-- CC (Claude Code): Primary builder. Handles code, infrastructure, deployments, system configuration.
-- Rocky: OpenClaw agent on IGOR. Handles conversations with Guy, research, store management.
-- Opie: Claude Desktop agent. Handles extended sessions, research, UI work, store setup.
-- Alice: OpenClaw agent on THE VAULT. Creative/technical specialist.
-- BW (Bullwinkle): Agent Zero in Docker. Misc tasks.
-- Cliff: Occasional helper.
+You'll be given the last period's memories from every agent in the workspace, grouped by agent_id. Each agent has its own role — you'll learn it from how they describe their own work.
 
-Guy is the human operator — 73-year-old maker in Half Moon Bay, CA. Project Sparks makes 3D printed seasonal collectibles.
-
-Your job: read the last period's memories from ALL agents and produce a synthesis brief that answers:
+Your job: produce a synthesis brief that answers:
 
 1. **What was built or shipped** — specific deliverables, with file paths and versions where available
 2. **What was decided** — choices made, directions set, approaches validated or rejected
-3. **What's blocked or pending** — open issues, next steps, things waiting on Guy or external systems
+3. **What's blocked or pending** — open issues, next steps, dependencies on people or external systems
 4. **Cross-agent connections** — things one agent did that another should know about
 5. **Lessons learned** — failures, workarounds, doctrines reinforced
 
@@ -261,7 +275,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://projectsparks.ai",
+            "HTTP-Referer": "https://github.com/GuyMannDude/mnemo-cortex",
             "X-Title": "Mnemo Dreaming",
         },
         json={
@@ -403,7 +417,7 @@ def main():
     agentb_memories = harvest_agentb(since)
     log.info(f"  Found {len(agentb_memories)} AgentB writebacks")
 
-    log.info("Harvesting Mnemo v2 SQLite (Alice)...")
+    log.info("Harvesting Mnemo v2 SQLite (messages + summaries)...")
     sqlite_memories = harvest_mnemo_sqlite(since)
     log.info(f"  Found {len(sqlite_memories)} Mnemo v2 entries")
 

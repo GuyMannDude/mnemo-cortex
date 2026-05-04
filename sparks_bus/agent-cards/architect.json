@@ -1,0 +1,20 @@
+{
+  "name": "Architect",
+  "description": "Strategy + planning agent. Designs systems, drafts specs, coordinates the agent fleet.",
+  "url": "http://localhost:50092/agents/architect",
+  "capabilities": [
+    "architecture",
+    "planning",
+    "spec-authoring",
+    "coordination",
+    "mnemo-read",
+    "mnemo-write"
+  ],
+  "inputModes": ["text/plain", "application/json"],
+  "outputModes": ["text/plain", "application/json"],
+  "protocol": "sparks-bus-a2a",
+  "delivery": {
+    "method": "queue",
+    "notes": "Pull-mode: the agent fetches messages on next session start via its MCP bus_read tool. The watcher never marks Architect's messages read."
+  }
+}

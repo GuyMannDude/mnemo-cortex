@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # run-tests.sh — Query Mnemo Cortex with test questions and score the answers
 # Usage: ./run-tests.sh [YYYY-MM-DD] [agent_id]
-# Defaults to yesterday's date and agent_id "sparky-test"
+# Defaults to yesterday's date and agent_id "test-agent"
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MNEMO_URL="${MNEMO_URL:-http://artforge:50001}"
+MNEMO_URL="${MNEMO_URL:-http://localhost:50001}"
 DATE="${1:-$(date -d 'yesterday' +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)}"
-AGENT_ID="${2:-sparky-test}"
+AGENT_ID="${2:-test-agent}"
 QUESTIONS_FILE="${SCRIPT_DIR}/test-questions.json"
 RESULTS_FILE="${SCRIPT_DIR}/mnemo-test-results.md"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.jsonl"

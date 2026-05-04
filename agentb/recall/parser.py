@@ -7,8 +7,8 @@ Supported bullet format:
     - kind [@entity] [c=0.95] The actual memory text here.
 
 Examples:
-    - fact @Guy Guy runs an OpenClaw assistant named Rocky.
-    - decision @Rocky c=0.9 We chose Gemini 3.1 Pro as the primary model.
+    - fact @user The user prefers Postgres over MySQL for new projects.
+    - decision @builder c=0.9 We chose Gemini 3.1 Pro as the primary model.
     - lesson Never run retry loops without a spending cap.
 """
 from __future__ import annotations
