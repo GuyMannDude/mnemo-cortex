@@ -91,6 +91,8 @@ This is the **Karpathy/Nate Jones hybrid** in production: query-time facts in Mn
 
 A delivery-confirmed messaging system for multi-agent communication. Lives as a module inside Mnemo Cortex at [`sparks_bus/`](sparks_bus/) AND ships standalone at [github.com/GuyMannDude/sparks-bus](https://github.com/GuyMannDude/sparks-bus).
 
+> **Looking for the simplest possible version, with no Mnemo coupling?** See **[Disco-Bus](https://github.com/GuyMannDude/disco-bus)** — generic standalone push-based agent mesh. Same "agents wake instantly on inbound, humans watch in Discord" idea, distilled to ~1000 LOC. Bring your own agents, install in one command (`./install.sh`), no infrastructure dependencies beyond Python + Node.
+
 **Doctrine:** Discord is the doorbell. Mnemo is the mailbox. The tracking ID is the receipt.
 
 **Lifecycle visible in `#dispatch`:**
