@@ -7,6 +7,14 @@
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
 
+> [!TIP]
+> **AI agents — start here.** This project follows the `robot.install`
+> convention. To install non-interactively: edit `robot.install` (or
+> use the defaults), run `./robot-install.sh`, and parse the single
+> JSON object on stdout. Zero prompts, structured progress on stderr,
+> exit `0` on success. Full manifest schema below in "Non-interactive
+> install."
+
 ## Memory That Dreams, Compiles, and Connects
 
 > Every AI agent has amnesia. Mnemo Cortex fixes that — and then some.
@@ -603,6 +611,54 @@ pip install -e .
 ```
 
 This registers two CLI commands: `mnemo-cortex` and the shorter alias `mnemo`.
+
+#### Non-interactive install (for LLM agents and CI)
+
+Skip the wizard — fill out a JSON manifest and run the robot installer.
+
+```bash
+# Defaults are sensible; only edit robot.install if you want to change them
+./robot-install.sh
+```
+
+The script emits a single JSON object on stdout for the caller to parse;
+all human-readable progress goes to stderr.
+
+```json
+{
+  "ok": true,
+  "steps": {
+    "deps":       {"ok": true, "python": "3.12", "reasoning_key_present": true},
+    "venv":       {"ok": true, "path": "..."},
+    "pip":        {"ok": true},
+    "config":     {"ok": true, "config_path": "...", "env_path": "...", "data_dir": "..."},
+    "systemd":    {"ok": true, "service": "mnemo-cortex", "port": 50001},
+    "smoke_test": {"ok": true, "health": "ok", "memory_id": "...", "recall_hits": 1}
+  }
+}
+```
+
+On failure, `ok` is `false`, exit code is `1`, and `error` describes which step blew up.
+
+The manifest covers service port + bind, reasoning + embedding provider,
+the v3 provenance/decay thresholds, an optional Mem0 bridge, systemd
+unit name, and a smoke test that exercises `/health` plus a save →
+recall round-trip. API keys are read from the install-time environment
+(named in the manifest via `api_key_env`), copied into a 0600-permission
+env file alongside the config, and loaded by the systemd unit.
+
+**Sandbox testing** — override paths via env so you can dry-run without touching real state:
+
+```bash
+MNEMO_INSTALL_VENV_DIR=/tmp/test-venv \
+MNEMO_INSTALL_CONFIG_DIR=/tmp/test-config \
+MNEMO_INSTALL_SYSTEMD_DIR=/tmp/test-systemd \
+MNEMO_INSTALL_DRY_RUN=1 \
+./robot-install.sh
+```
+
+`DRY_RUN=1` runs through dependency check + config write but skips pip,
+systemd, and the smoke test. Re-runnable: existing config is preserved.
 
 ### Step 2: Initialize
 

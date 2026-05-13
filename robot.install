@@ -1,0 +1,74 @@
+{
+  // Mnemo Cortex — robot.install manifest
+  //
+  // Non-interactive install recipe for AI agents and CI. Pair with
+  // ./robot-install.sh. Single JSON object, // line comments allowed.
+  //
+  // The agent / operator fills in the values below, then runs:
+  //   ./robot-install.sh
+  // and parses the JSON object on stdout to confirm success.
+  //
+  // Sensible defaults are baked in — a manifest with only the
+  // "service" block already produces a working local install. The
+  // rest of the keys are optional and disabled / empty by default.
+
+  "service": {
+    "host": "127.0.0.1",
+    "port": 50001,
+    "data_dir": "~/.mnemo-cortex"
+  },
+
+  // Reasoning provider used for preflight checks and summarization.
+  // Set api_key_env to a name the installer should pass through; the
+  // installer reads that env var at install time and writes it into
+  // the service unit so the running daemon picks it up.
+  "reasoning": {
+    "provider": "openrouter",
+    "model": "google/gemini-2.5-flash",
+    "api_base": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_API_KEY"
+  },
+
+  // Embedding provider — local-first by default. If you don't have
+  // Ollama running, switch to a hosted provider (set provider to
+  // openai/openrouter, model + api_key_env to match).
+  "embedding": {
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "api_base": "http://localhost:11434"
+  },
+
+  // v3 decay thresholds. Override per-deployment. Topology decays
+  // fast because IPs / ports / process state change often; relationship
+  // facts (collaborator notes) decay slow.
+  "decay": {
+    "topology_warn_days": 30,
+    "topology_stale_days": 90,
+    "current_state_warn_days": 90,
+    "relationship_warn_days": 180,
+    "session_log_warn_days": 90
+  },
+
+  // Mem0 upstream bridge — disabled by default. Flip enabled=true
+  // and set api_key_env to use Mem0 as the deep-recall fallback.
+  "mem0": {
+    "enabled": false,
+    "api_key_env": "MEM0_API_KEY",
+    "user_id": "default-agent",
+    "fallback_only": true,
+    "sync_writes": false
+  },
+
+  // systemd user-unit name. Set enabled=false to skip the systemd
+  // step (for environments without systemd, e.g. macOS or containers).
+  "systemd": {
+    "enabled": true,
+    "service_name": "mnemo-cortex"
+  },
+
+  // Smoke test exercises /health, then a save → recall round-trip.
+  "smoke_test": {
+    "enabled": true,
+    "agent_id": "robot-install-smoke"
+  }
+}
