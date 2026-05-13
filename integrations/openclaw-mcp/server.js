@@ -188,10 +188,26 @@ function formatChunks(chunks, showAgent) {
     const rel = (c.relevance || 0).toFixed(2);
     const tier = c.cache_tier || "?";
     const agentTag = c.agent_id || inferAgent(c.source) || "?";
+    // v3 provenance / decay surfacing — keep concise; full structured
+    // data is still in the JSON tool result for programmatic callers.
+    const provBits = [];
+    if (c.category) provBits.push(`category=${c.category}`);
+    if (c.provenance_source) provBits.push(`source=${c.provenance_source}`);
+    if (typeof c.age_days === "number") {
+      provBits.push(`age=${Math.round(c.age_days)}d`);
+    }
+    const provSuffix = provBits.length ? ` ${provBits.join(" ")}` : "";
     const header = showAgent
-      ? `[${tier}] agent=${agentTag} (relevance: ${rel})`
-      : `[${tier}] (relevance: ${rel})`;
-    const block = `### ${header}\n${c.content}`;
+      ? `[${tier}] agent=${agentTag} (relevance: ${rel})${provSuffix}`
+      : `[${tier}] (relevance: ${rel})${provSuffix}`;
+    // Stale-warning banner — agents under context pressure may miss
+    // the structured stale_warning field. Banner makes it eye-level.
+    let warningBanner = "";
+    if (c.stale_warning && c.stale_warning.message) {
+      const sev = (c.stale_warning.severity || "warn").toUpperCase();
+      warningBanner = `\n⚠️ ${sev}: ${c.stale_warning.message}`;
+    }
+    const block = `### ${header}${warningBanner}\n${c.content}`;
 
     if (chars + block.length > MAX_RESPONSE_CHARS && included > 0) {
       const remaining = chunks.length - included;
@@ -306,6 +322,10 @@ async function flushBuffer() {
       projects_referenced: [],
       decisions_made: [],
       agent_id: AGENT_ID,
+      // Mnemo v3 — mechanical ambient capture, not agent inference. Tag
+      // accordingly so default recalls don't drown in tool-call narratives.
+      source: "tool",
+      category: "session_log",
     });
   } catch (err) {
     process.stderr.write(`[auto-capture] flush failed: ${err.message}\n`);
@@ -350,7 +370,7 @@ process.stdin.on("end", () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.6.3",
+  version: "2.8.0",
 });
 
 // ── Tool: mnemo_recall ─────────────────────────────────────────
@@ -359,7 +379,7 @@ const server = new McpServer({
 server.registerTool(
   "mnemo_recall",
   {
-    description: `Recall memories from Mnemo Cortex for the current agent (${AGENT_ID}). Returns semantically relevant chunks from past sessions.`,
+    description: `Recall memories from Mnemo Cortex for the current agent (${AGENT_ID}). Returns semantically relevant chunks from past sessions. Each chunk may carry a structured stale_warning when it exceeds its category's decay threshold — verify with a tool call before acting on stale topology/current_state facts.`,
     inputSchema: {
     query: z
       .string()
@@ -372,17 +392,52 @@ server.registerTool(
       .max(20)
       .optional()
       .describe("Maximum number of memories to return (default: 3)"),
+    source: z
+      .enum(["user", "tool", "inferred", "brain", "migrated"])
+      .optional()
+      .describe(
+        "Restrict to one provenance source. Use 'user' or 'tool' for highest-confidence facts."
+      ),
+    category: z
+      .enum([
+        "topology", "current_state", "doctrine", "incident",
+        "identity", "relationship", "decision", "session_log", "unknown",
+      ])
+      .optional()
+      .describe("Restrict to a single category."),
+    exclude_categories: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Categories to drop from results. Defaults to ['session_log']. Pass [] to include everything."
+      ),
+    exclude_stale: z
+      .boolean()
+      .optional()
+      .describe("Drop topology records past 1.5x their warn threshold."),
+    max_age_days: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Hard upper bound on record age in days."),
   },
     annotations: { "title": 'Recall Memories', "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
   },
-  async ({ query, max_results }) => {
+  async ({ query, max_results, source, category, exclude_categories, exclude_stale, max_age_days }) => {
     try {
       await ensureHealth();
-      const data = await mnemoRequest("POST", "/context", {
+      const requestBody = {
         prompt: query,
         agent_id: AGENT_ID,
         max_results: max_results || 3,
-      });
+      };
+      if (source !== undefined) requestBody.source = source;
+      if (category !== undefined) requestBody.category = category;
+      if (exclude_categories !== undefined) requestBody.exclude_categories = exclude_categories;
+      if (exclude_stale !== undefined) requestBody.exclude_stale = exclude_stale;
+      if (max_age_days !== undefined) requestBody.max_age_days = max_age_days;
+      const data = await mnemoRequest("POST", "/context", requestBody);
 
       const chunks = data.chunks || [];
       captureCall(
@@ -413,7 +468,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_search",
   {
-    description: "Search memories in Mnemo Cortex. By default, searches only your own memories. Use mnemo_share to enable cross-agent search for this session.",
+    description: "Search memories in Mnemo Cortex. By default, searches only your own memories. Use mnemo_share to enable cross-agent search for this session. Returns structured stale_warning on results past their category's warn threshold — verify before acting on stale topology facts.",
     inputSchema: {
     query: z
       .string()
@@ -432,10 +487,39 @@ server.registerTool(
       .max(20)
       .optional()
       .describe("Maximum number of memories to return (default: 3)"),
+    source: z
+      .enum(["user", "tool", "inferred", "brain", "migrated"])
+      .optional()
+      .describe(
+        "Restrict to one provenance source. Use 'user' or 'tool' for highest-confidence facts."
+      ),
+    category: z
+      .enum([
+        "topology", "current_state", "doctrine", "incident",
+        "identity", "relationship", "decision", "session_log", "unknown",
+      ])
+      .optional()
+      .describe("Restrict to a single category."),
+    exclude_categories: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Categories to drop from results. Defaults to ['session_log']. Pass [] to include everything."
+      ),
+    exclude_stale: z
+      .boolean()
+      .optional()
+      .describe("Drop topology records past 1.5x their warn threshold."),
+    max_age_days: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Hard upper bound on record age in days."),
   },
     annotations: { "title": 'Search Memories Across Agents', "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
   },
-  async ({ query, agent_id, max_results }) => {
+  async ({ query, agent_id, max_results, source, category, exclude_categories, exclude_stale, max_age_days }) => {
     try {
       await ensureHealth();
       const body = {
@@ -448,6 +532,11 @@ server.registerTool(
       } else {
         body.agent_id = AGENT_ID;
       }
+      if (source !== undefined) body.source = source;
+      if (category !== undefined) body.category = category;
+      if (exclude_categories !== undefined) body.exclude_categories = exclude_categories;
+      if (exclude_stale !== undefined) body.exclude_stale = exclude_stale;
+      if (max_age_days !== undefined) body.max_age_days = max_age_days;
 
       const data = await mnemoRequest("POST", "/context", body);
       const chunks = data.chunks || [];
@@ -487,7 +576,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_save",
   {
-    description: "Save a summary or key facts to Mnemo Cortex for future recall. Use at session end or when something important should be remembered.",
+    description: "Save a summary or key facts to Mnemo Cortex for future recall. Use at session end or when something important should be remembered. Optional v3 provenance fields (source, category, additional_tags) let you mark how the fact was learned and how it should decay — when omitted, a regex auto-suggester picks a category from the content.",
     inputSchema: {
     summary: z
       .string()
@@ -501,10 +590,29 @@ server.registerTool(
       .string()
       .optional()
       .describe("Session identifier. Auto-generated if omitted."),
+    source: z
+      .enum(["user", "tool", "inferred", "brain", "migrated"])
+      .optional()
+      .describe(
+        "Where this fact came from. Defaults to 'inferred'. Use 'user' when Guy stated it directly, 'tool' for deterministic outputs, 'brain' when pulled from a brain file."
+      ),
+    category: z
+      .enum([
+        "topology", "current_state", "doctrine", "incident",
+        "identity", "relationship", "decision", "session_log", "unknown",
+      ])
+      .optional()
+      .describe(
+        "Drives decay behavior. Omit to let the regex auto-suggester choose — the response will tell you what it picked so you can override on the next save."
+      ),
+    additional_tags: z
+      .array(z.string().max(64))
+      .optional()
+      .describe("Free-form human-readable tags for search."),
   },
     annotations: { "title": 'Save Memory', "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
   },
-  async ({ summary, key_facts, session_id }) => {
+  async ({ summary, key_facts, session_id, source, category, additional_tags }) => {
     captureCall("mnemo_save", summary.slice(0, 150));
     trackSave();
     try {
@@ -514,22 +622,36 @@ server.registerTool(
         sessionId ||
         `${AGENT_ID}-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
 
-      const data = await mnemoRequest("POST", "/writeback", {
+      const body = {
         session_id: sid,
         summary,
         key_facts: key_facts || [],
         projects_referenced: [],
         decisions_made: [],
         agent_id: AGENT_ID,
-      });
+      };
+      if (source !== undefined) body.source = source;
+      if (category !== undefined) body.category = category;
+      if (additional_tags !== undefined) body.additional_tags = additional_tags;
 
+      const data = await mnemoRequest("POST", "/writeback", body);
+
+      // Surface what the server actually stored so the agent can learn.
+      const lines = [
+        "Saved to Mnemo Cortex.",
+        `  memory_id: ${data.memory_id || "ok"}`,
+        `  session:   ${sid}`,
+        `  agent:     ${AGENT_ID}`,
+      ];
+      if (data.source_used) lines.push(`  source:    ${data.source_used}`);
+      if (data.category_used) lines.push(`  category:  ${data.category_used}`);
+      if (data.category_suggested && data.category_match_keywords && data.category_match_keywords.length) {
+        lines.push(
+          `  (auto-suggested from keywords: ${data.category_match_keywords.join(", ")})`
+        );
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: `Saved to Mnemo Cortex.\n  memory_id: ${data.memory_id || "ok"}\n  session: ${sid}\n  agent: ${AGENT_ID}`,
-          },
-        ],
+        content: [{ type: "text", text: lines.join("\n") }],
       };
     } catch (err) {
       return {
@@ -707,6 +829,10 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
         projects_referenced: [],
         decisions_made: [],
         agent_id: effectiveAgentId,
+        // Mnemo v3 — deterministic startup marker, not agent inference.
+        source: "tool",
+        category: "session_log",
+        additional_tags: ["session_start"],
       });
     } catch {
       // session-start marker is best-effort
@@ -960,6 +1086,15 @@ server.registerTool(
         projects_referenced: [],
         decisions_made: [],
         agent_id: AGENT_ID,
+        // Mnemo v3 — the user/agent wrote this recap, so source="user"
+        // (most session_end calls come from an agent at the user's
+        // explicit prompt). Default category is current_state since
+        // session recaps are by definition "what's in flight" — the
+        // regex auto-suggester would otherwise misfire on debug
+        // narrative keywords like "bug" or "broke".
+        source: "user",
+        category: "current_state",
+        additional_tags: ["session_end"],
       });
       results.push(`Mnemo save: OK (memory_id=${data.memory_id || "ok"})`);
     } catch (err) {
