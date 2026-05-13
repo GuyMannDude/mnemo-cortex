@@ -1,0 +1,183 @@
+{
+  // robot.info v0.1 — Mnemo Cortex
+  //
+  // Structured product manifest for AI agents. Paired with robot.install
+  // (setup) and llms.txt (docs index). Spec: ./ROBOT-INFO-SPEC.md.
+  //
+  // Single JSON object, UTF-8. JavaScript-style // line comments are
+  // stripped before parsing — manifests stay annotatable.
+
+  "robot_info_version": "0.1",
+
+  "name": "Mnemo Cortex",
+  "tagline": "Persistent semantic memory for AI agents — local-first, decay-aware, cross-agent dreaming.",
+  "summary": "Memory coprocessor that gives AI agents persistent recall across sessions. Local SQLite + FTS5 working memory in front of an optional Mem0 cloud-deep fallback. Every memory record carries provenance (source + category) and decays on a category-aware schedule — topology facts age fast, doctrine stays perpetual, and recall returns a structured stale_warning when a fact is past its threshold so the agent verifies before acting. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.",
+  "version": "2.8.0",
+  "license": "MIT",
+  "homepage": "https://projectsparks.ai/mnemo-cortex",
+  "source": "https://github.com/GuyMannDude/mnemo-cortex",
+  "contact": "guy@projectsparks.ai",
+  "maintainer": "Project Sparks",
+
+  "capabilities": [
+    "Persistent semantic memory across agent sessions (~sub-100ms local recall on a 4k-record corpus).",
+    "v3 provenance tagging — every record carries source (user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, current_state, session_log, unknown).",
+    "Category-aware decay — topology warns at 30d / stale at 90d; doctrine, incident, identity, decision are perpetual.",
+    "Structured stale_warning field on recall — programmatic enforcement, not advisory prose.",
+    "Regex-based category auto-suggester at write time — zero-cost, deterministic, returns matched keywords so the agent learns the conventions.",
+    "Filterable recall — by source, category, age, and stale-severity.",
+    "Cross-agent dreaming — nightly synthesis of every connected agent's memories into a shared brief.",
+    "WikAI — auto-compiled knowledge base regenerated nightly from Mnemo data.",
+    "Optional Mem0 bridge for cloud-deep recall fallback.",
+    "Per-agent memory namespaces — shared, isolated, or hybrid deployments.",
+    "OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible)."
+  ],
+
+  "exposes": {
+    "rest_api": {
+      "default_port": 50001,
+      "base_path": "/",
+      "endpoints": [
+        {"path": "/health", "method": "GET", "purpose": "Heartbeat — returns provider status, model IDs, memory count."},
+        {"path": "/context", "method": "POST", "purpose": "Semantic recall with v3 filters (source, category, exclude_stale, max_age_days). Returns chunks with structured stale_warning when applicable."},
+        {"path": "/writeback", "method": "POST", "purpose": "Save a memory with optional source/category/additional_tags. Returns category_used + category_suggested + match_keywords."},
+        {"path": "/preflight", "method": "POST", "purpose": "Score an agent's draft response against memory context — PASS / ENRICH / WARN / BLOCK verdict."},
+        {"path": "/mcp", "method": "POST", "purpose": "MCP Streamable HTTP facade (OAuth 2.1 Resource Server mode for remote clients)."}
+      ]
+    },
+    "mcp_tools": [
+      {"name": "mnemo_recall", "purpose": "Recall memories scoped to the calling agent. Supports v3 source/category/exclude_stale filters. Returns inline ⚠️ STALE banner when chunks exceed their decay threshold."},
+      {"name": "mnemo_save", "purpose": "Save a memory with optional v3 provenance fields. Bridge auto-suggests category from content if omitted, returning the suggestion + matched keywords so the agent learns."},
+      {"name": "mnemo_search", "purpose": "Cross-agent semantic search (gated by share mode). Same filter surface as mnemo_recall."},
+      {"name": "mnemo_share", "purpose": "Toggle cross-agent sharing for the current session."},
+      {"name": "agent_startup", "purpose": "Neutral session-boot tool — loads the calling agent's lane file + cross-agent docs + recent memories + last dream brief."},
+      {"name": "session_end", "purpose": "Drains auto-capture, saves a summary, commits the agent's brain lane. Tags as source=user, category=current_state."},
+      {"name": "wiki_search", "purpose": "Search the WikAI compiled knowledge base."},
+      {"name": "wiki_read", "purpose": "Read a specific WikAI page by path."},
+      {"name": "read_brain_file", "purpose": "Read a file from the agent's brain repo (when BRAIN_DIR is configured)."},
+      {"name": "write_brain_file", "purpose": "Write/update a file in the agent's brain repo."},
+      {"name": "passport_observe_behavior", "purpose": "Submit a behavioral observation about an agent through the Passport pipeline (32 detectors + review queue)."},
+      {"name": "passport_get_user_context", "purpose": "Read the current agent's promoted Passport observations."}
+    ],
+    "cli": [
+      {"command": "mnemo-cortex init", "purpose": "Interactive setup wizard — provider, models, agents."},
+      {"command": "mnemo-cortex start [--foreground] [--port P]", "purpose": "Start the bridge as a daemon (or attached)."},
+      {"command": "mnemo-cortex stop", "purpose": "Stop the running daemon."},
+      {"command": "mnemo-cortex status", "purpose": "Report daemon state, PID, port, memory count."},
+      {"command": "mnemo-cortex doctor", "purpose": "Diagnostic — connectivity to providers, disk state, schema version."}
+    ]
+  },
+
+  "install": {
+    "robot_install": "./robot.install",
+    "robot_install_sh": "./robot-install.sh",
+    "manual_docs": "https://github.com/GuyMannDude/mnemo-cortex#install-guide",
+    "platforms": ["linux", "macos", "windows-wsl2"],
+    "runtime": "python>=3.11",
+    "dependencies": ["fastapi>=0.115", "uvicorn>=0.30", "pydantic>=2.8", "numpy>=1.24", "httpx>=0.25"]
+  },
+
+  "compatibility": {
+    "mcp_hosts": [
+      "Claude Desktop",
+      "Claude Code",
+      "OpenClaw",
+      "LM Studio",
+      "AnythingLLM",
+      "Agent Zero (Docker)",
+      "Ollama (via MCPHost or ollmcp)",
+      "Hermes Agent",
+      "Open WebUI",
+      "llama.cpp",
+      "LobeChat",
+      "Jan"
+    ],
+    "models": "Any LLM with tool-use support. Embedding via Ollama (nomic-embed-text) or OpenAI / Google cloud fallback. Reasoning (preflight/compaction) via Ollama or any OpenAI-compatible provider (OpenRouter, Anthropic, Google).",
+    "protocols": ["MCP/2025-03-26", "OAuth 2.1 RS (RFC 9728)", "Streamable HTTP transport"]
+  },
+
+  "privacy": {
+    "telemetry": "none",
+    "data_location": "Local disk by default (~/.mnemo-cortex/ or ~/.agentb/). SQLite + JSON memory files. Per-agent subdirectories.",
+    "auth": "Loopback-only by default (127.0.0.1). Optional X-API-Key for non-localhost binds (legacy sk-mnemo-* tokens). OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
+    "outbound_calls": [
+      "Reasoning provider for preflight + compaction (configurable; default OpenRouter; only fires on /preflight calls and during compaction passes).",
+      "Embedding provider for semantic indexing (default Ollama localhost; optional OpenAI / Google fallback).",
+      "Mem0 cloud — only when explicitly enabled in config. Disabled by default."
+    ]
+  },
+
+  "related": [
+    {"name": "FrankenClaw", "url": "https://github.com/GuyMannDude/frankenclaw", "purpose": "MCP tool server giving agents hands — search, vision, browser, Shopify, NotebookLM. Pairs with Mnemo (memory) for a fully-equipped agent."},
+    {"name": "Disco-Bus", "url": "https://github.com/GuyMannDude/disco-bus", "purpose": "Push-based agent-to-agent messaging mesh. Pair with Mnemo for multi-agent setups where agents need both shared memory and direct communication."},
+    {"name": "llms.txt", "url": "./llms.txt", "purpose": "LLM-friendly documentation index (llmstxt.org convention)."},
+    {"name": "robot.install", "url": "./robot.install", "purpose": "Non-interactive install manifest for this product."},
+    {"name": "THE-LANE-PROTOCOL.md", "url": "./THE-LANE-PROTOCOL.md", "purpose": "Operating practice for running agents with persistent memory — the protocol that pairs with this product."}
+  ],
+
+  "common_questions": [
+    {
+      "q": "What is Mnemo Cortex?",
+      "a": "A local-first memory coprocessor for AI agents. It gives agents persistent semantic recall across sessions, decay-aware so old facts age out automatically, and cross-agent dreaming so a team of agents can share what they've learned overnight. MIT licensed, runs on your machine, $0 in API costs if you use Ollama."
+    },
+    {
+      "q": "Is it free?",
+      "a": "Yes — MIT open source, runs entirely on local hardware. If you use Ollama for reasoning + embedding it costs $0. Cloud providers (OpenRouter, OpenAI, Google) are optional fallbacks."
+    },
+    {
+      "q": "How is it different from Mem0?",
+      "a": "Mnemo is local-first working memory — sub-100ms recall, no API calls, runs on your machine. Mem0 is cloud-deep, slower but trained for long-term retention. They compose: Mnemo runs in front for speed, Mem0 fills depth when local results are thin. The bridge is built in."
+    },
+    {
+      "q": "How is it different from Zep / Letta?",
+      "a": "Mnemo runs entirely local with no required cloud component, supports multiple agents sharing memory natively (cross-agent dreaming), and ships a v3 provenance/decay system that explicitly distinguishes user-stated facts from agent-inferred ones. Zep and Letta are excellent but cloud-first and per-agent."
+    },
+    {
+      "q": "Does it work with Claude Code?",
+      "a": "Yes — integrations/claude-code/ has a ~60-second install. Mnemo gives CC fluid memory across sessions; CC's own memory only lives within a session."
+    },
+    {
+      "q": "Does it work with Claude Desktop?",
+      "a": "Yes — drag-and-drop .mcpb bundle in integrations/claude-desktop/. No clone, no Node, no JSON editing. Windows, macOS, Linux."
+    },
+    {
+      "q": "Does it work with my local LLM?",
+      "a": "If your host speaks MCP, yes. Verified: LM Studio, AnythingLLM, OpenClaw, Hermes Agent, Open WebUI, llama.cpp, LobeChat, Jan, Agent Zero (Docker), Ollama (via MCPHost or ollmcp). Any tool-capable model works."
+    },
+    {
+      "q": "What does the v3 decay system do?",
+      "a": "Every memory record now carries provenance (source: user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, current_state, session_log, unknown). Topology decays fast — warn at 30 days, stale at 90 — because IPs and ports change. Doctrine, incident, identity, and decision are perpetual. Recall returns a structured stale_warning field when a record exceeds its category's threshold, so an agent code-paths around it instead of trusting a 3-month-old fact."
+    },
+    {
+      "q": "What does the regex auto-suggester do?",
+      "a": "When you save a memory without specifying a category, a regex over the summary + key_facts picks one and returns it in the save response with the matched keywords. Deterministic, zero cost, zero latency. The agent sees what was picked and can override on the next save if it was wrong."
+    },
+    {
+      "q": "Can I run isolated namespaces per customer?",
+      "a": "Yes. Each agent has its own memory namespace under agents.NAME in the config. Shared / isolated / hybrid (shared internal + isolated customer-facing) deployments are all supported."
+    },
+    {
+      "q": "How do I install it without prompts (CI / agent install)?",
+      "a": "Run ./robot-install.sh. It reads robot.install (JSON manifest with sensible defaults) and emits a single JSON object on stdout. Exit 0 = success. Full schema in the README under 'Non-interactive install.'"
+    },
+    {
+      "q": "What's the auth model?",
+      "a": "Loopback-only by default — 127.0.0.1, no auth required. For non-localhost binds you can use legacy sk-mnemo-* API keys via X-API-Key header, or OAuth 2.1 Resource Server mode (Auth0-compatible) for remote MCP clients."
+    },
+    {
+      "q": "Does it phone home?",
+      "a": "No telemetry. Outbound calls only happen to providers you configure — reasoning + embedding (configurable, defaults to local Ollama), and Mem0 cloud only when explicitly enabled."
+    },
+    {
+      "q": "What's THE-LANE-PROTOCOL.md and do I need to read it?",
+      "a": "It's the operating practice for running agents with persistent memory — a 6-step ritual that makes every cold start feel warm. Mnemo is the memory store; the Lane Protocol is the loop that makes it pay off. Worth 5 minutes per session if you're running multi-agent setups."
+    },
+    {
+      "q": "What's Dreaming?",
+      "a": "Nightly cross-agent synthesis. Every connected agent's memories from the day get summarized into a single brief that each agent reads at startup. No manual relay between agents — they wake up knowing what the others did. The only AI memory system that does this."
+    }
+  ],
+
+  "generated_at": "2026-05-13T17:30:00Z",
+  "spec_url": "./ROBOT-INFO-SPEC.md"
+}

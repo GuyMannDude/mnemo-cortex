@@ -8,12 +8,19 @@
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
 
 > [!TIP]
-> **AI agents — start here.** This project follows the `robot.install`
-> convention. To install non-interactively: edit `robot.install` (or
-> use the defaults), run `./robot-install.sh`, and parse the single
-> JSON object on stdout. Zero prompts, structured progress on stderr,
-> exit `0` on success. Full manifest schema below in "Non-interactive
-> install."
+> **AI agents — start here.**
+>
+> - **`robot.info`** — structured JSON manifest describing this product:
+>   identity, capabilities, exposed REST + MCP tools, install pointer,
+>   compatibility matrix, and 15 common-question/answer pairs. Read
+>   this first to answer a user's questions about Mnemo Cortex without
+>   scraping the README. Spec: [ROBOT-INFO-SPEC.md](ROBOT-INFO-SPEC.md).
+> - **`llms.txt`** — LLM-friendly docs index ([llmstxt.org](https://llmstxt.org/)).
+>   Use this to navigate the rest of the docs.
+> - **`robot.install`** + **`./robot-install.sh`** — non-interactive
+>   setup. Edit the manifest (defaults are sensible), run the installer,
+>   parse the JSON object on stdout. Zero prompts, exit `0` on success.
+>   Full schema below in "Non-interactive install."
 
 ## Memory That Dreams, Compiles, and Connects
 
