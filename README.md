@@ -664,8 +664,17 @@ MNEMO_INSTALL_DRY_RUN=1 \
 ./robot-install.sh
 ```
 
-`DRY_RUN=1` runs through dependency check + config write but skips pip,
-systemd, and the smoke test. Re-runnable: existing config is preserved.
+`DRY_RUN=1` runs the dependency check and reports the paths each step
+*would* write, but skips every side effect — no venv, no pip install,
+no config or env file written, no systemd unit, no smoke test. API
+keys in the environment are never persisted to disk in dry-run.
+
+> **Note on scope:** `robot.install` sets up the Mnemo Cortex **server**.
+> To use Mnemo from an agent (Hermes, Claude Desktop, AnythingLM,
+> LM Studio, Ollama Desktop, Agent-Zero, OpenClaw, Claude Code), run the
+> agent-specific integration installer afterward — see
+> [`integrations/`](integrations/) for each guide. They wire the agent's
+> MCP config to point at the server you just installed.
 
 ### Step 2: Initialize
 

@@ -1,5 +1,55 @@
 # Changelog
 
+## v2.8.2 (2026-05-15) — Installer hardening (non-interactive + DRY_RUN fixes)
+
+Two installers had bugs that silently broke `curl | bash` and CI workflows.
+Found while auditing why a community user reported install trouble.
+
+**Fix 1 — `integrations/hermes/install.sh` hung in non-interactive mode.**
+
+Hermes Agent's `hermes mcp add` (v0.12.0+) prompts *after* tool discovery
+with "Enable all N tools? [Y/n/select]". The installer didn't pipe a
+response, so any non-TTY run (curl|bash, CI, dotfile bootstrap, restricted
+shell) hung there forever — or, on some shells, silently dropped the
+config persist step. The user saw "✓ Connected!" and then nothing.
+
+Now: the installer detects `[ -t 0 ]` at startup. In non-interactive mode
+it pipes `yes Y` into `hermes mcp add` to auto-accept tool selection,
+and honors env vars in place of the interactive prompts:
+
+```bash
+MNEMO_URL=http://localhost:50001 \
+MNEMO_AGENT_ID=hermes \
+MNEMO_SHARE=separate \
+MNEMO_REPLACE=1 \
+bash install.sh < /dev/null
+```
+
+Replace-existing requires explicit `MNEMO_REPLACE=1` in non-interactive
+mode rather than silently overwriting a working config. Unreachable
+Mnemo aborts loudly instead of wiring Hermes to a dead server.
+
+**Fix 2 — `robot-install.sh` DRY_RUN leaked API keys to disk.**
+
+`MNEMO_INSTALL_DRY_RUN=1` was meant to skip side effects, but step 3
+(config + env file + data dirs) was never gated. A user testing the
+installer with their real `OPENROUTER_API_KEY` set in the environment
+would silently have that key written into
+`~/.config/mnemo-cortex/mnemo-cortex.env` (mode 0600). Dry-run with a
+real key was a foot-cannon.
+
+Now: step 3 is wrapped in the same `DRY_RUN` guard as steps 2/4/5.
+Dry-run reports the paths each step *would* write but produces zero side
+effects on disk. Verified with `OPENROUTER_API_KEY=test-not-real
+MNEMO_INSTALL_DRY_RUN=1 ./robot-install.sh` — no files created.
+
+**Doc fixes alongside.** README clarifies that `robot.install` sets up
+the **server only**; agent integrations live under `integrations/`.
+Hermes integration README updated for the current 18-tool surface
+(was 17 — `agent_startup` got added) and notes that the config entry
+lands at `~/.hermes/profiles/<profile>/config.yaml` for profile-using
+Hermes setups, not just `~/.hermes/config.yaml`.
+
 ## v2.8.1 (2026-05-13) — MCP bridge directory rename
 
 `integrations/openclaw-mcp/` → `integrations/mcp-bridge/`. The bridge

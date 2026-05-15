@@ -30,6 +30,22 @@ echo "Persistent memory for Hermes. Tools auto-discovered at startup."
 echo ""
 
 # ─────────────────────────────────────────────
+# Interactivity detection
+# ─────────────────────────────────────────────
+# When run via `curl ... | bash` or any non-TTY pipeline, hermes mcp add
+# would hang on the post-discovery "Enable all N tools? [Y/n/select]"
+# prompt. Detect non-TTY up front so we can auto-accept and let env vars
+# preset the values that would otherwise come from interactive prompts.
+if [ -t 0 ]; then
+    NONINTERACTIVE=0
+else
+    NONINTERACTIVE=1
+    warn "Non-interactive mode (no TTY). Will use env vars or defaults for prompts and auto-accept tool selection."
+    echo "  Override via env: MNEMO_URL, MNEMO_AGENT_ID, MNEMO_SHARE"
+    echo ""
+fi
+
+# ─────────────────────────────────────────────
 # Prerequisites
 # ─────────────────────────────────────────────
 command -v hermes >/dev/null 2>&1 || fail "hermes CLI not found. Install Hermes Agent first: https://hermes-agent.nousresearch.com/docs/getting-started/quickstart"
@@ -85,7 +101,11 @@ echo ""
 echo "  Same machine as Hermes:  http://localhost:50001  (default)"
 echo "  Different machine:        http://hostname:50001"
 echo ""
-read -rp "Mnemo Cortex URL [http://localhost:50001]: " MNEMO_URL
+# Env var preset wins; otherwise prompt (interactive) or use default (non-TTY).
+MNEMO_URL="${MNEMO_URL:-}"
+if [ -z "$MNEMO_URL" ] && [ "$NONINTERACTIVE" = "0" ]; then
+    read -rp "Mnemo Cortex URL [http://localhost:50001]: " MNEMO_URL
+fi
 MNEMO_URL="${MNEMO_URL:-http://localhost:50001}"
 MNEMO_URL="${MNEMO_URL%/}"
 
@@ -96,6 +116,9 @@ if health=$(curl -sf --max-time 5 "${MNEMO_URL}/health" 2>/dev/null); then
 else
     warn "Could not reach ${MNEMO_URL}/health"
     echo "  Make sure mnemo-cortex is running:  mnemo-cortex start"
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        fail "Mnemo unreachable and non-interactive — refusing to wire Hermes to a dead server. Start mnemo-cortex first."
+    fi
     read -rp "Continue anyway? (y/N): " cont
     [[ "$cont" =~ ^[Yy] ]] || exit 1
 fi
@@ -110,7 +133,11 @@ echo "  Memories are scoped per agent. If multiple Hermes instances share"
 echo "  this Mnemo, give each one a distinct ID (e.g., 'hermes-laptop',"
 echo "  'hermes-server', or your handle)."
 echo ""
-read -rp "Agent ID [hermes]: " AGENT_ID
+# MNEMO_AGENT_ID env preset wins; otherwise prompt or default.
+AGENT_ID="${MNEMO_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ] && [ "$NONINTERACTIVE" = "0" ]; then
+    read -rp "Agent ID [hermes]: " AGENT_ID
+fi
 AGENT_ID="${AGENT_ID:-hermes}"
 
 # ─────────────────────────────────────────────
@@ -123,7 +150,11 @@ echo "  separate  — only see your own agent's memories (default, safest)"
 echo "  always    — see all agents' memories every search"
 echo "  never     — even mnemo_share toggle is blocked"
 echo ""
-read -rp "Share mode [separate]: " SHARE_MODE
+# MNEMO_SHARE env preset wins; otherwise prompt or default.
+SHARE_MODE="${MNEMO_SHARE:-}"
+if [ -z "$SHARE_MODE" ] && [ "$NONINTERACTIVE" = "0" ]; then
+    read -rp "Share mode [separate]: " SHARE_MODE
+fi
 SHARE_MODE="${SHARE_MODE:-separate}"
 case "$SHARE_MODE" in
     separate|always|never) ;;
@@ -136,20 +167,41 @@ esac
 echo ""
 echo -e "${BOLD}Step 4: Registering 'mnemo' MCP server with Hermes${NC}"
 
-# If a mnemo entry already exists, offer to replace it
+# If a mnemo entry already exists, offer to replace it.
+# Non-interactive callers must set MNEMO_REPLACE=1 to confirm; otherwise we
+# refuse rather than silently overwrite a working config.
 if hermes mcp list 2>/dev/null | grep -qE '^\s*mnemo\b'; then
     warn "Hermes already has an 'mnemo' MCP server configured."
-    read -rp "Replace it? (y/N): " replace
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        if [ "${MNEMO_REPLACE:-0}" = "1" ]; then
+            replace="y"
+            info "MNEMO_REPLACE=1 set — replacing existing entry."
+        else
+            fail "Existing 'mnemo' entry present and non-interactive. Set MNEMO_REPLACE=1 to confirm replacement, or remove the entry manually with: hermes mcp remove mnemo"
+        fi
+    else
+        read -rp "Replace it? (y/N): " replace
+    fi
     [[ "$replace" =~ ^[Yy] ]] || fail "Aborted by user. Existing entry left in place."
     hermes mcp remove mnemo
     ok "Removed existing 'mnemo' entry"
 fi
 
-hermes mcp add mnemo \
-    --command node \
-    --args "${BRIDGE_DIR}/server.js" \
-    --env "MNEMO_URL=${MNEMO_URL}" "MNEMO_AGENT_ID=${AGENT_ID}" "MNEMO_SHARE=${SHARE_MODE}"
-ok "Registered 'mnemo' in ~/.hermes/config.yaml"
+# `hermes mcp add` prompts "Enable all N tools? [Y/n/select]" after
+# discovery. Pipe `yes Y` in non-interactive mode so curl|bash callers
+# don't hang there. Interactive callers see the normal prompt.
+if [ "$NONINTERACTIVE" = "1" ]; then
+    yes Y | hermes mcp add mnemo \
+        --command node \
+        --args "${BRIDGE_DIR}/server.js" \
+        --env "MNEMO_URL=${MNEMO_URL}" "MNEMO_AGENT_ID=${AGENT_ID}" "MNEMO_SHARE=${SHARE_MODE}"
+else
+    hermes mcp add mnemo \
+        --command node \
+        --args "${BRIDGE_DIR}/server.js" \
+        --env "MNEMO_URL=${MNEMO_URL}" "MNEMO_AGENT_ID=${AGENT_ID}" "MNEMO_SHARE=${SHARE_MODE}"
+fi
+ok "Registered 'mnemo' in Hermes config"
 
 # ─────────────────────────────────────────────
 # Step 5: Verify the wire

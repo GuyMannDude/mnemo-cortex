@@ -55,6 +55,33 @@ mnemo-cortex health         # verify it's up
 
 Then run the installer above.
 
+### Non-interactive / CI / curl-pipe path
+
+The installer auto-detects when stdin isn't a TTY and switches to
+non-interactive mode: prompts fall back to env vars or defaults, and the
+"Enable all N tools?" confirmation from `hermes mcp add` is auto-accepted.
+
+```bash
+cd mnemo-cortex/integrations/hermes
+MNEMO_URL=http://localhost:50001 \
+MNEMO_AGENT_ID=hermes \
+MNEMO_SHARE=separate \
+bash install.sh < /dev/null
+```
+
+Env vars the installer honors:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MNEMO_URL` | `http://localhost:50001` | Where Mnemo Cortex is reachable |
+| `MNEMO_AGENT_ID` | `hermes` | Per-agent memory namespace |
+| `MNEMO_SHARE` | `separate` | `separate` / `always` / `never` |
+| `MNEMO_REPLACE` | unset | Set to `1` to auto-replace an existing `mnemo` entry in Hermes config (otherwise the installer refuses rather than silently overwrite) |
+
+Non-interactive mode refuses to install if Mnemo is unreachable
+(`MNEMO_URL/health` must respond) — better to fail loud than wire Hermes
+to a dead server.
+
 ### Manual path — for the curious or unusual setups
 
 If you'd rather wire it up by hand (or the installer doesn't fit your
@@ -86,9 +113,11 @@ hermes mcp add mnemo \
 Replace the path with where you cloned the repo. Pick any `MNEMO_AGENT_ID`
 you like — memories are scoped to it.
 
-This writes the entry into `~/.hermes/config.yaml`. If you'd rather edit
-that file by hand, see [`config.yaml.example`](config.yaml.example) for
-the exact shape.
+This writes the entry into Hermes's config file. With no profiles set up,
+that's `~/.hermes/config.yaml`. If you use Hermes profiles, the entry
+lands in `~/.hermes/profiles/<profile-name>/config.yaml` for the active
+profile. Either way, if you'd rather edit by hand, see
+[`config.yaml.example`](config.yaml.example) for the exact shape.
 
 #### 3. Verify
 
@@ -129,10 +158,10 @@ available immediately.
 | `mnemo_*` (4 tools) | Save / recall / search / share memories | Always — Mnemo core |
 | `passport_*` (5 tools) | Read and update the user's portable working-style profile | Always — Passport ships with Mnemo |
 | `wiki_*` (3 tools) | Search and read your WikAI knowledge base | Only when `WIKI_DIR` env is set and points to a real dir |
-| Brain + session lifecycle (5 tools) | `read_brain_file`, `write_brain_file`, `list_brain_files`, `opie_startup`, `session_end` | Only when `BRAIN_DIR` env is set |
+| Brain + session lifecycle (6 tools) | `agent_startup`, `opie_startup` (deprecated alias), `read_brain_file`, `write_brain_file`, `list_brain_files`, `session_end` | Only when `BRAIN_DIR` env is set |
 
 So the minimum useful surface is **9 tools** (4 Mnemo + 5 Passport), and
-**12 tools** if you have a wiki, **17 tools** if you have a brain *and* a
+**12 tools** if you have a wiki, **18 tools** if you have a brain *and* a
 wiki.
 
 ## Choosing a model for Hermes
