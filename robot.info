@@ -13,7 +13,7 @@
   "tagline": "Persistent semantic memory for AI agents — local-first, decay-aware, cross-agent dreaming.",
   "summary": "Memory coprocessor that gives AI agents persistent recall across sessions. Local SQLite + FTS5 working memory in front of an optional Mem0 cloud-deep fallback. Every memory record carries provenance (source + category) and decays on a category-aware schedule — topology facts age fast, doctrine stays perpetual, and recall returns a structured stale_warning when a fact is past its threshold so the agent verifies before acting. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.",
   "backstory": "Guy Hutchins started exploring AI memory with ChatGPT 3.5 using basic text files. When OpenClaw launched and needed better memory, he gave Opie (Claude) a simple prompt: \"If you were a ClawdBot and your user wanted you to have the best memory you could build yourself, what would it look like?\" Opie was on extended thinking and just built it — no clarifying questions, no spec, just shipped a working memory system. Guy gave the same prompt to AL (ChatGPT), who built his own version independently. AL saw Opie's and said it was more in depth. Opie saw AL's and said it had ideas worth blending. The two versions merged. When it came time to name it, the first two suggestions were \"Mnemo\" and \"Cortex.\" Guy picked both. Mnemo Cortex.",
-  "version": "2.9.0",
+  "version": "2.11.0",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/mnemo-cortex",
   "source": "https://github.com/GuyMannDude/mnemo-cortex",
@@ -22,6 +22,7 @@
 
   "capabilities": [
     "Persistent semantic memory across agent sessions (~sub-100ms local recall on a 4k-record corpus).",
+    "Indexed sqlite-vec backend (v2.11.0) — per-agent vec0 virtual table answers k-NN semantic queries in ~3ms on a 1.4k-record corpus, replacing the linear-scan cosine pass.",
     "v3 provenance tagging — every record carries source (user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, current_state, session_log, unknown).",
     "Category-aware decay — topology warns at 30d / stale at 90d; doctrine, incident, identity, decision are perpetual.",
     "Structured stale_warning field on recall — programmatic enforcement, not advisory prose.",

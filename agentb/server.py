@@ -38,6 +38,7 @@ from agentb.provenance import (
     VALID_SOURCES, VALID_CATEGORIES, DEFAULT_HIDDEN_CATEGORIES,
     suggest_category,
 )
+from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -226,12 +227,18 @@ class TenantManager:
             # Could extend AgentConfig with session settings later
             pass
 
+        vec_mode = vec_detect_mode(memory_dir)
+        vec_store = VecStore(data_dir / "vec_index.sqlite")
+        log.info(f"Tenant '{key}' vec index ({vec_mode} mode, {vec_store.count()} embedded)")
+
         tenant = {
             "data_dir": data_dir,
             "memory_dir": memory_dir,
             "l1": L1Cache(l1_dir, self.config.cache),
             "l2": L2Index(l2_dir, self.config.cache),
             "sessions": SessionManager(data_dir, session_cfg),
+            "vec": vec_store,
+            "vec_mode": vec_mode,
         }
         self._tenants[key] = tenant
         log.info(f"Tenant '{key}' initialized at {data_dir}")
@@ -351,6 +358,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         l1, l2 = tenant["l1"], tenant["l2"]
         memory_dir = tenant["memory_dir"]
         sessions = tenant["sessions"]
+        vec_store: VecStore = tenant["vec"]
 
         # v3 filter setup. exclude_categories defaults to DEFAULT_HIDDEN_CATEGORIES
         # (session_log). Caller can opt back in by passing an explicit list — even
@@ -381,7 +389,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # Over-fetch so post-filter trims don't leave us short.
         overfetch = max(req.max_results * 3, req.max_results + 5)
 
-        cache_hits = {"HOT": 0, "L1": 0, "L2": 0, "L3": 0, "MEM0": 0}
+        cache_hits = {"HOT": 0, "L1": 0, "VEC": 0, "L2": 0, "L3": 0, "MEM0": 0}
         all_chunks: list[ContextChunk] = []
 
         # HOT: Search recent session logs first (fastest, keyword matching)
@@ -416,13 +424,50 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             all_chunks.extend(kept)
             cache_hits["L1"] = len(kept)
 
+        # Cross-tier dedup: a memory written via /writeback ends up in BOTH
+        # the vec index and the L2/L3 stores. Without this, the same chunk
+        # appears once per tier and burns max_results budget.
+        seen_memory_ids: set[str] = {c.memory_id for c in all_chunks if c.memory_id}
+
+        # VEC: indexed sqlite-vec lookup over written memories
+        remaining = req.max_results - len(all_chunks)
+        if remaining > 0 and vec_store.count() > 0:
+            try:
+                vec_hits = vec_store.search(query_embedding, top_k=overfetch)
+            except VecDimMismatch as e:
+                log.error(f"vec query dim mismatch: {e}")
+                vec_hits = []
+            vec_chunks: list[ContextChunk] = []
+            for hit in vec_hits:
+                if hit.memory_id in seen_memory_ids:
+                    continue
+                # vec0 distance is L2 by default; convert to similarity-ish (0..1)
+                relevance = 1.0 / (1.0 + hit.distance)
+                vec_chunks.append(ContextChunk(
+                    content=hit.text,
+                    source=f"memory:{hit.memory_id}",
+                    relevance=relevance,
+                    cache_tier="VEC",
+                    memory_id=hit.memory_id,
+                ))
+                seen_memory_ids.add(hit.memory_id)
+            kept = [c for c in vec_chunks if keep_chunk(c)][:remaining]
+            all_chunks.extend(kept)
+            cache_hits["VEC"] = len(kept)
+
         # L2
         remaining = req.max_results - len(all_chunks)
         if remaining > 0:
-            l2_results = [c for c in l2.search(query_embedding, top_k=overfetch, persona=persona) if keep_chunk(c)]
+            l2_results = [
+                c for c in l2.search(query_embedding, top_k=overfetch, persona=persona)
+                if keep_chunk(c) and (not c.memory_id or c.memory_id not in seen_memory_ids)
+            ]
             kept = l2_results[:remaining]
             all_chunks.extend(kept)
             cache_hits["L2"] = len(kept)
+            for c in kept:
+                if c.memory_id:
+                    seen_memory_ids.add(c.memory_id)
 
         # L3
         remaining = req.max_results - len(all_chunks)
@@ -432,11 +477,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                           embed_fn=embedder.embed,
                                           threshold=config.cache.l3_similarity_threshold,
                                           top_k=overfetch)
-                if keep_chunk(c)
+                if keep_chunk(c) and (not c.memory_id or c.memory_id not in seen_memory_ids)
             ]
             kept = l3_results[:remaining]
             all_chunks.extend(kept)
             cache_hits["L3"] = len(kept)
+            for c in kept:
+                if c.memory_id:
+                    seen_memory_ids.add(c.memory_id)
 
         # MEM0: Optional upstream fallback, per-agent routing
         remaining = req.max_results - len(all_chunks)
@@ -528,6 +576,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         tenant = tenants.get(req.agent_id)
         memory_dir = tenant["memory_dir"]
         l1, l2 = tenant["l1"], tenant["l2"]
+        vec_store: VecStore = tenant["vec"]
 
         ts = req.timestamp or datetime.now(timezone.utc).isoformat()
         memory_id = hashlib.sha256(f"{req.session_id}:{ts}".encode()).hexdigest()[:16]
@@ -578,6 +627,21 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             "additional_tags": additional_tags,
                         })
 
+            try:
+                vec_store.upsert(
+                    memory_id,
+                    full_text,
+                    embedding,
+                    source_file=(memory_dir / f"{memory_id}.json").as_posix(),
+                    created_at=time.time(),
+                )
+            except VecDimMismatch as e:
+                # Dim mismatch is a configuration/contract bug, not a runtime
+                # blip. Surface to the caller — silent vector loss is the
+                # exact failure mode the dim guard was added to prevent.
+                log.error(f"vec_index dim mismatch on writeback {memory_id}: {e}")
+                raise HTTPException(500, f"vec index dim mismatch: {e}")
+
             for project in req.projects_referenced:
                 pc = f"Project: {project}\nSession: {req.session_id}\nSummary: {req.summary}\n"
                 facts = [f for f in req.key_facts if project.lower() in f.lower()]
@@ -586,6 +650,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 pe = await embedder.embed(pc)
                 await l1.add(pc, f"project:{project}", pe)
                 l1_updated += 1
+        except HTTPException:
+            raise
         except Exception as e:
             log.error(f"Writeback indexing failed: {e}")
 
@@ -678,6 +744,34 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "agent_id": agent_id or "default",
             "context": sessions.get_recent_context(n),
         }
+
+    # ── Vec index management ──
+    @app.get("/vec/status")
+    async def vec_status(agent_id: Optional[str] = None):
+        tenant = tenants.get(agent_id)
+        vec_store: VecStore = tenant["vec"]
+        memory_dir = tenant["memory_dir"]
+        on_disk = sum(1 for _ in memory_dir.glob("*.json"))
+        return {
+            "agent_id": agent_id or "default",
+            "mode": tenant["vec_mode"],
+            "indexed": vec_store.count(),
+            "memory_entries_on_disk": on_disk,
+            "db_path": vec_store.db_path.as_posix(),
+        }
+
+    @app.post("/vec/backfill")
+    async def vec_backfill_endpoint(agent_id: Optional[str] = None, skip_existing: bool = True):
+        tenant = tenants.get(agent_id)
+        vec_store: VecStore = tenant["vec"]
+        memory_dir = tenant["memory_dir"]
+        stats = await vec_backfill(
+            vec_store,
+            memory_dir,
+            embedder.embed,
+            skip_existing=skip_existing,
+        )
+        return {"agent_id": agent_id or "default", **stats}
 
     # ── Background: precache + session archival ──
     async def maintenance_loop():

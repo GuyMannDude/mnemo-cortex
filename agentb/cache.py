@@ -33,6 +33,7 @@ class ContextChunk:
         relevance: float,
         cache_tier: str,
         *,
+        memory_id: Optional[str] = None,
         provenance_source: Optional[str] = None,
         category: Optional[str] = None,
         additional_tags: Optional[list] = None,
@@ -44,6 +45,9 @@ class ContextChunk:
         self.source = source
         self.relevance = relevance
         self.cache_tier = cache_tier
+        # memory_id ties chunks across tiers (set when the chunk traces back
+        # to a writeback record); enables cross-tier dedup.
+        self.memory_id = memory_id
         # v3 fields (all optional — pre-v3 chunks leave them None)
         self.provenance_source = provenance_source
         self.category = category
@@ -173,6 +177,7 @@ class L2Index:
             stale = compute_stale_warning(category, created_at) if category else None
             out.append(ContextChunk(
                 e["content"], e.get("source", "l2-memory"), s, "L2",
+                memory_id=meta.get("memory_id"),
                 provenance_source=meta.get("provenance_source"),
                 category=category,
                 additional_tags=meta.get("additional_tags") or [],
@@ -223,6 +228,7 @@ async def l3_scan(
                 stale = compute_stale_warning(category, created_at) if category else None
                 results.append(ContextChunk(
                     content, f"l3-scan:{mem_file.stem}", sim, "L3",
+                    memory_id=mem.get("id") or mem_file.stem,
                     provenance_source=mem.get("source"),
                     category=category,
                     additional_tags=mem.get("additional_tags") or [],

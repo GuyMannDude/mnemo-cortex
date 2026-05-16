@@ -1,5 +1,76 @@
 # Changelog
 
+## v2.11.0 (2026-05-16) — sqlite-vec vector index (Mnemo v4 Phase 2)
+
+Before this release, vector recall was a linear scan. Every `/context`
+call read every memory bundle from disk, computed cosine similarity in
+Python, and ranked the result. At 1,398 production memories the L1/L2/L3
+chain works; at 14,000 it doesn't. The index needed to live next to the
+memories, not be rebuilt from JSON on every read.
+
+This release adds an indexed sqlite-vec table per agent. The existing
+L1 (project precache) and L2/L3 (linear scans) tiers stay — the new VEC
+tier slots between them and answers semantic recall in milliseconds even
+on the full corpus.
+
+**What's new in `agentb/`.**
+
+- **`agentb/vec.py`** — new module. `VecStore` wraps a per-tenant SQLite
+  file with two tables: `vec_sources(memory_id, text, source_file, created_at)`
+  and `vec_embeddings USING vec0(memory_id, embedding FLOAT[768])`. Source
+  text and vectors are stored separately so the embedding index is
+  rebuildable without touching memory bundles (Open Brain's
+  source/vector separation principle). Dimension is locked to 768 —
+  matched to `nomic-embed-text`, the default primary embedder. A vector
+  of the wrong dimension raises `VecDimMismatch` and refuses the write
+  rather than silently dropping data; loud failure beats silent vector
+  loss (Vapor Truth doctrine).
+- **`agentb/vec.py`** — auto-detected operating modes. `detect_mode(memory_dir)`
+  returns `migration` when JSON entries already live on disk and `clean`
+  otherwise. Existing installs upgrade in place: their bundles stay as
+  the source of truth and a one-shot backfill populates the vec index.
+  Fresh installs initialize empty. The user never picks a mode.
+- **`agentb/vec.py`** — `backfill(store, memory_dir, embed)` walks the
+  memory directory, re-embeds canonical `summary + key_facts` text per
+  bundle, and upserts into the vec index. Idempotent (skips already-indexed
+  ids) and tolerant (continues past per-entry embedding failures and
+  malformed files). Returns counters for `total / embedded / skipped /
+  failed / elapsed_sec`.
+- **`agentb/server.py`** — `TenantManager` now constructs a `VecStore` at
+  `<data_dir>/vec_index.sqlite` for every agent and records the detected
+  mode. `/writeback` reuses the embedding it already computed for the L2
+  tier and upserts it into the vec index in the same transaction. The
+  `/context` pipeline gains a VEC tier between L1 and L2 — when the vec
+  index has data, the query embedding runs against vec0's k-NN, hits are
+  wrapped as `ContextChunk(cache_tier="VEC")`, and `cache_hits["VEC"]`
+  surfaces in the response. L2/L3 still run when VEC doesn't return
+  enough chunks; nothing else in the chain changed.
+- **`agentb/server.py`** — `GET /vec/status?agent_id=X` reports mode,
+  indexed count, on-disk memory count, and db path for the tenant.
+  `POST /vec/backfill?agent_id=X` runs the backfill walk on demand and
+  returns the stats dict. Use this once on upgrade for existing installs;
+  dreaming can call it nightly for ongoing maintenance.
+- **`pyproject.toml`** — adds `sqlite-vec>=0.1.6` as a runtime dependency.
+- **`tests/test_vec.py`** — new test module. Sixteen tests cover store
+  init, upsert/replace/delete, dimension-guard rejection (write and
+  query paths), mode detection across empty / json-present / missing
+  directories, `iter_memory_entries` (canonical text shape, empties
+  skipped, corrupt files tolerated), backfill (single-pass, idempotent,
+  failure-tolerant), and the spec's canonical semantic-over-keyword
+  scenario.
+
+**Verified on the production corpus.** Backfilled 1,398 cc-agent memory
+bundles in 86.5s (~62 ms/entry, Ollama-bound) and observed vec0 k-NN
+queries returning top-3 in 3–4 ms over the full set. The same query
+shape against the legacy linear-scan path touches every bundle on every
+call.
+
+**Upgrade path.** `pip install --upgrade mnemo-cortex`, restart, then
+`POST /vec/backfill?agent_id=<your-agent>` once. The vec index appears
+alongside `memory/` inside each agent data directory. Memory bundles
+stay where they are. Nothing else changes for the user.
+
+
 ## v2.10.0 (2026-05-16) — Provenance & decay land in the open-source core
 
 The MCP bridge announced provenance & decay support back in v2.8.0, but
