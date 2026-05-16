@@ -99,16 +99,20 @@ log = logging.getLogger("mnemo-wiki")
 def harvest_agentb(since: datetime) -> list[dict]:
     """Read all AgentB writeback JSONs newer than `since`."""
     memories = []
-    memory_root = AGENTB_DATA_DIR / "memory"
-    if not memory_root.exists():
-        log.warning(f"AgentB memory dir not found: {memory_root}")
+    # Per-agent layout (Mnemo Cortex v2.10.0+): ~/.agentb/agents/<agent>/memory/
+    agents_root = AGENTB_DATA_DIR / "agents"
+    if not agents_root.exists():
+        log.warning(f"AgentB agents dir not found: {agents_root}")
         return memories
 
-    for agent_dir in memory_root.iterdir():
+    for agent_dir in agents_root.iterdir():
         if not agent_dir.is_dir() or agent_dir.name == "dreamer":
             continue
+        memory_subdir = agent_dir / "memory"
+        if not memory_subdir.exists():
+            continue
         agent_id = agent_dir.name
-        for f in agent_dir.glob("*.json"):
+        for f in memory_subdir.glob("*.json"):
             try:
                 mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
                 if mtime < since:

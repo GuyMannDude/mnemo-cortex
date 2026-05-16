@@ -67,6 +67,19 @@ perpetual — never stale. Override via env: `MNEMO_DECAY_TOPOLOGY_WARN_DAYS`,
 **FastAPI app version** bumps to `0.7.0` (`agentb/server.py`); package
 version (`pyproject.toml`) bumps to `2.10.0` to match.
 
+**`mnemo_v2/` retired.** The repo previously carried a parallel
+conversation-archive product under `mnemo_v2/` — SQLite + FTS5 over
+message transcripts with leaf/condensed summary compaction. It never
+shared callers with the memory engine in `agentb/`: nothing imported
+from it, `install.sh` didn't deploy it, the MCP bridge didn't route to
+it, and `tests/test_smoke.py` was its only consumer. Two parallel
+servers under one repo confused readers about which path was "the"
+backend. Removed (`mnemo_v2/`, `tests/test_smoke.py`, the deprecated
+`integrations/claude-code/mnemo-watcher-cc.sh` shim that targeted it,
+plus the `pyproject.toml` and `scripts/wheel-smoke-test.sh` references).
+If conversation compaction is wanted in the future, building it on
+`agentb/` directly is simpler than maintaining a parallel server.
+
 ---
 
 ## v2.9.0 (2026-05-15) — Developer Dump (Mnemo v4 Phase 1)

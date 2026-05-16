@@ -416,19 +416,7 @@ We did not invent this. We adopted the best ideas in the air, credited them open
 
 ### *A Crustacean That Never Forgets* 🧠🦞
 
-Proven on two live agents — Rocky with six weeks of recall, Alice with one.
-
-```
-OpenClaw Agent ──writes──▶ Session Tape (disk)
-                                │
-                          Watcher Daemon ──reads──▶ Mnemo v2 SQLite
-                                                        │
-                          Refresher Daemon ◀──reads─────┘
-                                │
-                          writes──▶ MNEMO-CONTEXT.md ──▶ Agent Bootstrap
-```
-
-The full v2.6 stack:
+The full v2.10 stack:
 
 ```
                     ┌─────────────────────────────────────────┐
@@ -817,67 +805,15 @@ Common causes: wrong port, firewall blocking, server not started. On multi-machi
 
 ## Verify Installation
 
-After setup, run the smoke test to confirm everything works:
+After setup, run the test suite:
 
 ```bash
 cd /path/to/mnemo-cortex
 source .venv/bin/activate
-pytest tests/test_smoke.py -v
+pytest tests/test_agentb.py -v
 ```
 
-Expected output (all 4 assertions must pass):
-
-```
-tests/test_smoke.py::test_ingest_compact_expand PASSED
-
-What it verifies:
-  ✅ Ingest: 24 messages stored successfully
-  ✅ Conversation: agent/session pair created
-  ✅ Compaction: summaries generated from message chunks
-  ✅ Expansion: summary expands back to source messages (verbatim)
-```
-
-If the test fails, check that all Python dependencies are installed (`pip install -e .`).
-
-## Architecture
-
-```
-mnemo_v2/
-  api/server.py              FastAPI app (optional — v2 works without it)
-  db/schema.sql              Canonical schema + FTS5 tables
-  db/migrations.py           Schema bootstrap and compatibility checks
-  store/ingest.py            Durable transcript ingest + tape journaling
-  store/compaction.py        Leaf/condensed compaction with LLM summarization
-  store/assemble.py          Active frontier → model-visible context
-  store/retrieval.py         FTS5 search + source-lineage replay
-  watch/session_watcher.py   Tails JSONL session logs into the store
-  watch/context_refresher.py Writes MNEMO-CONTEXT.md on an interval
-```
-
-### Design Rules
-
-- Immutable transcript in `messages`
-- Mutable active frontier in `context_items`
-- Summaries are derived, never destructive
-- Raw tape is append-only for crash recovery
-- Compaction events are journaled
-- Replay supports `snippet` or `verbatim`
-- Expansion is always scoped to a conversation
-
-### Schema
-
-See [`mnemo_v2/db/schema.sql`](mnemo_v2/db/schema.sql) for the full schema. Key tables:
-
-| Table | Purpose |
-|-------|---------|
-| `conversations` | Agent + session pairs |
-| `messages` | Immutable transcript (role, content, seq) |
-| `summaries` | Compacted summaries with depth and lineage |
-| `summary_messages` | Links summaries to source messages |
-| `summary_sources` | Links condensed summaries to leaf summaries (DAG) |
-| `context_items` | The active frontier (what the agent sees) |
-| `compaction_events` | Audit log of all compaction operations |
-| `raw_tape` | Append-only crash recovery journal |
+If tests fail, check that all Python dependencies are installed (`pip install -e .`).
 
 ## Mnemo Cortex vs OpenClaw Active Memory
 

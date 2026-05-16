@@ -40,9 +40,8 @@ python3 - <<'PY'
 import importlib
 import importlib.resources as r
 
-REQUIRED_PACKAGES = ["agentb", "mnemo_v2", "passport", "sparks_bus"]
+REQUIRED_PACKAGES = ["agentb", "passport", "sparks_bus"]
 PACKAGE_DATA = [
-    ("mnemo_v2", "db/schema.sql"),
     ("sparks_bus", "schema.sql"),
 ]
 

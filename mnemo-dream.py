@@ -9,15 +9,14 @@ startup.
 Designed to run as a nightly cron job on the host carrying the memory
 sources (typically the same machine running the Mnemo Cortex server).
 
-Data sources:
-  - AgentB writebacks: ~/.agentb/memory/<agent>/*.json (one dir per agent)
-  - Mnemo v2 SQLite:   ~/.mnemo-v2/mnemo.sqlite3      (messages + summaries)
+Data source:
+  - AgentB writebacks: ~/.agentb/agents/<agent>/memory/*.json (per agent)
 
 Agents are discovered automatically from the filesystem — every directory
-under ~/.agentb/memory/ is treated as one agent's lane.
+under ~/.agentb/agents/ that has a `memory/` subdirectory is one agent's lane.
 
 Output:
-  - Writes dream brief to ~/.agentb/memory/dreamer/<dream-id>.json
+  - Writes dream brief to ~/.agentb/agents/dreamer/memory/<dream-id>.json
   - Also writes human-readable markdown to ~/.agentb/dreams/YYYY-MM-DD.md
 
 Usage:
@@ -47,24 +46,26 @@ import httpx
 AGENTB_DATA_DIR = Path(os.getenv("AGENTB_DATA_DIR", "~/.agentb")).expanduser()
 MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "~/.mnemo-v2/mnemo.sqlite3")).expanduser()
 DREAM_DIR = AGENTB_DATA_DIR / "dreams"
-DREAMER_MEMORY_DIR = AGENTB_DATA_DIR / "memory" / "dreamer"
+# Per-agent layout (Mnemo Cortex v2.10.0+): ~/.agentb/agents/<agent>/memory/
+DREAMER_MEMORY_DIR = AGENTB_DATA_DIR / "agents" / "dreamer" / "memory"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Agents to harvest from AgentB writebacks. Auto-discovered from
-# ~/.agentb/memory/<agent>/ subdirectories at runtime; "dreamer" is the
-# output lane (excluded from harvest). Override with the
+# ~/.agentb/agents/<agent>/memory/ subdirectories at runtime; "dreamer" is
+# the output lane (excluded from harvest). Override with the
 # MNEMO_DREAM_AGENTS env var (comma-separated) if you want to pin the
 # list explicitly.
 def _discover_agentb_agents() -> list[str]:
-    memory_root = AGENTB_DATA_DIR / "memory"
-    if not memory_root.exists():
+    agents_root = AGENTB_DATA_DIR / "agents"
+    if not agents_root.exists():
         return []
     return sorted(
-        d.name for d in memory_root.iterdir()
-        if d.is_dir() and d.name != "dreamer"
+        d.name for d in agents_root.iterdir()
+        if d.is_dir() and d.name != "dreamer" and not d.name.endswith(".archived-20260516")
+        and (d / "memory").exists()
     )
 
 
@@ -88,16 +89,19 @@ log = logging.getLogger("mnemo-dream")
 def harvest_agentb(since: datetime) -> list[dict]:
     """Read all AgentB writeback JSONs newer than `since`."""
     memories = []
-    memory_root = AGENTB_DATA_DIR / "memory"
+    agents_root = AGENTB_DATA_DIR / "agents"
 
-    for agent_dir in memory_root.iterdir():
+    for agent_dir in agents_root.iterdir():
         if not agent_dir.is_dir():
             continue
         agent_id = agent_dir.name
         if agent_id == "dreamer":
             continue  # Don't eat our own dreams
+        memory_subdir = agent_dir / "memory"
+        if not memory_subdir.exists():
+            continue
 
-        for f in agent_dir.glob("*.json"):
+        for f in memory_subdir.glob("*.json"):
             try:
                 mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
                 if mtime < since:
