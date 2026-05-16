@@ -26,15 +26,46 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 class ContextChunk:
-    def __init__(self, content: str, source: str, relevance: float, cache_tier: str):
+    def __init__(
+        self,
+        content: str,
+        source: str,
+        relevance: float,
+        cache_tier: str,
+        *,
+        provenance_source: Optional[str] = None,
+        category: Optional[str] = None,
+        additional_tags: Optional[list] = None,
+        age_days: Optional[float] = None,
+        stale_warning: Optional[dict] = None,
+        created_at: Optional[float] = None,
+    ):
         self.content = content
         self.source = source
         self.relevance = relevance
         self.cache_tier = cache_tier
+        # v3 fields (all optional — pre-v3 chunks leave them None)
+        self.provenance_source = provenance_source
+        self.category = category
+        self.additional_tags = additional_tags or []
+        self.age_days = age_days
+        self.stale_warning = stale_warning
+        self.created_at = created_at
 
     def to_dict(self) -> dict:
-        return {"content": self.content, "source": self.source,
-                "relevance": round(self.relevance, 4), "cache_tier": self.cache_tier}
+        d = {"content": self.content, "source": self.source,
+             "relevance": round(self.relevance, 4), "cache_tier": self.cache_tier}
+        if self.provenance_source is not None:
+            d["provenance_source"] = self.provenance_source
+        if self.category is not None:
+            d["category"] = self.category
+        if self.additional_tags:
+            d["additional_tags"] = self.additional_tags
+        if self.age_days is not None:
+            d["age_days"] = self.age_days
+        if self.stale_warning is not None:
+            d["stale_warning"] = self.stale_warning
+        return d
 
 
 class L1Cache:
@@ -115,10 +146,13 @@ class L2Index:
 
     def search(self, query_embedding: list[float], top_k: int = 5,
                persona: Optional[PersonaConfig] = None) -> list[ContextChunk]:
+        from agentb.provenance import compute_stale_warning
+
         threshold = self.config.l2_similarity_threshold
         if persona and persona.l2_similarity_override is not None:
             threshold = persona.l2_similarity_override
 
+        now = time.time()
         scored = []
         for entry in self.entries:
             if not entry.get("embedding"):
@@ -128,11 +162,28 @@ class L2Index:
                 scored.append((sim, entry))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [ContextChunk(e["content"], e.get("source", "l2-memory"), s, "L2")
-                for s, e in scored[:top_k]]
+        out: list[ContextChunk] = []
+        for s, e in scored[:top_k]:
+            meta = e.get("metadata") or {}
+            created_at = e.get("created_at")
+            age_days = None
+            if created_at:
+                age_days = round((now - float(created_at)) / 86400.0, 1)
+            category = meta.get("category")
+            stale = compute_stale_warning(category, created_at) if category else None
+            out.append(ContextChunk(
+                e["content"], e.get("source", "l2-memory"), s, "L2",
+                provenance_source=meta.get("provenance_source"),
+                category=category,
+                additional_tags=meta.get("additional_tags") or [],
+                age_days=age_days,
+                stale_warning=stale,
+                created_at=created_at,
+            ))
+        return out
 
     async def add(self, content: str, source: str, embedding: list[float],
-                  metadata: dict = None) -> str:
+                  metadata: Optional[dict] = None) -> str:
         entry_id = hashlib.sha256(content.encode()).hexdigest()[:12]
         self.entries.append({"id": entry_id, "content": content, "source": source,
                             "embedding": embedding, "metadata": metadata or {},
@@ -152,7 +203,10 @@ async def l3_scan(
     threshold: float = 0.4,
     top_k: int = 3,
 ) -> list[ContextChunk]:
+    from agentb.provenance import compute_stale_warning
+
     memory_dir.mkdir(parents=True, exist_ok=True)
+    now = time.time()
     results = []
     for mem_file in sorted(memory_dir.glob("*.json")):
         try:
@@ -163,7 +217,19 @@ async def l3_scan(
             content_embedding = await embed_fn(content)
             sim = cosine_similarity(query_embedding, content_embedding)
             if sim > threshold:
-                results.append(ContextChunk(content, f"l3-scan:{mem_file.stem}", sim, "L3"))
+                created_at = mem.get("created_at")
+                age_days = round((now - float(created_at)) / 86400.0, 1) if created_at else None
+                category = mem.get("category")
+                stale = compute_stale_warning(category, created_at) if category else None
+                results.append(ContextChunk(
+                    content, f"l3-scan:{mem_file.stem}", sim, "L3",
+                    provenance_source=mem.get("source"),
+                    category=category,
+                    additional_tags=mem.get("additional_tags") or [],
+                    age_days=age_days,
+                    stale_warning=stale,
+                    created_at=created_at,
+                ))
         except Exception as e:
             log.warning(f"L3 error {mem_file}: {e}")
     results.sort(key=lambda x: x.relevance, reverse=True)

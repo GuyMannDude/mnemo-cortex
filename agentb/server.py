@@ -1,5 +1,5 @@
 """
-Mnemo Cortex v0.6.0 — Drop-in Memory Superhero for AI Agents
+Mnemo Cortex v0.7.0 — Drop-in Memory Superhero for AI Agents
 =============================================================
 Every AI agent has amnesia. Mnemo Cortex is the cure.
 Five endpoints. Any LLM. Total recall.
@@ -29,10 +29,15 @@ from pydantic import BaseModel, Field
 
 from agentb.config import (
     load_config, AgentBConfig, get_agent_data_dir, get_persona, PersonaConfig, Mem0Config,
+    resolve_mem0,
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding
 from agentb.cache import L1Cache, L2Index, l3_scan, ContextChunk
 from agentb.sessions import SessionManager, SessionConfig
+from agentb.provenance import (
+    VALID_SOURCES, VALID_CATEGORIES, DEFAULT_HIDDEN_CATEGORIES,
+    suggest_category,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,6 +81,36 @@ class ContextRequest(BaseModel):
     agent_id: Optional[str] = Field(None, description="Agent ID for tenant isolation")
     persona: Optional[str] = Field(None, description="Persona mode: default, strict, creative")
     max_results: int = Field(5, ge=1, le=20)
+    # v3 provenance + decay filters (all optional)
+    source: Optional[str] = Field(
+        None,
+        description=(
+            "Filter to chunks whose provenance source matches: "
+            "user|tool|inferred|brain|migrated. Strict — pre-v3 chunks "
+            "(no source on record) are dropped when this is set."
+        ),
+    )
+    category: Optional[str] = Field(
+        None,
+        description=(
+            "Filter to chunks whose category matches: topology|current_state|"
+            "doctrine|incident|identity|relationship|decision|session_log|unknown."
+        ),
+    )
+    exclude_categories: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Categories to hide. Defaults to DEFAULT_HIDDEN_CATEGORIES "
+            "(session_log). Pass an empty list to disable hiding entirely."
+        ),
+    )
+    exclude_stale: bool = Field(
+        False,
+        description="If True, drop chunks whose stale_warning.severity == 'stale'.",
+    )
+    max_age_days: Optional[int] = Field(
+        None, description="Drop chunks older than N days. None = no age cap."
+    )
 
 
 class ContextChunkResponse(BaseModel):
@@ -83,6 +118,12 @@ class ContextChunkResponse(BaseModel):
     source: str
     relevance: float
     cache_tier: str
+    # v3 fields — surfaced when the chunk carries them
+    provenance_source: Optional[str] = None
+    category: Optional[str] = None
+    additional_tags: list[str] = []
+    age_days: Optional[float] = None
+    stale_warning: Optional[dict] = None
 
 
 class ContextResponse(BaseModel):
@@ -120,6 +161,25 @@ class WritebackRequest(BaseModel):
     decisions_made: list[str] = []
     agent_id: Optional[str] = None
     timestamp: Optional[str] = None
+    # v3 provenance + decay (all optional; safe defaults applied server-side)
+    source: Optional[str] = Field(
+        None,
+        description=(
+            "Where this fact came from: user|tool|inferred|brain|migrated. "
+            "Defaults to 'inferred' if omitted or invalid."
+        ),
+    )
+    category: Optional[str] = Field(
+        None,
+        description=(
+            "Category that drives decay: topology|current_state|doctrine|incident|"
+            "identity|relationship|decision|session_log|unknown. If omitted, "
+            "the regex auto-suggester runs against summary + key_facts."
+        ),
+    )
+    additional_tags: list[str] = Field(
+        default_factory=list, description="Free-form human-readable tags."
+    )
 
 
 class WritebackResponse(BaseModel):
@@ -128,6 +188,11 @@ class WritebackResponse(BaseModel):
     agent_id: Optional[str]
     l1_bundles_updated: int
     message: str
+    # v3 — what the server actually stored + what the regex suggested
+    category_used: Optional[str] = None
+    category_suggested: Optional[str] = None
+    category_match_keywords: Optional[list[str]] = None
+    source_used: Optional[str] = None
 
 
 # ─────────────────────────────────────────────
@@ -235,7 +300,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     for agent_name in config.agents:
         tenants.get(agent_name)
 
-    app = FastAPI(title="Mnemo Cortex", description="Drop-in memory superhero for AI agents", version="0.6.0")
+    app = FastAPI(title="Mnemo Cortex", description="Drop-in memory superhero for AI agents", version="0.7.0")
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
 
@@ -267,7 +332,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="0.6.0",
+            version="0.7.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -287,27 +352,56 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         memory_dir = tenant["memory_dir"]
         sessions = tenant["sessions"]
 
+        # v3 filter setup. exclude_categories defaults to DEFAULT_HIDDEN_CATEGORIES
+        # (session_log). Caller can opt back in by passing an explicit list — even
+        # an empty one — to disable hiding.
+        if req.exclude_categories is None:
+            effective_exclude = set(DEFAULT_HIDDEN_CATEGORIES)
+        else:
+            effective_exclude = set(req.exclude_categories)
+        # If caller asked for a specific category, never hide it.
+        if req.category:
+            effective_exclude.discard(req.category)
+
+        def keep_chunk(c: ContextChunk) -> bool:
+            if req.source:
+                # Strict: pre-v3 chunks have no source, can't satisfy a source filter.
+                if not c.provenance_source or c.provenance_source != req.source:
+                    return False
+            if req.category and c.category != req.category:
+                return False
+            if c.category and c.category in effective_exclude:
+                return False
+            if req.max_age_days is not None and c.age_days is not None and c.age_days > req.max_age_days:
+                return False
+            if req.exclude_stale and c.stale_warning and c.stale_warning.get("severity") == "stale":
+                return False
+            return True
+
+        # Over-fetch so post-filter trims don't leave us short.
+        overfetch = max(req.max_results * 3, req.max_results + 5)
+
         cache_hits = {"HOT": 0, "L1": 0, "L2": 0, "L3": 0, "MEM0": 0}
         all_chunks: list[ContextChunk] = []
 
         # HOT: Search recent session logs first (fastest, keyword matching)
         hot_results = sessions.search_hot(req.prompt, max_results=min(3, req.max_results))
+        hot_chunks: list[ContextChunk] = []
         for hr in hot_results:
             content = f"[{hr['timestamp'][:16]}] User: {hr['prompt']}\nAgent: {hr['response']}"
-
-            # Append action summaries if present (tool calls, commands)
             if hr.get("actions"):
                 content += "\nActions: " + " | ".join(hr["actions"][:3])
             if hr.get("thinking"):
                 content += f"\nThinking: {hr['thinking']}"
-
-            all_chunks.append(ContextChunk(
+            hot_chunks.append(ContextChunk(
                 content=content,
                 source=f"hot-session:{hr['session_id']}",
-                relevance=0.95,  # hot data is highly relevant by recency
+                relevance=0.95,
                 cache_tier="HOT",
             ))
-        cache_hits["HOT"] = len(hot_results)
+        hot_kept = [c for c in hot_chunks if keep_chunk(c)][: req.max_results]
+        all_chunks.extend(hot_kept)
+        cache_hits["HOT"] = len(hot_kept)
 
         try:
             query_embedding = await embedder.embed(req.prompt)
@@ -317,33 +411,39 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # L1
         remaining = req.max_results - len(all_chunks)
         if remaining > 0:
-            l1_results = l1.search(query_embedding, top_k=remaining, persona=persona)
-            all_chunks.extend(l1_results)
-            cache_hits["L1"] = len(l1_results)
+            l1_results = [c for c in l1.search(query_embedding, top_k=overfetch, persona=persona) if keep_chunk(c)]
+            kept = l1_results[:remaining]
+            all_chunks.extend(kept)
+            cache_hits["L1"] = len(kept)
 
         # L2
         remaining = req.max_results - len(all_chunks)
         if remaining > 0:
-            l2_results = l2.search(query_embedding, top_k=remaining, persona=persona)
-            all_chunks.extend(l2_results)
-            cache_hits["L2"] = len(l2_results)
+            l2_results = [c for c in l2.search(query_embedding, top_k=overfetch, persona=persona) if keep_chunk(c)]
+            kept = l2_results[:remaining]
+            all_chunks.extend(kept)
+            cache_hits["L2"] = len(kept)
 
         # L3
         remaining = req.max_results - len(all_chunks)
         if remaining > 0:
-            l3_results = await l3_scan(memory_dir, query_embedding,
-                                        embed_fn=embedder.embed,
-                                        threshold=config.cache.l3_similarity_threshold,
-                                        top_k=remaining)
-            all_chunks.extend(l3_results)
-            cache_hits["L3"] = len(l3_results)
+            l3_results = [
+                c for c in await l3_scan(memory_dir, query_embedding,
+                                          embed_fn=embedder.embed,
+                                          threshold=config.cache.l3_similarity_threshold,
+                                          top_k=overfetch)
+                if keep_chunk(c)
+            ]
+            kept = l3_results[:remaining]
+            all_chunks.extend(kept)
+            cache_hits["L3"] = len(kept)
 
-        # MEM0: Optional upstream fallback
+        # MEM0: Optional upstream fallback, per-agent routing
         remaining = req.max_results - len(all_chunks)
         if remaining > 0 and mem0:
-            if not config.mem0.fallback_only or len(all_chunks) == 0:
+            mem0_user, fallback_only = resolve_mem0(config, req.agent_id)
+            if not fallback_only or len(all_chunks) == 0:
                 try:
-                    mem0_user = req.agent_id or config.mem0.user_id or "default"
                     mem0_results = await mem0.search(
                         query=req.prompt,
                         user_id=mem0_user,
@@ -432,6 +532,20 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         ts = req.timestamp or datetime.now(timezone.utc).isoformat()
         memory_id = hashlib.sha256(f"{req.session_id}:{ts}".encode()).hexdigest()[:16]
 
+        # v3: provenance + decay tagging
+        source_used = req.source if req.source in VALID_SOURCES else "inferred"
+        suggestion_text = req.summary + "\n" + "\n".join(req.key_facts or [])
+        suggested_category, suggestion_keywords = suggest_category(suggestion_text)
+        if req.category and req.category in VALID_CATEGORIES:
+            category_used = req.category
+            category_suggested_field = None
+            category_match_keywords_field = None
+        else:
+            category_used = suggested_category
+            category_suggested_field = suggested_category
+            category_match_keywords_field = suggestion_keywords
+        additional_tags = req.additional_tags or []
+
         memory_entry = {
             "id": memory_id, "session_id": req.session_id,
             "agent_id": req.agent_id, "summary": req.summary,
@@ -439,17 +553,30 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "projects_referenced": req.projects_referenced,
             "decisions_made": req.decisions_made,
             "timestamp": ts, "created_at": time.time(),
+            # v3 fields
+            "source": source_used,
+            "category": category_used,
+            "additional_tags": additional_tags,
+            "schema_version": 3,
         }
         (memory_dir / f"{memory_id}.json").write_text(json.dumps(memory_entry, indent=2, default=str))
-        log.info(f"Writeback: {req.session_id} → {memory_id} (agent: {req.agent_id or 'default'})")
+        log.info(f"Writeback: {req.session_id} → {memory_id} (agent: {req.agent_id or 'default'}, source={source_used}, category={category_used})")
 
         l1_updated = 0
         try:
             full_text = req.summary + "\n" + "\n".join(req.key_facts)
             embedding = await embedder.embed(full_text)
             await l2.add(full_text, f"session:{req.session_id}", embedding,
-                        metadata={"projects": req.projects_referenced,
-                                  "decisions": req.decisions_made, "agent_id": req.agent_id})
+                        metadata={
+                            "projects": req.projects_referenced,
+                            "decisions": req.decisions_made,
+                            "agent_id": req.agent_id,
+                            "memory_id": memory_id,
+                            # v3 — needed for read-time stale_warning + filter logic
+                            "provenance_source": source_used,
+                            "category": category_used,
+                            "additional_tags": additional_tags,
+                        })
 
             for project in req.projects_referenced:
                 pc = f"Project: {project}\nSession: {req.session_id}\nSummary: {req.summary}\n"
@@ -462,10 +589,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         except Exception as e:
             log.error(f"Writeback indexing failed: {e}")
 
-        # Mem0: optional upstream sync
+        # Mem0: optional upstream sync, per-agent user_id routing
         if mem0 and config.mem0.sync_writes:
             try:
-                mem0_user = req.agent_id or config.mem0.user_id or "default"
+                mem0_user, _ = resolve_mem0(config, req.agent_id)
                 await mem0.add(
                     messages=[{"role": "user", "content": req.summary + "\n" + "\n".join(req.key_facts)}],
                     user_id=mem0_user,
@@ -478,6 +605,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             status="archived", memory_id=memory_id, agent_id=req.agent_id,
             l1_bundles_updated=l1_updated,
             message=f"Session {req.session_id} archived for agent '{req.agent_id or 'default'}'. {l1_updated} L1 bundles updated.",
+            category_used=category_used,
+            category_suggested=category_suggested_field,
+            category_match_keywords=category_match_keywords_field,
+            source_used=source_used,
         )
 
     # ── Ingest (The Live Wire) ──
@@ -603,7 +734,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
-        log.info(f"⚡ Mnemo Cortex v0.6.0 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v0.7.0 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")

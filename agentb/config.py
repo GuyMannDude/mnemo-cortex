@@ -106,6 +106,12 @@ class AgentConfig:
     data_dir: str = ""
     persona: str = "default"
     read_only: bool = False
+    # Mem0 routing overrides — let one agent map to a different Mem0 user_id
+    # (e.g. cc and opie both write/read against Mem0 user "opie") or flip the
+    # fallback_only switch per agent. Empty string / None means "inherit
+    # global Mem0Config defaults."
+    mem0_user_id: str = ""
+    mem0_fallback_only: Optional[bool] = None
 
 
 
@@ -243,6 +249,8 @@ def _parse_config(raw: dict) -> AgentBConfig:
                     data_dir=_resolve_env(adata.get("data_dir", "")),
                     persona=adata.get("persona", "default"),
                     read_only=adata.get("read_only", False),
+                    mem0_user_id=_resolve_env(adata.get("mem0_user_id", "")),
+                    mem0_fallback_only=adata.get("mem0_fallback_only"),
                 )
     if "mem0" in raw and raw["mem0"]:
         m = raw["mem0"]
@@ -301,3 +309,24 @@ def get_persona(cfg: AgentBConfig, persona_name: Optional[str] = None,
         if agent_persona in cfg.personas:
             return cfg.personas[agent_persona]
     return cfg.personas.get("default", DEFAULT_PERSONAS["default"])
+
+
+def resolve_mem0(
+    cfg: AgentBConfig, agent_id: Optional[str] = None
+) -> tuple[str, bool]:
+    """Resolve (mem0_user_id, fallback_only) for an agent. Per-agent
+    AgentConfig overrides win; otherwise falls back to global Mem0Config
+    defaults; finally to the literal agent_id as the user_id."""
+    user_id = ""
+    fallback_only: Optional[bool] = None
+    if agent_id and agent_id in cfg.agents:
+        ac = cfg.agents[agent_id]
+        if ac.mem0_user_id:
+            user_id = ac.mem0_user_id
+        if ac.mem0_fallback_only is not None:
+            fallback_only = ac.mem0_fallback_only
+    if not user_id:
+        user_id = cfg.mem0.user_id or agent_id or "default"
+    if fallback_only is None:
+        fallback_only = cfg.mem0.fallback_only
+    return user_id, fallback_only

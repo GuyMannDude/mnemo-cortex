@@ -1,5 +1,81 @@
 # Changelog
 
+## v2.10.0 (2026-05-16) — Provenance & decay land in the open-source core
+
+The MCP bridge announced provenance & decay support back in v2.8.0, but the
+Python core that actually stores memories never received the matching code.
+For six months, Sparks-internal deployments ran a hand-maintained fork on
+artforge while the public package shipped a pre-provenance backend. Public
+users got the bridge fields, the bridge passed them through, and the
+backend ignored them.
+
+This release closes that gap. The fork merges back. One source of truth.
+
+**What's new in `agentb/`.**
+
+- **`agentb/provenance.py`** — new module. `VALID_SOURCES`,
+  `VALID_CATEGORIES`, `DECAY_THRESHOLDS`, `DEFAULT_HIDDEN_CATEGORIES`, the
+  regex `PROVENANCE_PATTERNS`, `suggest_category(text)`, and
+  `compute_stale_warning(category, created_at)`.
+- **`agentb/server.py`** — `WritebackRequest` adopts `source`, `category`,
+  `additional_tags`. `WritebackResponse` returns `category_used`,
+  `category_suggested`, `category_match_keywords`, `source_used`.
+  `ContextRequest` adopts `source`, `category`, `exclude_categories`,
+  `exclude_stale`, `max_age_days` filters. `ContextChunkResponse` surfaces
+  `provenance_source`, `category`, `additional_tags`, `age_days`,
+  `stale_warning`. Writeback runs the regex auto-suggester when no
+  category is given and persists `schema_version: 3` on every record.
+  `keep_chunk()` applies the filter set across HOT/L1/L2/L3 with 3× over-
+  fetch so post-filter trims don't leave callers short. `session_log` is
+  hidden by default — pass `exclude_categories=[]` to disable.
+- **`agentb/cache.py`** — `ContextChunk` gains optional v3 fields. `L2`
+  search reads `metadata.provenance_source` / `metadata.category` /
+  `metadata.additional_tags` and computes `age_days` + `stale_warning` per
+  chunk. `l3_scan()` does the same straight off the memory_entry record.
+- **`agentb/config.py`** — `AgentConfig` adds `mem0_user_id` and
+  `mem0_fallback_only` overrides. New `resolve_mem0(cfg, agent_id)` helper
+  routes per-agent Mem0 traffic. Use case from production: `cc` and
+  `opie` both map to Mem0 user `opie`; `rocky` keeps its own `rocky-m`
+  user with `fallback_only: false`. Configure in `agentb.yaml`:
+
+  ```yaml
+  agents:
+    rocky:
+      mem0_user_id: rocky-m
+      mem0_fallback_only: false
+    opie:
+      mem0_user_id: opie
+      mem0_fallback_only: true
+    cc:
+      mem0_user_id: opie
+      mem0_fallback_only: true
+  ```
+
+**Backward compatibility.** Old records (no v3 fields on disk) load
+without issue — `keep_chunk` treats unset fields as "pass" when no filter
+is active. Old callers that don't pass v3 params on writeback get
+`source: inferred` + the auto-suggested category. The on-disk field name
+`provenance_source` in L2 metadata stays as it is — no migration script
+needed. Strict source filter (`source=user`) drops pre-v3 chunks on
+purpose: they have no provenance to evaluate.
+
+**Decay thresholds (days).** Topology warns at 30, stale at 90.
+current_state and unknown warn at 90. Relationship warns at 180.
+session_log warns at 90. Doctrine, incident, identity, decision are
+perpetual — never stale. Override via env: `MNEMO_DECAY_TOPOLOGY_WARN_DAYS`,
+`MNEMO_DECAY_RELATIONSHIP_WARN_DAYS`, etc.
+
+**Sparks-side cutover.** The artforge fork at
+`/home/guy/agentb-bridge/agentb_bridge.py` is retired by this release —
+artforge:50001 now runs from the public repo. The fork's 1275 lines were
+not lost; everything that mattered is in `agentb/`. The fork lives on at
+`/home/guy/agentb-bridge.archived-2026-05-16/` for reference.
+
+**FastAPI app version** bumps to `0.7.0` (`agentb/server.py`); package
+version (`pyproject.toml`) bumps to `2.10.0` to match.
+
+---
+
 ## v2.9.0 (2026-05-15) — Developer Dump (Mnemo v4 Phase 1)
 
 First piece of the Mnemo v4 roadmap. Adds bridge-level JSONL capture of
