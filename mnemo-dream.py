@@ -9,14 +9,15 @@ startup.
 Designed to run as a nightly cron job on the host carrying the memory
 sources (typically the same machine running the Mnemo Cortex server).
 
-Data source:
-  - AgentB writebacks: ~/.agentb/agents/<agent>/memory/*.json (per agent)
+Data sources:
+  - AgentB writebacks: ~/.agentb/memory/<agent>/*.json (one dir per agent)
+  - Mnemo v2 SQLite:   ~/.mnemo-v2/mnemo.sqlite3      (messages + summaries)
 
 Agents are discovered automatically from the filesystem — every directory
-under ~/.agentb/agents/ that has a `memory/` subdirectory is one agent's lane.
+under ~/.agentb/memory/ is treated as one agent's lane.
 
 Output:
-  - Writes dream brief to ~/.agentb/agents/dreamer/memory/<dream-id>.json
+  - Writes dream brief to ~/.agentb/memory/dreamer/<dream-id>.json
   - Also writes human-readable markdown to ~/.agentb/dreams/YYYY-MM-DD.md
 
 Usage:
@@ -46,34 +47,20 @@ import httpx
 AGENTB_DATA_DIR = Path(os.getenv("AGENTB_DATA_DIR", "~/.agentb")).expanduser()
 MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "~/.mnemo-v2/mnemo.sqlite3")).expanduser()
 DREAM_DIR = AGENTB_DATA_DIR / "dreams"
-# Per-agent layout (Mnemo Cortex v2.10.0+): ~/.agentb/agents/<agent>/memory/
-DREAMER_MEMORY_DIR = AGENTB_DATA_DIR / "agents" / "dreamer" / "memory"
+AGENTS_ROOT = AGENTB_DATA_DIR / "agents"
+DREAMER_MEMORY_DIR = AGENTS_ROOT / "dreamer" / "memory"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Agents to harvest from AgentB writebacks. Auto-discovered from
-# ~/.agentb/agents/<agent>/memory/ subdirectories at runtime; "dreamer" is
-# the output lane (excluded from harvest). Override with the
-# MNEMO_DREAM_AGENTS env var (comma-separated) if you want to pin the
-# list explicitly.
-def _discover_agentb_agents() -> list[str]:
-    agents_root = AGENTB_DATA_DIR / "agents"
-    if not agents_root.exists():
-        return []
-    return sorted(
-        d.name for d in agents_root.iterdir()
-        if d.is_dir() and d.name != "dreamer" and not d.name.endswith(".archived-20260516")
-        and (d / "memory").exists()
-    )
-
+DEFAULT_AGENTS = ["cc", "opie", "rocky"]
 
 _pinned = os.getenv("MNEMO_DREAM_AGENTS", "").strip()
 AGENTB_AGENTS = (
     [a.strip() for a in _pinned.split(",") if a.strip()]
     if _pinned
-    else _discover_agentb_agents()
+    else DEFAULT_AGENTS
 )
 
 # Skip auto-capture noise — keep True to drop tool-call-flush summaries
@@ -87,21 +74,23 @@ log = logging.getLogger("mnemo-dream")
 # ---------------------------------------------------------------------------
 
 def harvest_agentb(since: datetime) -> list[dict]:
-    """Read all AgentB writeback JSONs newer than `since`."""
-    memories = []
-    agents_root = AGENTB_DATA_DIR / "agents"
+    """Read AgentB writeback JSONs newer than `since` for AGENTB_AGENTS only.
 
-    for agent_dir in agents_root.iterdir():
-        if not agent_dir.is_dir():
-            continue
-        agent_id = agent_dir.name
+    Post-2026-05-16 v2.10.0 cutover layout: memory files live at
+    ~/.agentb/agents/<agent>/memory/*.json. Pre-cutover scripts looked at
+    ~/.agentb/memory/<agent>/ — that path is empty post-cutover.
+    """
+    memories = []
+
+    for agent_id in AGENTB_AGENTS:
         if agent_id == "dreamer":
             continue  # Don't eat our own dreams
-        memory_subdir = agent_dir / "memory"
-        if not memory_subdir.exists():
+        agent_memory_dir = AGENTS_ROOT / agent_id / "memory"
+        if not agent_memory_dir.is_dir():
+            log.warning(f"No memory dir for agent '{agent_id}' at {agent_memory_dir}")
             continue
 
-        for f in memory_subdir.glob("*.json"):
+        for f in agent_memory_dir.glob("*.json"):
             try:
                 mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
                 if mtime < since:
@@ -231,49 +220,32 @@ Be specific. Names, paths, versions, error messages. No fluff, no filler. Every 
 
 Format as markdown with the sections above. Keep it dense but readable. This brief will be injected into each agent's startup context tomorrow morning."""
 
-def synthesize(memories: list[dict], dry_run: bool = False) -> str:
-    """Send harvested memories to the LLM for synthesis."""
+PER_AGENT_SYSTEM_PROMPT = """You are summarizing one agent's memories from a workspace day.
 
-    # Group by agent for clarity
-    by_agent: dict[str, list[dict]] = {}
-    for m in memories:
-        agent = m["agent_id"]
-        if agent not in by_agent:
-            by_agent[agent] = []
-        by_agent[agent].append(m)
+You'll be given that agent's writebacks in chronological order. Produce a dense, factual brief of what THIS agent did:
 
-    # Build the prompt
-    sections = []
-    total_chars = 0
-    for agent_id, agent_memories in sorted(by_agent.items()):
-        lines = [f"## Agent: {agent_id} ({len(agent_memories)} entries)"]
-        for m in sorted(agent_memories, key=lambda x: x.get("timestamp", "")):
-            ts = m.get("timestamp", "?")[:19]
-            lines.append(f"\n### [{ts}] session={m.get('session_id', '?')}")
-            lines.append(m["summary"])
-            if m["key_facts"]:
-                lines.append("Key facts:")
-                for fact in m["key_facts"]:
-                    if fact != "auto_capture_flush":  # Skip noise markers
-                        lines.append(f"  - {fact}")
-            if m.get("decisions"):
-                lines.append("Decisions: " + "; ".join(m["decisions"]))
-        section = "\n".join(lines)
-        total_chars += len(section)
-        sections.append(section)
+1. **Built/shipped** — deliverables with file paths, commits, versions
+2. **Decided** — choices made, approaches validated or rejected
+3. **Blocked or pending** — open issues, next steps
+4. **Lessons learned** — failures, doctrines reinforced
 
-    user_content = "# Agent Memories to Synthesize\n\n" + "\n\n---\n\n".join(sections)
+Be specific. Names, paths, versions, error messages. No fluff. Output markdown, 8-20 bullet lines. Lead with the agent's name as a header."""
 
-    log.info(f"Synthesis input: {len(memories)} memories from {len(by_agent)} agents, {total_chars:,} chars")
+ROLLUP_SYSTEM_PROMPT = """You are the cross-agent memory synthesizer.
 
-    if dry_run:
-        return f"[DRY RUN] Would synthesize {len(memories)} memories from {len(by_agent)} agents ({total_chars:,} chars)"
+You'll be given per-agent daily briefs from a multi-agent workspace. Produce one joint synthesis that answers:
 
-    if not OPENROUTER_API_KEY:
-        log.error("No OPENROUTER_API_KEY set — cannot call LLM")
-        sys.exit(1)
+1. **What was built or shipped** — across all agents
+2. **What was decided** — workspace-level choices
+3. **What's blocked or pending** — open work, dependencies
+4. **Cross-agent connections** — work one agent did that another should know about
+5. **Lessons learned** — failures, workarounds, doctrines reinforced
 
-    # Call OpenRouter
+Be specific. Names, paths, versions, error messages. No fluff. Format as markdown with the sections above. This brief will be injected into each agent's startup context."""
+
+
+def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
+    """Single OpenRouter call. Returns (text, usage). Raises on non-200."""
     response = httpx.post(
         OPENROUTER_URL,
         headers={
@@ -285,24 +257,89 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         json={
             "model": DREAM_MODEL,
             "messages": [
-                {"role": "system", "content": DREAM_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "temperature": 0.3,
         },
-        timeout=120.0,
+        timeout=180.0,
     )
-
     if response.status_code != 200:
-        log.error(f"OpenRouter returned {response.status_code}: {response.text[:500]}")
+        raise RuntimeError(f"OpenRouter {response.status_code}: {response.text[:500]}")
+    result = response.json()
+    return result["choices"][0]["message"]["content"], result.get("usage", {})
+
+
+def _build_agent_section(agent_id: str, agent_memories: list[dict]) -> str:
+    """Format one agent's memories as a chronological brief for the LLM."""
+    lines = [f"# Agent: {agent_id} ({len(agent_memories)} entries)"]
+    for m in sorted(agent_memories, key=lambda x: x.get("timestamp", "")):
+        ts = m.get("timestamp", "?")[:19]
+        lines.append(f"\n## [{ts}] session={m.get('session_id', '?')}")
+        lines.append(m["summary"])
+        if m["key_facts"]:
+            lines.append("Key facts:")
+            for fact in m["key_facts"]:
+                if fact != "auto_capture_flush":
+                    lines.append(f"  - {fact}")
+        if m.get("decisions"):
+            lines.append("Decisions: " + "; ".join(m["decisions"]))
+    return "\n".join(lines)
+
+
+def synthesize(memories: list[dict], dry_run: bool = False) -> str:
+    """Two-stage map-reduce synthesis.
+
+    Stage 1 (map): each agent's memories → one per-agent brief.
+    Stage 2 (reduce): per-agent briefs → one joint workspace brief.
+
+    Bounds per-call token usage. Pre-fix the cron sent ~6M tokens to a 1M model
+    nightly and 400'd every run since 2026-05-13.
+    """
+    by_agent: dict[str, list[dict]] = {}
+    for m in memories:
+        by_agent.setdefault(m["agent_id"], []).append(m)
+
+    total_chars = sum(len(m["summary"]) for m in memories)
+    log.info(f"Synthesis input: {len(memories)} memories from {len(by_agent)} agents, {total_chars:,} chars")
+
+    if dry_run:
+        return f"[DRY RUN] Would map-reduce {len(memories)} memories from {len(by_agent)} agents ({total_chars:,} chars)"
+
+    if not OPENROUTER_API_KEY:
+        log.error("No OPENROUTER_API_KEY set — cannot call LLM")
         sys.exit(1)
 
-    result = response.json()
-    dream_text = result["choices"][0]["message"]["content"]
-    usage = result.get("usage", {})
-    log.info(f"LLM usage: {usage.get('prompt_tokens', '?')} prompt, {usage.get('completion_tokens', '?')} completion")
+    # Stage 1: per-agent briefs
+    per_agent_briefs: list[str] = []
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    for agent_id in sorted(by_agent.keys()):
+        agent_memories = by_agent[agent_id]
+        section = _build_agent_section(agent_id, agent_memories)
+        log.info(f"  stage 1 [{agent_id}]: {len(agent_memories)} entries, {len(section):,} chars")
+        try:
+            brief, usage = _call_openrouter(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=2048)
+        except RuntimeError as e:
+            log.error(f"  stage 1 [{agent_id}] failed: {e}")
+            sys.exit(1)
+        per_agent_briefs.append(f"## Agent {agent_id} brief\n\n{brief}")
+        total_prompt_tokens += usage.get("prompt_tokens", 0)
+        total_completion_tokens += usage.get("completion_tokens", 0)
 
+    # Stage 2: cross-agent rollup
+    rollup_input = "# Per-agent briefs to synthesize\n\n" + "\n\n---\n\n".join(per_agent_briefs)
+    log.info(f"  stage 2 rollup: {len(per_agent_briefs)} briefs, {len(rollup_input):,} chars")
+    try:
+        dream_text, usage = _call_openrouter(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=4096)
+    except RuntimeError as e:
+        log.error(f"  stage 2 failed: {e}")
+        sys.exit(1)
+    total_prompt_tokens += usage.get("prompt_tokens", 0)
+    total_completion_tokens += usage.get("completion_tokens", 0)
+
+    log.info(f"LLM usage total: {total_prompt_tokens} prompt, {total_completion_tokens} completion ({len(by_agent)+1} calls)")
     return dream_text
 
 
