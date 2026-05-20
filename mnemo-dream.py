@@ -594,15 +594,22 @@ def notify_contradictions(contradictions: list[dict], dream_date: str) -> None:
         )
     summary_text = "\n".join(summary_lines)
 
-    # Bus notification (optional, best-effort)
+    # Bus notification (optional, best-effort).
+    # Envelope requires mesh_version + from/to as REGISTERED agents per
+    # disco-bus dispatcher's validate_envelope_input. "Dreamer" isn't a
+    # registered agent (no listener, no inbox), so we send from CC since
+    # CC operates the dream cron. Subject and body make the actual source
+    # clear: subject "dream-contradictions-<date>" + body.source: "dreamer".
     if MNEMO_DREAM_BUS_URL:
         for target in ("CC", "Opie", "Rocky"):
             try:
                 envelope = {
-                    "from": "Dreamer",
+                    "mesh_version": "0.5",
+                    "from": "CC",
                     "to": target,
                     "subject": f"dream-contradictions-{dream_date}",
                     "body": {
+                        "source": "dreamer",
                         "summary": f"{len(contradictions)} verified-vs-extracted contradiction(s) this dream",
                         "dream_date": dream_date,
                         "contradictions": contradictions,
@@ -613,7 +620,7 @@ def notify_contradictions(contradictions: list[dict], dream_date: str) -> None:
                 if r.status_code in (200, 201, 202):
                     log.info(f"  bus notification → {target}: ok")
                 else:
-                    log.warning(f"  bus notification → {target}: HTTP {r.status_code}")
+                    log.warning(f"  bus notification → {target}: HTTP {r.status_code} {r.text[:200]}")
             except httpx.HTTPError as e:
                 log.warning(f"  bus notification → {target}: {e}")
     else:
