@@ -276,6 +276,96 @@ class TestResilientEmbedding:
         assert result == [0.4, 0.5, 0.6]
         assert resilient.failed_over
 
+    # ── Adaptive truncation on HTTP 400 (input too long) — v2.11.5 ──
+    #
+    # An input-too-long 400 is a property of the input, not the provider.
+    # Treating it as a provider failure walks the fallback chain (each
+    # fallback gets the same oversized input and also 400s) and trips the
+    # circuit breaker. Adaptive halving stays on the same provider until
+    # the input fits, only failing over for real outages.
+
+    @staticmethod
+    def _make_400():
+        import httpx
+        req = httpx.Request("POST", "http://localhost:11434/api/embed")
+        resp = httpx.Response(400, request=req, text="input length exceeds context length")
+        return httpx.HTTPStatusError("input too long", request=req, response=resp)
+
+    @pytest.mark.asyncio
+    async def test_400_halves_and_succeeds_on_primary(self):
+        """Primary 400s once at full length, succeeds when halved. No failover."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
+        )
+        resilient = create_resilient_embedding(config)
+        # First call 400s, second call (halved input) succeeds.
+        resilient.primary.embed = AsyncMock(side_effect=[self._make_400(), [0.1, 0.2, 0.3]])
+        resilient.fallbacks[0].embed = AsyncMock(return_value=[0.9, 0.9, 0.9])
+
+        result = await resilient.embed("a" * 4000)
+        assert result == [0.1, 0.2, 0.3]
+        assert not resilient.failed_over  # primary handled it via halving
+        assert resilient.primary.embed.await_count == 2
+        assert resilient.fallbacks[0].embed.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_400_does_not_trip_circuit_breaker(self):
+        """Repeated 400-then-recover does NOT poison the breaker."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            circuit_breaker_threshold=2,
+        )
+        resilient = create_resilient_embedding(config)
+        # Each call: 400 first, then success at halved length.
+        resilient.primary.embed = AsyncMock(side_effect=[
+            self._make_400(), [0.1],
+            self._make_400(), [0.2],
+            self._make_400(), [0.3],
+        ])
+
+        for _ in range(3):
+            await resilient.embed("a" * 4000)
+        assert not resilient.breaker.is_open
+
+    @pytest.mark.asyncio
+    async def test_400_at_min_chars_falls_over_to_fallback(self):
+        """If primary 400s even at the min-chars floor, fall over to fallback."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
+        )
+        resilient = create_resilient_embedding(config)
+        # Primary 400s at every length, fallback succeeds.
+        resilient.primary.embed = AsyncMock(side_effect=self._make_400())
+        resilient.fallbacks[0].embed = AsyncMock(return_value=[0.7, 0.8])
+
+        result = await resilient.embed("a" * 4000)
+        assert result == [0.7, 0.8]
+        assert resilient.failed_over
+
+    @pytest.mark.asyncio
+    async def test_non_400_error_is_provider_failure(self):
+        """A 503 (or any non-400) on primary should fail over immediately, not halve."""
+        import httpx
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
+        )
+        resilient = create_resilient_embedding(config)
+        req = httpx.Request("POST", "http://localhost:11434/api/embed")
+        resp_503 = httpx.Response(503, request=req)
+        resilient.primary.embed = AsyncMock(
+            side_effect=httpx.HTTPStatusError("down", request=req, response=resp_503)
+        )
+        resilient.fallbacks[0].embed = AsyncMock(return_value=[0.5])
+
+        result = await resilient.embed("a" * 4000)
+        assert result == [0.5]
+        assert resilient.failed_over
+        # No halving attempted — single call to primary.
+        assert resilient.primary.embed.await_count == 1
+
 
 # ─────────────────────────────────────────────
 #  Cache Tests

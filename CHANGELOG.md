@@ -1,5 +1,71 @@
 # Changelog
 
+## v2.11.5 (2026-05-19) — Adaptive truncation on live recall (input-too-long != provider down)
+
+**Problem.** Opie reported intermittent 503s from `mnemo_recall` / `mnemo_search`
+on cross-agent search: `Embedding unavailable: All embedding providers failed
+(primary + all fallbacks)`. Writes succeeded; only recall flapped. He
+suspected Ollama was crashing or overloaded.
+
+Diagnostics on artforge ruled that out — Ollama healthy (up 1d10h, peak 1GB,
+GPU idle), nomic-embed-text loaded and responding instantly. The smoking gun
+was in `journalctl -u ollama`: a rapid-fire burst of HTTP 400s clustered at
+Opie's exact session time, with reason `llm embedding error: the input
+length exceeds the context length`. Same class of bug v2.11.3 fixed for
+the backfill path — but the live recall path had no equivalent shield.
+
+**Root cause.** `ResilientEmbedding.embed()` (`agentb/providers.py`) treated
+a 400 (input too long) the same as a 503 (provider down):
+
+1. Primary 400s on oversized input.
+2. Wrapper records a circuit-breaker failure (wrong — provider is fine).
+3. Walks the fallback chain. Each fallback receives the same oversized
+   input and also 400s with the same length error.
+4. Final: `RuntimeError("All embedding providers failed")`, which the
+   `/context` endpoint surfaces as a 503 to the caller.
+
+The wrapper conflated input-property errors with provider-state errors.
+v2.11.3's `embed_with_adaptive_truncation` solved this for backfill at the
+call-site level; v2.11.5 lifts the same idea into the resilient wrapper so
+all 8 `embedder.embed()` call sites in `server.py` (`/context`, `/preflight`,
+`/writeback`, persona archive, etc.) get the fix for free.
+
+**Fix.** `agentb/providers.py`:
+
+- New `ResilientEmbedding._try_embed_adaptive(provider, text)`: invokes one
+  provider, halves the input on HTTP 400 down to a 500-char floor, retries
+  on the same provider. Re-raises anything that isn't a 400, or a 400 below
+  the floor.
+- `ResilientEmbedding.embed(text)` now calls `_try_embed_adaptive` for the
+  primary and for each fallback. Halving stays on a single provider (it's
+  an input issue, not a provider issue) and **does not record a circuit-
+  breaker failure** for input-too-long. Real provider failures (503, timeout,
+  connection refused, etc.) still failover and still trip the breaker.
+
+**Why it lives in the wrapper, not at each call site:** every server-side
+embed path benefits without per-site changes, and the wrapper is the
+correct place to decide "is this a property of the input or a property of
+the provider." Putting the logic at call sites would have meant patching 8
+places and remembering to patch the 9th.
+
+**Tests** (`tests/test_agentb.py::TestResilientEmbedding`):
+
+- `test_400_halves_and_succeeds_on_primary` — primary 400s once, halves,
+  succeeds. No failover.
+- `test_400_does_not_trip_circuit_breaker` — three 400-then-recover cycles
+  do not open the breaker.
+- `test_400_at_min_chars_falls_over_to_fallback` — primary 400s even at
+  the floor, fallback handles it.
+- `test_non_400_error_is_provider_failure` — a 503 on primary fails over
+  immediately (one call, no halving).
+
+All 6 ResilientEmbedding tests green; 95/96 in the full agentb suite (the
+one failure is in `tests/passport/test_validation.py`, pre-existing,
+unrelated to the embedder).
+
+**Deploy.** Pull on artforge's `mnemo-cortex-stage` (same branch); restart
+`mnemo-cortex.service`. The bridge on each agent is unaffected.
+
 ## v2.11.4 (2026-05-19) — Session IDs in host-local time, not UTC
 
 **Problem.** Session IDs were generated with `new Date().toISOString()` and
