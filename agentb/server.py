@@ -39,6 +39,7 @@ from agentb.provenance import (
     suggest_category,
 )
 from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
+from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -295,6 +296,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     reasoner = create_resilient_reasoning(config.reasoning)
     embedder = create_resilient_embedding(config.embedding)
     tenants = TenantManager(config)
+
+    # Phase 3: shared global facts store (one file, all agents share)
+    facts_path = Path(config.data_dir or os.path.expanduser("~/.agentb")) / "facts.sqlite"
+    facts = FactsStore(facts_path)
 
     # Initialize Mem0 bridge if configured
     mem0 = None
@@ -777,6 +782,85 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             skip_existing=skip_existing,
         )
         return {"agent_id": agent_id or "default", **stats}
+
+    # ── Phase 3: Facts ──
+    class FactSaveRequest(BaseModel):
+        entity: str
+        attribute: str
+        value: str
+        confidence: str
+        evidence_source: str
+        source_memory_id: Optional[str] = None
+        source_agent: Optional[str] = None
+
+    class FactDemoteRequest(BaseModel):
+        entity: str
+        attribute: str
+        reason: str
+        changed_by: Optional[str] = None
+
+    @app.get("/facts/{entity}/{attribute}")
+    async def facts_get(entity: str, attribute: str, include_false: bool = False):
+        fact = facts.get(entity, attribute, include_false=include_false)
+        if fact is None:
+            return {"found": False}
+        return {"found": True, **fact.to_dict()}
+
+    @app.get("/facts")
+    async def facts_query(
+        entity: Optional[str] = None,
+        attribute: Optional[str] = None,
+        value_contains: Optional[str] = None,
+        confidence: Optional[str] = None,
+        changed_since: Optional[float] = None,
+        limit: int = 20,
+    ):
+        if confidence is not None and confidence not in CONFIDENCE_LEVELS:
+            raise HTTPException(400, f"confidence must be one of {CONFIDENCE_LEVELS}")
+        results = facts.query(
+            entity=entity, attribute=attribute, value_contains=value_contains,
+            confidence=confidence, changed_since=changed_since, limit=limit,
+        )
+        return {"facts": [f.to_dict() for f in results], "count": len(results)}
+
+    @app.post("/facts")
+    async def facts_save(req: FactSaveRequest):
+        try:
+            result = facts.save(
+                entity=req.entity, attribute=req.attribute, value=req.value,
+                confidence=req.confidence, evidence_source=req.evidence_source,
+                source_memory_id=req.source_memory_id, source_agent=req.source_agent,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {
+            "written": result.written,
+            "was_contradiction": result.was_contradiction,
+            "previous_value": result.previous_value,
+            "previous_confidence": result.previous_confidence,
+            "reason": result.reason,
+        }
+
+    @app.post("/facts/demote")
+    async def facts_demote(req: FactDemoteRequest):
+        try:
+            result = facts.demote(req.entity, req.attribute, req.reason, changed_by=req.changed_by)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {
+            "written": result.written,
+            "previous_value": result.previous_value,
+            "previous_confidence": result.previous_confidence,
+            "reason": result.reason,
+        }
+
+    @app.get("/facts/history/{entity}/{attribute}")
+    async def facts_history(entity: str, attribute: str, limit: int = 50):
+        return {"history": facts.history(entity, attribute, limit=limit)}
+
+    @app.get("/facts/contradictions")
+    async def facts_contradictions(since: Optional[float] = None, limit: int = 100):
+        return {"contradictions": facts.contradictions(since=since, limit=limit)}
 
     # ── Background: precache + session archival ──
     async def maintenance_loop():
