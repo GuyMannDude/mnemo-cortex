@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.0.0 (2026-05-21) — Version rebrand: v2.12.0 → v3.0.0
+
+No code changes. This release re-tags what shipped as `v2.12.0` (Phase 3
+Facts + Confidence, embedding hosted fallback, Dreamer rehab) as `v3.0.0`
+to align with the public announcement.
+
+The server app version (formerly tracked independently as `0.8.0`) is
+unified with the package version starting here — both are now `3.0.0`.
+README header and health-output examples updated to match.
+
+See the v2.12.0 entry below for the full feature set in this release.
+
 ## v2.12.0 (2026-05-20) — Phase 3 Facts + Confidence, Embedding hosted fallback, Dreamer rehab
 
 Three meaningful additions in one release. Server app version bumps from

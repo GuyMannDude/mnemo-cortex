@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v2.6.4
+# ⚡ Mnemo Cortex v3.0
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -461,7 +461,7 @@ mnemo-cortex health check
 =========================
 
 Core Services
-  API server (http://localhost:50001) ..... OK (v2.6.4, 156 memories, 42ms)
+  API server (http://localhost:50001) ..... OK (v3.0.0, 156 memories, 42ms)
   Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
   Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
 
