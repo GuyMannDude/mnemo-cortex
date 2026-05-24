@@ -18,6 +18,7 @@ https://github.com/GuyMannDude/mnemo-cortex
 
 import os
 import sys
+import io
 import json
 import signal
 import subprocess
@@ -31,7 +32,45 @@ from rich.table import Table
 from rich.prompt import Prompt, Confirm
 from rich import print as rprint
 
-console = Console()
+
+def _make_console() -> Console:
+    """Construct a Console that works whether stdout is an interactive
+    terminal or redirected to a file / pipe / Scheduled Task.
+
+    Windows-specific bug worked around here: when stdout is redirected,
+    rich's writer still routes through ``_win32_console.LegacyWindowsTerm``
+    which falls back to ``self.file.write()`` — i.e. Python's stdout
+    encoder. On Windows that defaults to ``cp1252``, which can't encode
+    the ⚡ emoji in the banner. The watcher dies before it ever runs,
+    silently breaking auto-capture under Task Scheduler / piped SSH /
+    any non-interactive context.
+
+    For interactive TTYs (anywhere) we leave rich on its defaults so
+    colors / boxes / progress bars work as designed. For non-TTY stdout
+    we wrap the underlying buffer in a UTF-8 ``TextIOWrapper`` with
+    ``errors='replace'`` (so even genuinely un-encodable chars degrade
+    rather than crash) and ask rich to skip terminal-mode writes
+    entirely via ``force_terminal=False``.
+    """
+    is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    if is_tty:
+        return Console()
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        # Exotic stdout replacement with no underlying byte buffer —
+        # safest move is plain rich on whatever this is.
+        return Console(force_terminal=False)
+    utf8_stdout = io.TextIOWrapper(
+        buffer,
+        encoding="utf-8",
+        errors="replace",
+        line_buffering=True,
+        write_through=True,
+    )
+    return Console(file=utf8_stdout, force_terminal=False)
+
+
+console = _make_console()
 
 CONFIG_DIR = Path.home() / ".config" / "agentb"
 CONFIG_FILE = CONFIG_DIR / "agentb.yaml"
