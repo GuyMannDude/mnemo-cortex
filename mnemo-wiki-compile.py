@@ -725,6 +725,10 @@ def main() -> int:
     try:
         state = load_state()
 
+        # Capture the cursor BEFORE harvest so memories that arrive during
+        # the compile loop aren't missed next run.
+        run_started_at = datetime.now(timezone.utc).isoformat()
+
         # Time window
         if args.full:
             since = datetime(2000, 1, 1, tzinfo=timezone.utc)
@@ -739,6 +743,13 @@ def main() -> int:
         memories = harvest_agentb(since) + harvest_mnemo_sqlite(since)
         log.info(f"Harvested {len(memories)} memories")
         if not memories:
+            # ADVANCE the cursor even on an empty harvest. Without this,
+            # a single zero-result night wedges the window forever:
+            # subsequent runs query the same stale `since`, find the same
+            # nothing, return early before save_state(), and the cursor
+            # never moves. Observed May 17 → May 24 wedge in production.
+            state["last_run"] = run_started_at
+            save_state(state)
             log.info("No new memories — nothing to compile")
             return 0
 
@@ -827,8 +838,9 @@ def main() -> int:
             for rel in audit_report["manually_edited"][:20]:
                 log.info(f"  manually-edited: {rel}")
 
-        # Persist run state
-        state["last_run"] = datetime.now(timezone.utc).isoformat()
+        # Persist run state — use the timestamp captured BEFORE harvest so
+        # memories arriving during the compile loop aren't missed next run.
+        state["last_run"] = run_started_at
         save_state(state)
 
         # Log summary
