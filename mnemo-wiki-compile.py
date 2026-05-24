@@ -390,6 +390,74 @@ def call_llm(prompt: str) -> tuple[str, dict]:
     return j["choices"][0]["message"]["content"], j.get("usage", {})
 
 
+def _is_context_overflow_error(err: BaseException) -> bool:
+    """True iff err is a reasoning-model context-length 400.
+
+    Two known shapes today:
+      - OpenRouter 400 with "maximum context length" in the body
+      - rare 'choices' KeyError from some providers when the prompt is so
+        oversized the JSON response shape itself is malformed (observed on
+        artforge with the entities/rocky cluster)
+    """
+    msg = str(err)
+    if "OpenRouter 400" in msg and (
+        "maximum context length" in msg or "context_length" in msg
+    ):
+        return True
+    if isinstance(err, KeyError) and msg.strip("'\"") == "choices":
+        return True
+    return False
+
+
+def compile_topic_adaptive(
+    section: str,
+    slug: str,
+    memories: list[dict],
+    existing: str | None,
+    *,
+    min_memories: int = 1,
+) -> tuple[str, dict, list[dict]]:
+    """Build prompt for one topic cluster, call the reasoning model, and
+    halve-and-retry on context-overflow errors.
+
+    Hot entities (entities accumulated across many days of activity) produce
+    clusters that exceed the reasoning model's context window. Gemini 2.5
+    Flash caps at 1M tokens; the `entities/guy` / `entities/opie` clusters
+    on a deep-history deployment can hit 4–5M tokens, well past any single
+    LLM call. Without truncation those topics silently stop updating
+    (handled by the per-cluster try/except in `main` but never recover).
+
+    Strategy: sort memories newest-first, try the full cluster, on
+    context-overflow halve to `len(current) // 2` (keeping the newest),
+    rebuild the prompt, retry. Stop when either the call succeeds or the
+    cluster is down to `min_memories` and still failing — in the latter
+    case re-raise so the per-cluster try/except logs the topic as failed.
+
+    Returns (body, usage, memories_actually_used). When the third element
+    is shorter than the input list, the renderer should surface the
+    truncation in the page footer.
+    """
+    current = sorted(
+        list(memories),
+        key=lambda x: x.get("timestamp", ""),
+        reverse=True,  # newest first; halving keeps the most recent
+    )
+    while True:
+        prompt = build_user_prompt(section, slug, current, existing)
+        try:
+            body, usage = call_llm(prompt)
+            return body, usage, current
+        except (RuntimeError, KeyError) as e:
+            if not _is_context_overflow_error(e) or len(current) <= min_memories:
+                raise
+            new_len = max(min_memories, len(current) // 2)
+            log.warning(
+                f"{section}/{slug}: context-overflow at {len(current)} memories — "
+                f"halving to {new_len} (keeping newest)"
+            )
+            current = current[:new_len]
+
+
 def build_user_prompt(section: str, slug: str, memories: list[dict], existing: str | None) -> str:
     lines = [
         f"# Topic: {section}/{slug}",
@@ -482,14 +550,41 @@ def validate_cross_refs(body: str, all_pages: dict[str, set[str]]) -> tuple[str,
 # Page render + write
 # ---------------------------------------------------------------------------
 
-def render_page(section: str, slug: str, body: str, memories: list[dict]) -> str:
+def render_page(
+    section: str,
+    slug: str,
+    body: str,
+    memories: list[dict],
+    total_memories: int | None = None,
+) -> str:
+    """Render the final wiki page.
+
+    `memories` is the list actually fed to the LLM. `total_memories`, when
+    larger than `len(memories)`, indicates the cluster was halved by
+    `compile_topic_adaptive` to fit the model's context window — the
+    footer surfaces this with a vapor-truth note so readers can tell the
+    page is operating on partial data and know to recall directly for the
+    dropped entries.
+    """
     now_iso = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     word_count = len(body.split())
     needs_split = word_count > MAX_PAGE_WORDS
+    full_count = total_memories if total_memories is not None else len(memories)
+    truncated = full_count > len(memories)
+    dropped = full_count - len(memories) if truncated else 0
 
     # Source memories footer — every claim above is auditable through these.
     src_lines = ["## Source Memories", ""]
-    src_lines.append(f"This page was compiled from {len(memories)} Mnemo entries:")
+    if truncated:
+        src_lines.append(
+            f"This page was compiled from **{len(memories)} of {full_count}** "
+            f"Mnemo entries. The full cluster exceeded the reasoning model's "
+            f"context window, so the {dropped} oldest entries were dropped and "
+            f"the newest {len(memories)} were used. To see what was dropped, "
+            f"query Mnemo directly with `mnemo_recall` scoped to this topic."
+        )
+    else:
+        src_lines.append(f"This page was compiled from {len(memories)} Mnemo entries:")
     src_lines.append("")
     for m in sorted(memories, key=lambda x: x.get("timestamp", "")):
         sid = m.get("session_id", "unknown")
@@ -498,25 +593,40 @@ def render_page(section: str, slug: str, body: str, memories: list[dict]) -> str
         src_lines.append(f"- `{sid}` — {ts} — agent={agent}")
 
     title = slug.replace("-", " ").title()
-    front_matter = "\n".join([
+    front_matter_lines = [
         "---",
         "compiled-by: mnemo-wiki-compiler",
         f"section: {section}",
         f"slug: {slug}",
         f"last-compiled: {now_iso}",
         f"source-memory-count: {len(memories)}",
+    ]
+    if truncated:
+        front_matter_lines += [
+            f"cluster-truncated: true",
+            f"cluster-total: {full_count}",
+            f"cluster-dropped: {dropped}",
+        ]
+    front_matter_lines += [
         f"word-count: {word_count}",
         f"needs-split: {'true' if needs_split else 'false'}",
         "---",
         "",
-    ])
+    ]
+    front_matter = "\n".join(front_matter_lines)
 
+    source_line = (
+        f"**Source memories:** {len(memories)} of {full_count} "
+        f"(⚠️ {dropped} older entries dropped — see footer)"
+        if truncated else
+        f"**Source memories:** {len(memories)}"
+    )
     header = "\n".join([
         f"# {title}",
         "",
         f"**Last compiled:** {now_iso}  ",
         f"**Section:** `{section}`  ",
-        f"**Source memories:** {len(memories)}",
+        source_line,
         "",
         "---",
         "",
@@ -793,10 +903,11 @@ def main() -> int:
                     log.warning(f"manual edit detected on {section}/{slug} — will be overwritten")
 
                 existing = page_path.read_text() if page_path.exists() else None
-                prompt = build_user_prompt(section, slug, mems, existing)
-                log.info(f"compiling {section}/{slug}  ({len(mems)} memories, {len(prompt):,} chars)")
+                log.info(f"compiling {section}/{slug}  ({len(mems)} memories)")
 
-                body, usage = call_llm(prompt)
+                body, usage, used_mems = compile_topic_adaptive(
+                    section, slug, mems, existing
+                )
                 total_usage["prompt"] += usage.get("prompt_tokens", 0)
                 total_usage["completion"] += usage.get("completion_tokens", 0)
 
@@ -804,10 +915,16 @@ def main() -> int:
                 all_pages_snapshot.setdefault(section, set()).add(slug)
                 body, links = validate_cross_refs(body, all_pages_snapshot)
 
-                full = render_page(section, slug, body, mems)
+                full = render_page(
+                    section, slug, body, used_mems, total_memories=len(mems)
+                )
                 write_page(section, slug, full, state)
                 compiled_rels.add(f"{section}/{slug}.md")
-                log.info(f"  -> wrote {section}/{slug}.md  ({len(links)} cross-refs)")
+                truncated_suffix = (
+                    f", TRUNCATED {len(mems) - len(used_mems)} of {len(mems)} oldest dropped"
+                    if len(used_mems) < len(mems) else ""
+                )
+                log.info(f"  -> wrote {section}/{slug}.md  ({len(links)} cross-refs{truncated_suffix})")
             except Exception as e:
                 msg = f"{section}/{slug}: {e}"
                 log.error(f"COMPILE FAILED  {msg}")
