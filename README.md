@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v3.0
+# ⚡ Mnemo Cortex v3.1
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -366,17 +366,17 @@ By default, **13 tools** that work for any user:
 
 The bridge also detects two optional dirs and registers more tools when present:
 
-- Set `BRAIN_DIR` to a brain-file checkout (use the [mnemo-plan template](https://github.com/GuyMannDude/mnemo-plan) for a clean starting point) → adds `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
+- Set `BRAIN_DIR` to a brain-file checkout (use the [mnemo-plan template](https://github.com/GuyMannDude/mnemo-plan) for a clean starting point) → adds `agent_startup`, `opie_startup`, `read_brain_file`, `list_brain_files`, `write_brain_file`, `session_end`.
 - Set `WIKI_DIR` to a wiki dir → adds `wiki_search`, `wiki_read`, `wiki_index`.
 
 If the directory doesn't exist, those tools simply don't register — the model never sees them. Most users stay on the 13-tool default and that's the right call.
 
 | Setup | Tools |
 |---|---|
-| Default (any user) | **9** |
-| + brain dir | 14 |
-| + wiki dir | 12 |
-| Both | 17 |
+| Default (any user) | **13** |
+| + brain dir | 19 |
+| + wiki dir | 16 |
+| Both | 22 |
 
 Pair with [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) for web search, vision, browser, NotebookLM, Shopify, and Google Drive tools. Same MCP config pattern — just add a second `mcpServers` entry.
 
@@ -421,7 +421,7 @@ We did not invent this. We adopted the best ideas in the air, credited them open
 
 ### *A Crustacean That Never Forgets* 🧠🦞
 
-The full v2.10 stack:
+The full v3.1 stack:
 
 ```
                     ┌─────────────────────────────────────────┐
@@ -464,7 +464,7 @@ mnemo-cortex health check
 =========================
 
 Core Services
-  API server (http://localhost:50001) ..... OK (v3.0.0, 156 memories, 42ms)
+  API server (http://localhost:50001) ..... OK (v3.1.0, 156 memories, 42ms)
   Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
   Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
 
@@ -586,7 +586,7 @@ future additions (Mnemo v4 Phase 1.5+).
 
 ## What It Does
 
-Mnemo Cortex v2 is a **sidecar memory coprocessor** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.
+Mnemo Cortex is a **sidecar memory coprocessor** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.
 
 No hooks. No agent modifications. No cloud dependency. Mnemo keeps your memory on disk — if either process restarts, the data is already there.
 
@@ -603,14 +603,13 @@ No hooks. No agent modifications. No cloud dependency. Mnemo keeps your memory o
 
 ## Battle-Tested in Production
 
-Mnemo Cortex has been running continuously on multiple live OpenClaw agents in production since early 2026:
+Mnemo Cortex has been running continuously on live production agents since early 2026:
 
 | Agent | Host | Memories | Recall window |
 |-------|------|----------|---------------|
-| **Rocky** | Laptop | 3,000+ | 12+ weeks |
-| **Alice** | Workstation | hundreds | weeks |
+| **Rocky** (Hermes) | Laptop | 3,000+ | 5+ months |
 
-Both single-agent (one bot's memory parity) and multi-agent (cross-agent search across a research/courier/code-runner stack) deployments verified.
+Verified across single-agent (one bot's memory parity) and multi-agent (cross-agent search and nightly cross-agent dreaming over a research / courier / code-runner stack) deployments.
 
 ## Install Guide
 
