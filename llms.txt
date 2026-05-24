@@ -23,7 +23,7 @@ MIT licensed, $0 to run with Ollama, cloud providers (OpenRouter, OpenAI, Google
 
 - [Claude Code](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/claude-code): 60-second install for the Claude Code CLI.
 - [Claude Desktop](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/claude-desktop): Drag-and-drop `.mcpb` bundle. Windows, macOS, Linux.
-- [MCP Bridge](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/mcp-bridge): The generic MCP bridge — the same Node.js code every Mnemo Cortex integration spawns on stdio. v2.9.0.
+- [MCP Bridge](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/mcp-bridge): The generic MCP bridge — the same Node.js code every Mnemo Cortex integration spawns on stdio. v2.10.0.
 - [LM Studio](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/lmstudio): Native MCP, GUI configuration.
 - [AnythingLLM](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/anythingllm): Desktop GUI, multi-workspace.
 - [Agent Zero](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/agent-zero): Autonomous Docker agents, in-container MCP.
@@ -44,5 +44,5 @@ MIT licensed, $0 to run with Ollama, cloud providers (OpenRouter, OpenAI, Google
 ## Optional
 
 - [CHANGELOG](https://github.com/GuyMannDude/mnemo-cortex/blob/master/CHANGELOG.md): Full release history.
-- [MCP Bridge CHANGELOG](https://github.com/GuyMannDude/mnemo-cortex/blob/master/integrations/mcp-bridge/CHANGELOG.md): Bridge release history, including the v2.8.1 directory rename and v2.8.0 / Mnemo v3 provenance + decay entry.
+- [MCP Bridge CHANGELOG](https://github.com/GuyMannDude/mnemo-cortex/blob/master/integrations/mcp-bridge/CHANGELOG.md): Bridge release history. Recent: v2.10.0 (Phase 3 Facts tools + host-local session IDs), v2.9.0 (Developer Dump JSONL trace), v2.8.1 (directory rename `openclaw-mcp` → `mcp-bridge`), v2.8.0 (Mnemo v3 provenance + decay).
 - [CONTRIBUTING](https://github.com/GuyMannDude/mnemo-cortex/blob/master/CONTRIBUTING.md): How to file issues, submit patches, propose new integrations.
