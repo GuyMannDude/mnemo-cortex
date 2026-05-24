@@ -1,12 +1,120 @@
 # Changelog
 
-> **Note on version history:** The bridge tracks the main `mnemo-cortex`
-> package version (currently 2.6.4). Versions between 2.0.1 and 2.6.4
-> shipped server-side and tooling changes (Dreaming, WikAI, Sparks Bus,
+> **Note on version history:** The bridge used to track the main
+> `mnemo-cortex` package version step-for-step. That coupling loosened
+> once the main package added features the bridge didn't need to
+> change for — Phase 3 Facts wired through as a thin passthrough,
+> the Mem0 retirement was server-side only. Bridge currently at 2.9.0;
+> main package at 3.1.0. Versions between 2.0.1 and 2.6.4 shipped
+> server-side and tooling changes (Dreaming, WikAI, Sparks Bus,
 > Developer's Passport, new host integrations) that didn't materially
-> change bridge behavior — the bridge continued to work unchanged through
-> those releases. The full history is in the main repo
+> change bridge behavior — the bridge continued to work unchanged
+> through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
+
+## Unreleased — pending 2.10.0
+
+These bridge changes shipped under `version: "2.9.0"` in `package.json`
+without a further version bump. Drafting them here so they're not
+silent; recommend the next bridge release bumps to 2.10.0 and lifts
+this section into a dated entry.
+
+### Phase 3 — four Facts tools wired through the bridge (2026-05-20)
+
+Bridge passthroughs for the Phase 3 Facts HTTP routes added in the main
+package. Same provenance/audit story, exposed to every MCP host that
+spawns the bridge.
+
+- `mnemo_fact_get(entity, attribute, include_false?)` — single lookup,
+  human-formatted output, `{found: false}` when missing.
+- `mnemo_fact_query(entity?, attribute?, value_contains?, confidence?, limit?)`
+  — filtered list.
+- `mnemo_fact_save(entity, attribute, value, confidence, evidence_source, source_memory_id?)`
+  — UPSERT with the promotion ladder enforced server-side; `isError: true`
+  when the contradiction algorithm rejects a write.
+- `mnemo_fact_demote(entity, attribute, reason)` — explicit
+  `verified → false` transition for "this is wrong but I don't know the
+  correct value yet."
+
+Each tool calls `captureCall()` for auto-capture parity with the existing
+memory tools. `source_agent` auto-populates from `AGENT_ID`. Tool
+descriptions teach the `evidence_source` prefix convention
+(`memory:<id>`, `commit:<sha>`, `statement:<who>`, etc.).
+
+`readOnlyHint` matrix: `get`/`query` read-only, `save`/`demote` mutate.
+`demote` carries `destructiveHint: true` because it's an explicit
+assertion that an existing value is wrong.
+
+### Session IDs in host-local time (2026-05-19)
+
+`sessionId` used to come from `new Date().toISOString()`, which is UTC.
+Every other Sparks timestamp (active.md, brain commits, kickstart
+filenames) is host-local, so after 17:00 PT the bridge would write
+session IDs dated "tomorrow" while the rest of the brain said today.
+Added `localTimestamp()` + `localDateOnly()` helpers near the sessionId
+generator and replaced the four UTC-derived call sites (mnemo_save
+fallback, session header writes).
+
+## 2.9.0 — 2026-05-15 — Developer Dump (Mnemo v4 Phase 1)
+
+**A bridge-level JSONL trace of every MCP tool call your agents make.**
+Catches the silent-tool-failure class that hid Peter Widget's outage
+— a tool that returns `{isError: true}` without throwing looks
+identical to a successful call from every layer above the bridge.
+Off by default; flip on with `MNEMO_DUMP=on`.
+
+### What lands on disk
+
+One JSONL file per agent per day at
+`~/.mnemo-cortex/dumps/<agent_id>/<YYYY-MM-DD>.jsonl`. Each line:
+`tool`, full `params`, full `response`, `latency_ms`, `ok`, and an
+`error` field on failures. Greppable with `jq`:
+
+```bash
+jq 'select(.ok == false) | {tool, error, latency_ms}' \
+  ~/.mnemo-cortex/dumps/rocky/$(date -u +%F).jsonl
+```
+
+### How it wires up
+
+Monkey-patches `server.registerTool` once at the `McpServer` level so
+all 18 then-existing tools (and every future tool, including the
+Phase 3 Facts additions above) are covered by a single diff. When
+`MNEMO_DUMP=off` (the default) `dump.wrap()` returns the original
+handler unchanged — no allocation, no overhead.
+
+Captures both real thrown errors and the handler-internal
+`{isError: true}` returns. Schema-versioned for future additions.
+
+### CLI
+
+Surfaced through the main `mnemo-cortex` binary, not the bridge:
+
+```bash
+mnemo-cortex dump list           # all dump files, size + line count
+mnemo-cortex dump tail rocky     # live-tail today's rocky dump
+```
+
+### Tests
+
+`integrations/mcp-bridge/dump.test.js` covers off-mode no-op, on-mode
+header+event, two-agent isolation, day rollover, write failure,
+successful capture, `isError` capture, thrown-error capture, disabled
+passthrough, and `listDumps()`.
+
+### Package metadata
+
+- `package.json` `version`: 2.8.1 → 2.9.0.
+- `server.js` McpServer version constant bumped to match.
+- Main package `pyproject.toml` + `cli.py` aligned to 2.9.0 as well
+  (alignment drift between bridge / cli / py-package caught up in
+  this release).
+
+### Scope
+
+Captures only MCP tool traffic the bridge sees. Raw Claude API
+exchanges, message-level capture, and content filters need per-agent
+hooks — that's Mnemo v4 Phase 1.5.
 
 ## 2.8.1 — 2026-05-13 — Rename: `openclaw-mcp` → `mcp-bridge`
 
