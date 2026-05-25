@@ -354,7 +354,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="3.1.0",
+            version="3.1.1",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
