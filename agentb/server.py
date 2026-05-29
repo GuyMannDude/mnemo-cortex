@@ -182,6 +182,14 @@ class WritebackRequest(BaseModel):
     additional_tags: list[str] = Field(
         default_factory=list, description="Free-form human-readable tags."
     )
+    batch: bool = Field(
+        False,
+        description=(
+            "Set True for bulk/offline writers (e.g. the nightly dreamer) so "
+            "embedding bypasses the live circuit breaker — a large batch must "
+            "not trip or be blocked by the breaker that guards live /context."
+        ),
+    )
 
 
 class WritebackResponse(BaseModel):
@@ -307,7 +315,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        log.info(f"⚡ Mnemo Cortex v3.1.1 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v3.1.2 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")
@@ -320,11 +328,30 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="3.1.1",
+        version="3.1.2",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
                        allow_methods=["*"], allow_headers=["*"])
+
+    # ── Body-size guard (DoS) ──
+    # Reject oversized payloads before they get embedded, indexed, or written
+    # to disk. Cheap header check — well-behaved clients send Content-Length.
+    max_body = config.server.max_body_bytes
+    if max_body > 0:
+        @app.middleware("http")
+        async def limit_body_size(request: Request, call_next):
+            cl = request.headers.get("content-length")
+            if cl is not None:
+                try:
+                    if int(cl) > max_body:
+                        return Response(
+                            f"Request body too large (limit {max_body} bytes)",
+                            status_code=413,
+                        )
+                except ValueError:
+                    return Response("Invalid Content-Length", status_code=400)
+            return await call_next(request)
 
     # ── Auth ──
     if config.server.auth_token:
@@ -354,7 +381,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="3.1.1",
+            version="3.1.2",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -612,7 +639,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         l1_updated = 0
         try:
             full_text = req.summary + "\n" + "\n".join(req.key_facts)
-            embedding = await embedder.embed(full_text)
+            embedding = await embedder.embed(full_text, use_breaker=not req.batch)
             await l2.add(full_text, f"session:{req.session_id}", embedding,
                         metadata={
                             "projects": req.projects_referenced,
@@ -645,7 +672,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 facts = [f for f in req.key_facts if project.lower() in f.lower()]
                 if facts:
                     pc += "Facts:\n" + "\n".join(f"- {f}" for f in facts)
-                pe = await embedder.embed(pc)
+                pe = await embedder.embed(pc, use_breaker=not req.batch)
                 await l1.add(pc, f"project:{project}", pe)
                 l1_updated += 1
         except HTTPException:

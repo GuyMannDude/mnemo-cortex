@@ -190,25 +190,34 @@ class ResilientEmbedding:
                     continue
                 raise
 
-    async def embed(self, text: str) -> list[float]:
-        if not self.breaker.should_skip():
+    async def embed(self, text: str, *, use_breaker: bool = True) -> list[float]:
+        # Batch callers (e.g. the nightly dreamer) pass use_breaker=False: they
+        # hit the same embedding backend as the live /context path but must NOT
+        # share its circuit-breaker failure state. A large batch must not be
+        # able to trip the breaker (poisoning live reads) or be blocked by it,
+        # and its provider-health flags must not perturb live /health reporting.
+        # (batch-vs-live breaker isolation doctrine.)
+        if use_breaker and self.breaker.should_skip():
+            log.info(f"Primary embedding skipped (circuit open, retry in {self.breaker.retry_in:.0f}s)")
+        else:
             try:
                 result = await self._try_embed_adaptive(self.primary, text)
-                self.breaker.record_success()
-                self.active_label = self.primary.label
-                self.failed_over = False
+                if use_breaker:
+                    self.breaker.record_success()
+                    self.active_label = self.primary.label
+                    self.failed_over = False
                 return result
             except Exception as e:
-                self.breaker.record_failure()
+                if use_breaker:
+                    self.breaker.record_failure()
                 log.warning(f"Primary embedding failed ({self.primary.label}): {e}")
-        else:
-            log.info(f"Primary embedding skipped (circuit open, retry in {self.breaker.retry_in:.0f}s)")
 
         for i, fb in enumerate(self.fallbacks):
             try:
                 result = await self._try_embed_adaptive(fb, text)
-                self.active_label = fb.label
-                self.failed_over = True
+                if use_breaker:
+                    self.active_label = fb.label
+                    self.failed_over = True
                 log.info(f"Embedding served by fallback [{i}]: {fb.label}")
                 return result
             except Exception as e:

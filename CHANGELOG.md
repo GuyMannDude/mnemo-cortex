@@ -1,5 +1,34 @@
 # Changelog
 
+## v3.1.2 (2026-05-28) — hardening: batch/live breaker isolation, body-size guard, requirements pin
+
+Three hardening fixes surfaced by a security review.
+
+**1. Batch writes no longer share the live embedding circuit breaker.**
+The nightly dreamer (`mnemo-dream.py`) POSTs its synthesized memory to
+`/writeback`, which embedded through the same `ResilientEmbedding.embed()`
+— and the same `CircuitBreaker` — that guards the live `/context` read
+path. A large or failing batch could trip the breaker (poisoning live
+reads for the cooldown window) or be blocked by an already-open one. This
+is the exact batch-vs-live breaker-sharing failure we hit once before.
+- `ResilientEmbedding.embed()` gains a keyword-only `use_breaker: bool = True`.
+  When `False`, it runs the same primary→fallback adaptive chain but never
+  consults or mutates the breaker, and never perturbs the provider-health
+  flags reported by `/health`.
+- `WritebackRequest` gains a `batch: bool = False` field; the `/writeback`
+  handler embeds with `use_breaker=not req.batch`.
+- The dreamer now sends `batch: true`.
+
+**2. Request body-size guard (DoS).** Added `ServerConfig.max_body_bytes`
+(default 16 MiB, `0` disables) and a middleware that rejects oversized
+payloads with `413` before they get embedded, indexed, or written to disk.
+No legitimate memory write approaches the limit.
+
+**3. `requirements.txt` realigned to `pyproject.toml`.** The stale file
+listed `fastapi>=0.104.0` (no `!=0.136.3` exclusion — would resolve to the
+MAL-2026-4750 release) and omitted the `sqlite-vec` runtime dep entirely.
+Now mirrors `pyproject` with the security pins; `pyproject` remains canonical.
+
 ## v3.1.1 (2026-05-25) — Starlette 1.0 refactor + PYSEC-2026-161 pin
 
 **The problem.** PYSEC-2026-161 (Host-header bypass in Starlette < 1.0.1)
