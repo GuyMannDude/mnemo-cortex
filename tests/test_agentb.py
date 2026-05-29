@@ -366,6 +366,52 @@ class TestResilientEmbedding:
         # No halving attempted — single call to primary.
         assert resilient.primary.embed.await_count == 1
 
+    # ── Batch isolation: use_breaker=False (the dreamer path) ──
+    #
+    # Bulk/offline writers must not share the breaker that guards live reads:
+    # a failing batch must not trip it, and an already-open breaker must not
+    # block the batch.
+
+    @pytest.mark.asyncio
+    async def test_batch_failures_do_not_trip_breaker(self):
+        """use_breaker=False: repeated primary failures never touch the breaker."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            circuit_breaker_threshold=2,
+        )
+        resilient = create_resilient_embedding(config)
+        resilient.primary.embed = AsyncMock(side_effect=Exception("ollama down"))
+
+        for _ in range(5):
+            with pytest.raises(RuntimeError):
+                await resilient.embed("test", use_breaker=False)
+
+        assert resilient.breaker.failure_count == 0
+        assert not resilient.breaker.is_open
+
+    @pytest.mark.asyncio
+    async def test_batch_runs_even_when_breaker_open(self):
+        """use_breaker=False: an already-open breaker does not block the batch,
+        and a batch embed leaves live-facing status flags untouched."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            circuit_breaker_threshold=2,
+        )
+        resilient = create_resilient_embedding(config)
+        # Force the breaker open the way live failures would.
+        resilient.breaker.record_failure()
+        resilient.breaker.record_failure()
+        assert resilient.breaker.is_open
+        resilient.failed_over = True  # live path had failed over
+
+        resilient.primary.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        result = await resilient.embed("test", use_breaker=False)
+
+        assert result == [0.1, 0.2, 0.3]           # primary attempted despite open breaker
+        assert resilient.primary.embed.await_count == 1
+        assert resilient.breaker.is_open           # batch success did not reset live breaker
+        assert resilient.failed_over is True        # live-facing status flag untouched
+
 
 # ─────────────────────────────────────────────
 #  Cache Tests

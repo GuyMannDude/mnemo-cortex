@@ -99,6 +99,10 @@ class ServerConfig:
     port: int = 50001
     cors_origins: list = field(default_factory=lambda: ["*"])
     auth_token: str = ""
+    # Reject request bodies larger than this (DoS guard). Generous default —
+    # no legitimate memory write approaches it; it only stops abusive payloads
+    # from being embedded/indexed/written to disk. 0 disables the check.
+    max_body_bytes: int = 16 * 1024 * 1024
 
 
 @dataclass

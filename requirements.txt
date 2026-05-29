@@ -1,8 +1,15 @@
-fastapi>=0.104.0
-uvicorn>=0.24.0
-httpx>=0.25.0
-numpy>=1.24.0
+# Canonical dependency source is pyproject.toml — this file mirrors the
+# runtime deps for `pip install -r requirements.txt`. Keep the two in sync.
+#
+# 0.136.3 is MAL-2026-4750 (tampered pyproject pulls the 'fastar' typosquat
+# via the [standard] extra). We don't use [standard], but pin away from it.
+fastapi>=0.115,!=0.136.3
+starlette>=1.0.1
+uvicorn>=0.30
+pydantic>=2.8
 pyyaml>=6.0
-pydantic>=2.0
-click>=8.0
+click>=8.1
 rich>=13.0
+httpx>=0.25
+numpy>=1.24
+sqlite-vec>=0.1.6

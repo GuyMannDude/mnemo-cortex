@@ -447,6 +447,9 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
                 "key_facts": memory_entry["key_facts"],
                 "projects_referenced": memory_entry["projects_referenced"],
                 "decisions_made": memory_entry["decisions_made"],
+                # Batch writer: bypass the live embedder circuit breaker so a
+                # large nightly dream can't trip or get blocked by it.
+                "batch": True,
             },
             timeout=15.0,
         )
