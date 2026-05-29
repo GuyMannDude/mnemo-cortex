@@ -56,6 +56,22 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Phase 3: facts extraction + contradiction notification config
 MNEMO_URL = os.getenv("MNEMO_URL", "http://localhost:50001")
+
+
+def _mnemo_auth_headers() -> dict:
+    """Mnemo API token: env MNEMO_AUTH_TOKEN first (the cron sources
+    agentb-bridge.env), else ~/.mnemo-auth-token (mode 0600). Sent as X-API-KEY
+    so the Dreamer authenticates once the server enforces auth; ignored before."""
+    tok = os.getenv("MNEMO_AUTH_TOKEN", "").strip()
+    if not tok:
+        try:
+            tok = (Path.home() / ".mnemo-auth-token").read_text().strip()
+        except OSError:
+            tok = ""
+    return {"X-API-KEY": tok} if tok else {}
+
+
+MNEMO_AUTH_HEADERS = _mnemo_auth_headers()
 # Bus URL is optional — if unset/unreachable, contradiction notification gracefully
 # logs and skips (best-effort). Set to a Tailscale URL when running cron on a
 # remote host that needs to reach the busmaster on a different machine.
@@ -451,6 +467,7 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
                 # large nightly dream can't trip or get blocked by it.
                 "batch": True,
             },
+            headers=MNEMO_AUTH_HEADERS,
             timeout=15.0,
         )
         if wb_response.status_code == 200:
@@ -582,7 +599,7 @@ def post_facts(extracted: list[dict], source_agent: str) -> list[dict]:
             "source_agent": source_agent,
         }
         try:
-            resp = httpx.post(f"{MNEMO_URL}/facts", json=body, timeout=10.0)
+            resp = httpx.post(f"{MNEMO_URL}/facts", json=body, headers=MNEMO_AUTH_HEADERS, timeout=10.0)
             if resp.status_code != 200:
                 log.warning(f"  /facts POST {resp.status_code} for {fact['entity']}/{fact['attribute']}: {resp.text[:200]}")
                 continue

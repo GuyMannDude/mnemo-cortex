@@ -315,7 +315,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        log.info(f"⚡ Mnemo Cortex v3.1.2 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v3.1.3 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")
@@ -328,7 +328,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="3.1.2",
+        version="3.1.3",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -381,7 +381,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="3.1.2",
+            version="3.1.3",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},

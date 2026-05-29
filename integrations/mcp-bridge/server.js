@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { DumpWriter } from "./dump.js";
@@ -19,6 +19,23 @@ import { DumpWriter } from "./dump.js";
 
 const MNEMO_URL = process.env.MNEMO_URL || "http://localhost:50001";
 const AGENT_ID = process.env.MNEMO_AGENT_ID || "openclaw";
+// MNEMO_AUTH_TOKEN: optional bearer token for the Mnemo Cortex API. Read from
+// env first, else from ~/.mnemo-auth-token (mode 0600) so the secret lives in
+// one file rather than every agent's MCP config. Sent as X-API-KEY on every
+// request. When the server has no auth_token configured the header is ignored,
+// so it is safe to set this before the server begins enforcing auth.
+const AUTH_TOKEN = (() => {
+  if (process.env.MNEMO_AUTH_TOKEN) return process.env.MNEMO_AUTH_TOKEN.trim();
+  const tokenFile = join(process.env.HOME || ".", ".mnemo-auth-token");
+  if (existsSync(tokenFile)) {
+    try {
+      return readFileSync(tokenFile, "utf8").trim();
+    } catch {
+      /* unreadable token file — fall through to no auth */
+    }
+  }
+  return "";
+})();
 // BRAIN_DIR defaults to ~/mnemo-plan/brain (matches the public mnemo-plan
 // template repo at github.com/GuyMannDude/mnemo-plan). Set BRAIN_DIR
 // explicitly in your MCP config to point at any other brain checkout.
@@ -71,9 +88,11 @@ async function mnemoRequest(method, path, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
+  const headers = { "Content-Type": "application/json" };
+  if (AUTH_TOKEN) headers["X-API-KEY"] = AUTH_TOKEN;
   const opts = {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     signal: controller.signal,
   };
   if (body) opts.body = JSON.stringify(body);

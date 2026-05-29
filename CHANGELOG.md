@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.1.3 (2026-05-28) — auth: clients authenticate with `MNEMO_AUTH_TOKEN`
+
+Defense-in-depth on top of network controls (firewall / loopback bind). The
+auth middleware already shipped — when `server.auth_token` is set, every
+endpoint except `/health` requires the token via either `X-API-KEY` or
+`Authorization: Bearer`. This release teaches the bundled clients to send it,
+so token enforcement can be enabled without breaking the mesh.
+
+**Clients now send the token (opt-in — silent when no token is present):**
+- **MCP bridge** (`integrations/mcp-bridge/server.js`) — reads
+  `MNEMO_AUTH_TOKEN` from env, else `~/.mnemo-auth-token` (mode 0600), and
+  sends it as `X-API-KEY` on every request. Reading from a single dotfile
+  keeps the secret out of each agent's MCP config.
+- **Dreamer** (`mnemo-dream.py`) — sends the token on its `/writeback` and
+  `/facts` calls.
+
+**Enabling auth (safe rollout):** clients can be configured to *send* the
+token before the server *requires* it — an unset `server.auth_token` ignores
+the header. Once all clients are sending, set `server.auth_token`
+(e.g. `auth_token: ${MNEMO_AUTH_TOKEN}`) and restart. Rollback is a one-line
+config removal plus restart.
+
 ## v3.1.2 (2026-05-28) — hardening: batch/live breaker isolation, body-size guard, requirements pin
 
 Three hardening fixes surfaced by a security review.
