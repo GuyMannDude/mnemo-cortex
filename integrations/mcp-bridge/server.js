@@ -26,7 +26,8 @@ const AGENT_ID = process.env.MNEMO_AGENT_ID || "openclaw";
 // so it is safe to set this before the server begins enforcing auth.
 const AUTH_TOKEN = (() => {
   if (process.env.MNEMO_AUTH_TOKEN) return process.env.MNEMO_AUTH_TOKEN.trim();
-  const tokenFile = join(process.env.HOME || ".", ".mnemo-auth-token");
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  const tokenFile = join(home, ".mnemo-auth-token");
   if (existsSync(tokenFile)) {
     try {
       return readFileSync(tokenFile, "utf8").trim();
