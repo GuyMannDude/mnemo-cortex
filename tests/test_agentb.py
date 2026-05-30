@@ -847,3 +847,50 @@ class TestSessionManager:
         exchanges = [e for e in transcript if e.get("_type") == "exchange"]
         assert len(exchanges) == 1
         assert exchanges[0]["prompt"] == "Critical data"
+
+
+# ─────────────────────────────────────────────
+#  L3 scan — category/metadata filter pushdown (v2.11.6)
+# ─────────────────────────────────────────────
+
+class TestL3FilterPushdown:
+    """The L3 disk-walk must apply the metadata prefilter BEFORE embedding, so a
+    category-filtered recall doesn't pay to embed candidates it will discard."""
+
+    def _write_mems(self, mdir, specs):
+        mdir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for i, cat in enumerate(specs):
+            (mdir / f"m{i}.json").write_text(json.dumps({
+                "id": f"m{i}", "summary": f"memory {i}", "key_facts": [],
+                "category": cat, "source": "tool", "created_at": now,
+            }))
+
+    @pytest.mark.asyncio
+    async def test_prefilter_skips_embed_for_nonmatching(self, tmp_path):
+        mdir = tmp_path / "memory"
+        self._write_mems(mdir, ["incident", "incident", "topology"])
+        embed = AsyncMock(return_value=[1.0, 0.0])
+
+        def only_topology(source=None, category=None, age_days=None, stale_warning=None):
+            return category == "topology"
+
+        results = await l3_scan(mdir, [1.0, 0.0], embed_fn=embed,
+                                threshold=0.4, top_k=5, prefilter=only_topology)
+
+        # The two 'incident' files must NOT be embedded — only the topology one.
+        assert embed.await_count == 1
+        assert len(results) == 1
+        assert results[0].category == "topology"
+
+    @pytest.mark.asyncio
+    async def test_no_prefilter_embeds_all(self, tmp_path):
+        # Backward compatibility: without a prefilter, every candidate is embedded.
+        mdir = tmp_path / "memory"
+        self._write_mems(mdir, ["incident", "incident", "incident"])
+        embed = AsyncMock(return_value=[1.0, 0.0])
+
+        results = await l3_scan(mdir, [1.0, 0.0], embed_fn=embed, threshold=0.4, top_k=5)
+
+        assert embed.await_count == 3
+        assert len(results) == 3

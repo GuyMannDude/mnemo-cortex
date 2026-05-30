@@ -207,6 +207,7 @@ async def l3_scan(
     embed_fn: Callable[[str], Awaitable[list[float]]],
     threshold: float = 0.4,
     top_k: int = 3,
+    prefilter: Optional[Callable[..., bool]] = None,
 ) -> list[ContextChunk]:
     from agentb.provenance import compute_stale_warning
 
@@ -219,17 +220,27 @@ async def l3_scan(
             content = mem.get("summary", "") + "\n" + "\n".join(mem.get("key_facts", []))
             if not content.strip():
                 continue
+            # Compute metadata from disk *before* the expensive embed. A
+            # category / source / age / stale filter prunes here so we never
+            # pay to embed a candidate we'd only discard. Before this, a
+            # category-filtered cross-agent recall embedded ~every file
+            # (~17 sequential embed calls/request → MCP-bridge timeout).
+            created_at = mem.get("created_at")
+            age_days = round((now - float(created_at)) / 86400.0, 1) if created_at else None
+            category = mem.get("category")
+            stale = compute_stale_warning(category, created_at) if category else None
+            source = mem.get("source")
+            if prefilter is not None and not prefilter(
+                source=source, category=category, age_days=age_days, stale_warning=stale
+            ):
+                continue
             content_embedding = await embed_fn(content)
             sim = cosine_similarity(query_embedding, content_embedding)
             if sim > threshold:
-                created_at = mem.get("created_at")
-                age_days = round((now - float(created_at)) / 86400.0, 1) if created_at else None
-                category = mem.get("category")
-                stale = compute_stale_warning(category, created_at) if category else None
                 results.append(ContextChunk(
                     content, f"l3-scan:{mem_file.stem}", sim, "L3",
                     memory_id=mem.get("id") or mem_file.stem,
-                    provenance_source=mem.get("source"),
+                    provenance_source=source,
                     category=category,
                     additional_tags=mem.get("additional_tags") or [],
                     age_days=age_days,

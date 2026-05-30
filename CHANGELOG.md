@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.3.1 (2026-05-30) — perf: push the metadata filter into the L3 scan, before the embed
+
+**The problem.** A cross-agent recall *with a category filter* timed out from the
+MCP bridge, while the same query hit the artforge REST endpoint directly in
+~0.1s. The Mnemo log showed ~17 sequential `embedder.embed` calls per request.
+Root cause: `l3_scan` embedded **every** memory file on disk to score it, and the
+category/source/age/stale filter only ran *afterward* (`keep_chunk`, post-recall).
+So a query that wanted one category still paid to embed every other category —
+and over the bridge's tighter timeout, that serial embed loop blew the budget.
+
+**The fix (no behavior change in results, only in cost):**
+- Every check in the recall filter (`source`, `category`, excluded categories,
+  `max_age_days`, `exclude_stale`) is **metadata-only** — none needs an embedding.
+  Extracted them into a single `passes_metadata(...)` predicate in the `/context`
+  handler; `keep_chunk` now delegates to it (one source of truth).
+- `l3_scan` gained an optional `prefilter` parameter. It now computes each
+  candidate's metadata (category, source, age, stale) from disk *before* the
+  embed, and skips `embed_fn` entirely for candidates the prefilter rejects.
+  `/context` passes `passes_metadata` straight through.
+- Net: a category-filtered L3 scan embeds only the matching candidates instead of
+  the whole directory. No prefilter → embeds all (backward compatible).
+- Tests: `TestL3FilterPushdown` proves a 3-file dir with a single matching
+  category triggers exactly one `embed` call (was three), plus the no-prefilter
+  embeds-all backward-compat case. Full suite green (66 + 44).
+
 ## v3.3.0 (2026-05-30) — public Facts seeder + install wiring
 
 **The problem.** An empty Phase 3 Facts table is a trap. Recall (fuzzy) and

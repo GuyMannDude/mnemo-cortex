@@ -328,7 +328,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="3.3.0",
+        version="3.3.1",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -381,7 +381,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="3.3.0",
+            version="3.3.1",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -412,20 +412,32 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         if req.category:
             effective_exclude.discard(req.category)
 
-        def keep_chunk(c: ContextChunk) -> bool:
+        # Single source of truth for the metadata filter. Every check is
+        # metadata-only (no embedding needed), so the same predicate gates both
+        # post-recall chunks (keep_chunk) and the L3 disk-walk *before* it
+        # embeds (l3_scan prefilter) — that pushdown is the v3.3.1 perf fix.
+        def passes_metadata(source=None, category=None, age_days=None, stale_warning=None) -> bool:
             if req.source:
-                # Strict: pre-v3 chunks have no source, can't satisfy a source filter.
-                if not c.provenance_source or c.provenance_source != req.source:
+                # Strict: pre-v3 records have no source, can't satisfy a source filter.
+                if not source or source != req.source:
                     return False
-            if req.category and c.category != req.category:
+            if req.category and category != req.category:
                 return False
-            if c.category and c.category in effective_exclude:
+            if category and category in effective_exclude:
                 return False
-            if req.max_age_days is not None and c.age_days is not None and c.age_days > req.max_age_days:
+            if req.max_age_days is not None and age_days is not None and age_days > req.max_age_days:
                 return False
-            if req.exclude_stale and c.stale_warning and c.stale_warning.get("severity") == "stale":
+            if req.exclude_stale and stale_warning and stale_warning.get("severity") == "stale":
                 return False
             return True
+
+        def keep_chunk(c: ContextChunk) -> bool:
+            return passes_metadata(
+                source=c.provenance_source,
+                category=c.category,
+                age_days=c.age_days,
+                stale_warning=c.stale_warning,
+            )
 
         # Over-fetch so post-filter trims don't leave us short.
         overfetch = max(req.max_results * 3, req.max_results + 5)
@@ -517,7 +529,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 c for c in await l3_scan(memory_dir, query_embedding,
                                           embed_fn=embedder.embed,
                                           threshold=config.cache.l3_similarity_threshold,
-                                          top_k=overfetch)
+                                          top_k=overfetch,
+                                          prefilter=passes_metadata)
                 if keep_chunk(c) and (not c.memory_id or c.memory_id not in seen_memory_ids)
             ]
             kept = l3_results[:remaining]
