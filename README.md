@@ -464,7 +464,7 @@ mnemo-cortex health check
 =========================
 
 Core Services
-  API server (http://localhost:50001) ..... OK (v3.1.0, 156 memories, 42ms)
+  API server (http://localhost:50001) ..... OK (v3.1.3, 156 memories, 42ms)
   Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
   Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
 
@@ -852,7 +852,7 @@ Mnemo Cortex started as a memory coprocessor designed by a small multi-agent tea
 - **Andrej Karpathy** — [LLM Wiki pattern](https://gist.github.com/karpathy), April 2026. Inspired WikAI's compile-don't-rederive design and the "idea file as publishing format" pattern used in `SETUP-PROMPT.md`.
 - **Nate B Jones** — [OpenBrain](https://github.com/NateBJones-Projects/OB1) + ["Your AI Does the Hard Work Then Deletes It" (YouTube)](https://youtu.be/dxq7WtWxi44) + [Substack](https://natesnewsletter.substack.com/). Inspired our three-layer memory architecture (structured store + compiled wiki + ephemeral brain files).
 - **Google A2A Protocol** — [github.com/google/A2A](https://github.com/google/A2A). Sparks Bus speaks A2A data shapes; transport is v2 roadmap.
-- **Mem0** — [mem0.ai](https://mem0.ai). The Mem0 Bridge is "and Mem0, not instead of Mem0."
+- **Mem0** — [mem0.ai](https://mem0.ai). The first to make portable AI memory feel real; inspired our early thinking on cross-session persistence. (The optional Mem0 cloud-deep bridge was retired in v3.1.0 — local recall performance made the fallback unnecessary.)
 - **[Lossless Claw](https://github.com/Martian-Engineering/lossless-claw)** by Martian Engineering — early exploration of lossless conversation logging that informed the v1 capture pattern.
 
 Built for [Project Sparks](https://projectsparks.ai).
