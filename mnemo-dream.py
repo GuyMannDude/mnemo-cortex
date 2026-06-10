@@ -410,6 +410,20 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
 
 def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
     """Write the dream to both AgentB memory and a readable markdown file."""
+    # v4.1: the brief is LLM output synthesized from session content — run it
+    # through the same redaction choke point as every other write. The dream
+    # markdown lands on disk and gets injected into agent startup context; a
+    # key that slipped into a writeback before redaction shipped must not be
+    # amplified into every agent's morning brief.
+    try:
+        from agentb.redact import redact_text
+        dream_text, red_counts = redact_text(dream_text)
+        if red_counts:
+            log.warning(f"🔒 Redacted {sum(red_counts.values())} secret(s) from dream brief: "
+                        + ", ".join(f"{k}×{v}" for k, v in red_counts.items()))
+    except ImportError:
+        log.warning("agentb.redact unavailable — dream brief written unredacted")
+
     now = datetime.now(timezone.utc)
     date_str = now.strftime("%Y-%m-%d")
     dream_id = hashlib.sha256(f"dream:{date_str}:{now.isoformat()}".encode()).hexdigest()[:16]

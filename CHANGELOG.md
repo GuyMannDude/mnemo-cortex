@@ -1,5 +1,78 @@
 # Changelog
 
+## v4.1.0 (2026-06-10) — the Fable pass: secrets, ranking, the Analyst, tier hygiene
+
+A full-codebase review-and-improve pass. Five workstreams, each fixing a
+problem the 2026-06-09 quality audit or live incidents had already paid for.
+
+### Secret redaction at ingest (the two-leaks-in-one-week fix)
+**The problem.** Auto-capture syncs terminal activity every 60s — including any
+API key that gets printed. Zero detection anywhere in the pipeline; two real
+key leaks in one week.
+**The fix.** `agentb/redact.py` — every byte entering the store via
+`/writeback` or `/ingest` passes through it first. Vendor-prefixed key shapes
+(incl. `sk-or-v1-…` with hyphens — the exact shape the old grep mask missed),
+PEM blocks, JWTs, Bearer headers, prefixed `NAME=value` assignments with a
+placeholder/path allowlist. Redaction runs **before** classification so a
+secret never rides a classify call to a remote LLM. Loud, never silent:
+`redactions` count in responses + a warn log naming kinds (never values).
+The nightly dreamer redacts its brief through the same module.
+
+### Capture pause gate (security pause with a dead-man switch)
+`POST /capture/pause {minutes, reason}` stops ambient capture server-wide
+(`/ingest` + auto-capture-shaped `/writeback` are **discarded**, not buffered);
+deliberate manual saves still land. Auto-resumes at expiry (default 15 min,
+cap 4 h) via a lazy watchdog — forgetting to unpause can't lobotomize the
+memory system. File-backed (survives restarts), state in `/health`, MCP
+bridge tools `mnemo_capture_pause` / `mnemo_capture_resume` (bridge v2.11.0).
+
+### Composite recall ranking (the 0.75/5 fix)
+**The problem.** Results ranked by raw vector similarity in tier order; HOT
+logs hardcoded to relevance 0.95. A hand-written doctrine at similarity 0.57
+lost every top-5 slot to noise at 0.73.
+**The fix.** `agentb/ranking.py` — score = similarity (0.55) + recency decay
+(0.20) + category importance (0.15) + log-scaled access frequency (0.10),
+weights in `RankingConfig`. `/context` restructured: tiers pool filtered
+candidates (no sequential budget fill), one composite re-rank, one trim. New
+`recall_stats` table per tenant tracks access counts. Missing metadata scores
+neutral — pre-v3 records stay accessible. L3 disk-walk remains an escape
+hatch (runs only when cheap tiers come up short).
+
+### The Analyst (Phase 2 — smart session analysis)
+The note-taker layer that didn't exist: on a maintenance cadence, reads each
+tenant's unprocessed Tier-2 session logs once, LLM-extracts conservative
+notes (decision/incident/doctrine/identity/relationship/topology/
+current_state, confidence-gated, "empty list is the common correct answer"),
+dedups by true cosine against existing memories, persists survivors as
+Tier-1 with provenance (`source=inferred`, `classified_by=analyst`,
+`derived_from=[ids]`). Tier 2 is never deleted. `AnalysisConfig` to tune.
+
+### Tier hygiene + correctness fixes
+- **Deleted memories no longer resurrect**: `resolve_disk_truth` now drops
+  chunks whose memory JSON is gone (the June-9 purged `[AUTO-CAPTURE]` rows
+  were still serving from L2 — observed live). Legacy L1/L2 entries with no
+  `memory_id` get a content-shape check: auto-capture/auto-sync chunks are
+  tagged `session_log` so default hiding finally applies to them.
+- **L2 write path retired**: every save rewrote the tenant's entire L2
+  `index.json` (cc's had grown to **43 MB — rewritten every minute** under
+  the 60s auto-sync). New memories index into VEC only; L2 stays read-only
+  for legacy entries.
+- **HOT tier honesty**: live-session keyword hits are `category=session_log`
+  (hidden by default like every other log; `exclude_categories=[]` opts in)
+  at relevance 0.75 instead of an unconditional 0.95.
+- **Real auth probes for the remaining providers**: Anthropic (`GET
+  /v1/models`), Google (`GET /models?key=`), HuggingFace (whoami-v2 / TEI
+  `/health`) — completing v4.0.3, all fail-closed.
+- maintenance loop: batch embeds/summaries now `use_breaker=False`
+  (batch-vs-live isolation); fixed latent unbound-variable crash; warm
+  session archival finally summarizes (the hook existed, nothing wired it).
+- config: `server.max_body_bytes` was silently ignored when set via YAML.
+- `/context` chunks now carry `memory_id`.
+
+**Tests.** 201 passing (was 152): redaction shapes incl. the sk-or-v1
+regression, gate semantics, ranking contracts, analyst lifecycle, probe
+fail-closed behavior, deleted-memory drop.
+
 ## v4.0.3 (2026-06-09) — fix: health_check never tested auth (a dead/401 key reported "healthy")
 
 **The problem.** `OpenRouterReasoning.health_check()` (and the embedding variant)
