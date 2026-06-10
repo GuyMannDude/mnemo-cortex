@@ -72,6 +72,36 @@ class ContextChunk:
         return d
 
 
+def resolve_disk_truth(chunk: ContextChunk, memory_dir: Path) -> ContextChunk:
+    """Re-read a chunk's canonical category/source from its memory JSON on disk.
+
+    L1/L2 cache the category at write time; the v4.0 reclassification migration
+    rewrote only the on-disk memory files, leaving those caches stale or empty —
+    so session_log leaked past the /context category filter (which treats
+    category=None as "do not exclude"). Mutates the chunk in place with disk-truth
+    metadata, mirroring the v4.0.1 VEC-tier fix, so the filter sees the same
+    category the L3 disk-walk would. No-op when the chunk has no memory_id or its
+    file is gone (pre-v3 or evicted records).
+    """
+    if not chunk.memory_id:
+        return chunk
+    mem_path = memory_dir / f"{chunk.memory_id}.json"
+    if not mem_path.exists():
+        return chunk
+    try:
+        mem = json.loads(mem_path.read_text())
+    except Exception:
+        return chunk
+    from agentb.provenance import compute_stale_warning
+    chunk.category = mem.get("category")
+    chunk.provenance_source = mem.get("source")
+    created_at = mem.get("created_at")
+    if created_at:
+        chunk.age_days = round((time.time() - float(created_at)) / 86400.0, 1)
+        chunk.stale_warning = compute_stale_warning(chunk.category, created_at) if chunk.category else None
+    return chunk
+
+
 class L1Cache:
     def __init__(self, cache_dir: Path, config: CacheConfig):
         self.cache_dir = cache_dir
@@ -108,13 +138,20 @@ class L1Cache:
                 scored.append((sim, bundle))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [ContextChunk(b["content"], b.get("source", "l1-cache"), s, "L1")
+        # v4.0.2: carry memory_id + category so /context can disk-truth-validate
+        # the category filter. An L1 bundle with no memory_id can't be tied back
+        # to its memory JSON, so session_log leaked past the filter.
+        return [ContextChunk(b["content"], b.get("source", "l1-cache"), s, "L1",
+                             memory_id=b.get("memory_id"), category=b.get("category"),
+                             created_at=b.get("created_at"))
                 for s, b in scored[:top_k]]
 
-    async def add(self, content: str, source: str, embedding: list[float]) -> str:
+    async def add(self, content: str, source: str, embedding: list[float],
+                  memory_id: Optional[str] = None, category: Optional[str] = None) -> str:
         bundle_id = hashlib.sha256(content.encode()).hexdigest()[:12]
         bundle = {"id": bundle_id, "content": content, "source": source,
-                  "embedding": embedding, "created_at": time.time()}
+                  "embedding": embedding, "created_at": time.time(),
+                  "memory_id": memory_id, "category": category}
         self.bundles.append(bundle)
         if len(self.bundles) > self.config.l1_max_bundles:
             self.bundles.sort(key=lambda b: b.get("created_at", 0))

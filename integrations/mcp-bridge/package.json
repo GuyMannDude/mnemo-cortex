@@ -1,6 +1,6 @@
 {
   "name": "mnemo-cortex-mcp-bridge",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Drop-in MCP bridge for any MCP-capable host. Generic shared bridge used by every Mnemo Cortex integration (Claude Desktop, Claude Code, OpenClaw, LM Studio, AnythingLLM, Agent Zero, Hermes Agent, Ollama, and more). Persistent semantic memory + Passport, plus optional brain-lane and wiki tools that auto-enable when those dirs exist.",
   "main": "server.js",
   "type": "module",

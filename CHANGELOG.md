@@ -1,5 +1,34 @@
 # Changelog
 
+## v4.0.2 (2026-06-09) — fix: the L1 + L2 tiers also bypassed the category filter
+
+**The problem.** v4.0.1 fixed the VEC tier, but a recall re-probe *still* leaked
+`session_log` — this time arriving via `[L2]` and `[L1]`. Same root cause, two more
+tiers: the category is canonical **on disk** (`memory/<id>.json`), but the
+reclassification migration rewrote only those files, not the tier caches.
+- **L2** carried the *pre-migration* category in its cached `metadata`, so a memory
+  reclassified on disk still filtered against its stale category.
+- **L1** bundles never stored a category *or* a `memory_id` at all — every L1 hit had
+  `category=None`, which `passes_metadata` treats as "do not exclude," and with no
+  `memory_id` it couldn't even be tied back to its memory file for validation.
+
+**The fix.**
+- New shared helper `resolve_disk_truth(chunk, memory_dir)` in `cache.py`: re-reads
+  `category`/`source`/`created_at` from the chunk's memory JSON and mutates the chunk
+  in place. Applied **inline in the `/context` L1 and L2 loops, before the trim** —
+  not as a final pass over `all_chunks`. A final pass would be wrong: tiers fill the
+  `max_results` budget sequentially, so leaky L1 hits would consume the budget and a
+  late drop would leave results short with no backfill from VEC/L3. Resolving per-tier
+  keeps the budget accounting honest, exactly like the v4.0.1 VEC fix.
+- `L1Cache.add` now stores `memory_id` + `category`; `L1Cache.search` propagates them
+  into `ContextChunk`; the maintenance-loop precache passes both from the disk record.
+- VEC (v4.0.1) and the L3 disk-walk already read disk-truth, so they're untouched.
+
+**Tests.** `tests/test_context_disk_truth_filter.py` — an L2 entry whose disk category
+was reclassified to `session_log` is now excluded despite a stale cache; L1Cache
+add/search round-trips `memory_id`+`category`; `resolve_disk_truth` overrides a stale
+chunk category from disk.
+
 ## v4.0.1 (2026-06-09) — fix: the VEC tier bypassed the category filter (two-tier recall now works)
 
 **The problem.** v4.0 reclassified the stores correctly, but a recall re-probe still

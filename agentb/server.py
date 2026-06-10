@@ -32,7 +32,7 @@ from agentb.config import (
     load_config, AgentBConfig, get_agent_data_dir, get_persona, PersonaConfig,
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding
-from agentb.cache import L1Cache, L2Index, l3_scan, ContextChunk
+from agentb.cache import L1Cache, L2Index, l3_scan, ContextChunk, resolve_disk_truth
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.provenance import (
     VALID_SOURCES, VALID_CATEGORIES, DEFAULT_HIDDEN_CATEGORIES,
@@ -316,7 +316,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        log.info(f"⚡ Mnemo Cortex v4.0.1 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v4.0.2 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")
@@ -329,7 +329,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.0.1",
+        version="4.0.2",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -382,7 +382,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.0.1",
+            version="4.0.2",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -473,7 +473,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # L1
         remaining = req.max_results - len(all_chunks)
         if remaining > 0:
-            l1_results = [c for c in l1.search(query_embedding, top_k=overfetch, persona=persona) if keep_chunk(c)]
+            # v4.0.2: disk-truth the category before filtering — L1's cached
+            # category is stale/absent after the reclassification migration, so
+            # session_log leaked. Resolve per-hit (cheap, over-fetch is small),
+            # like the VEC tier, so the trim below counts only kept chunks.
+            l1_results = [c for c in l1.search(query_embedding, top_k=overfetch, persona=persona)
+                          if keep_chunk(resolve_disk_truth(c, memory_dir))]
             kept = l1_results[:remaining]
             all_chunks.extend(kept)
             cache_hits["L1"] = len(kept)
@@ -533,8 +538,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # L2
         remaining = req.max_results - len(all_chunks)
         if remaining > 0:
+            # v4.0.2: resolve disk-truth category first — L2's metadata cache
+            # kept the pre-migration category, so session_log leaked here too.
             l2_results = [
-                c for c in l2.search(query_embedding, top_k=overfetch, persona=persona)
+                c for c in (resolve_disk_truth(c, memory_dir)
+                            for c in l2.search(query_embedding, top_k=overfetch, persona=persona))
                 if keep_chunk(c) and (not c.memory_id or c.memory_id not in seen_memory_ids)
             ]
             kept = l2_results[:remaining]
@@ -952,7 +960,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         if bid in {b.get("id") for b in l1.bundles}:
                             continue
                         embedding = await embedder.embed(content)
-                        await l1.add(content, f"precache:{mem.get('id', mem_file.stem)}", embedding)
+                        mem_id = mem.get("id", mem_file.stem)
+                        await l1.add(content, f"precache:{mem_id}", embedding,
+                                     memory_id=mem_id, category=mem.get("category"))
                 except Exception as e:
                     log.warning(f"Precache error for '{tenant_key}': {e}")
 
