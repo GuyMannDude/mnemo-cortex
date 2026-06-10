@@ -38,6 +38,7 @@ from agentb.provenance import (
     VALID_SOURCES, VALID_CATEGORIES, DEFAULT_HIDDEN_CATEGORIES,
     suggest_category,
 )
+from agentb.classify import classify_category, reclassify_memory_dir
 from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
 
@@ -315,7 +316,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        log.info(f"⚡ Mnemo Cortex v3.1.3 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v4.0.0 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")
@@ -328,7 +329,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="3.3.1",
+        version="4.0.0",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -621,15 +622,31 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         # v3: provenance + decay tagging
         source_used = req.source if req.source in VALID_SOURCES else "inferred"
-        suggestion_text = req.summary + "\n" + "\n".join(req.key_facts or [])
-        suggested_category, suggestion_keywords = suggest_category(suggestion_text)
+        # v4 Smart Ingestion: categorize so real memories (Tier 1) never land in
+        # the same bucket as raw session logs (Tier 2). Resolution order:
+        #   1. explicit caller category always wins
+        #   2. LLM classification (cheap noise pre-filter demotes logs for free)
+        #   3. legacy regex suggester (when classification disabled or LLM down)
+        classified_by = None
+        needs_reclassification = False
         if req.category and req.category in VALID_CATEGORIES:
             category_used = req.category
             category_suggested_field = None
             category_match_keywords_field = None
+        elif config.classification.enabled:
+            category_used, classified_by = await classify_category(
+                reasoner, req.summary, req.key_facts,
+                use_breaker=not req.batch,
+                max_input_chars=config.classification.max_input_chars,
+            )
+            needs_reclassification = classified_by == "regex"
+            category_suggested_field = category_used
+            category_match_keywords_field = None
         else:
-            category_used = suggested_category
-            category_suggested_field = suggested_category
+            suggestion_text = req.summary + "\n" + "\n".join(req.key_facts or [])
+            category_used, suggestion_keywords = suggest_category(suggestion_text)
+            classified_by = "regex"
+            category_suggested_field = category_used
             category_match_keywords_field = suggestion_keywords
         additional_tags = req.additional_tags or []
 
@@ -646,6 +663,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "additional_tags": additional_tags,
             "schema_version": 3,
         }
+        # v4 provenance: how the category was decided, and whether the dreamer
+        # should revisit it (regex fallback fired because the LLM was unavailable).
+        if classified_by:
+            memory_entry["classified_by"] = classified_by
+        if needs_reclassification:
+            memory_entry["needs_reclassification"] = True
         (memory_dir / f"{memory_id}.json").write_text(json.dumps(memory_entry, indent=2, default=str))
         log.info(f"Writeback: {req.session_id} → {memory_id} (agent: {req.agent_id or 'default'}, source={source_used}, category={category_used})")
 
@@ -885,8 +908,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Background: precache + session archival ──
     async def maintenance_loop():
+        cycle = 0
         while True:
             await asyncio.sleep(300)  # every 5 minutes
+            cycle += 1
+            # v4 dreamer: reclassify stragglers ~hourly (every 12th 5-min cycle),
+            # not every cycle — this is a safety net behind Track 1 + the migration.
+            do_reclassify = config.classification.enabled and cycle % 12 == 0
 
             for tenant_key, tenant in tenants._tenants.items():
                 # Precache L1 bundles
@@ -935,6 +963,25 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         log.info(f"Cold-archived {len(moved)} sessions for '{tenant_key}'")
                 except Exception as e:
                     log.warning(f"Cold archival error for '{tenant_key}': {e}")
+
+                # v4 dreamer: reclassify uncategorized / regex-fallback stragglers.
+                # use_breaker=False so this batch can't trip the live reasoning
+                # breaker (batch-vs-live isolation); capped per cycle.
+                if do_reclassify:
+                    try:
+                        rstats = await reclassify_memory_dir(
+                            tenant["memory_dir"], reasoner,
+                            limit=config.classification.dreamer_max_per_cycle,
+                            max_input_chars=config.classification.max_input_chars,
+                            use_breaker=False,
+                        )
+                        if rstats["reclassified"]:
+                            log.info(
+                                f"Dreamer reclassified {rstats['reclassified']} memories "
+                                f"for '{tenant_key}' ({rstats['by_category']})"
+                            )
+                    except Exception as e:
+                        log.warning(f"Reclassification pass error for '{tenant_key}': {e}")
 
     # ── Passport Lane (Phase 1) ──
     # Five MCP-facing routes under /passport/*. Self-contained: no shared state

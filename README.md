@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v3.1
+# ⚡ Mnemo Cortex v4.0
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -67,6 +67,24 @@ Read **[THE-LANE-PROTOCOL.md](THE-LANE-PROTOCOL.md)** — the operating practice
 The protocol pairs with this product the way a recipe pairs with ingredients: Mnemo gives you the memory store, the Lane Protocol gives you the loop that makes it pay off. Distilled from real multi-agent sessions — terminal agents, chat agents, and autonomous workers running the same six-step ritual.
 
 ---
+
+### 🧠 Smart Ingestion — Real Memories vs. Raw Logs (v4.0)
+
+Most agent memory rots the same way: a regex tagger can't categorize a save, defaults it to `unknown`, and within weeks 30–75% of the store is uncategorized. Real memories — decisions, doctrines, infrastructure facts, relationships — end up in the same bucket as raw conversation logs, and the logs (by sheer volume) crowd them out of every recall. In one audit, only **0.75 of the top-5** recalled results were useful.
+
+Mnemo v4 sorts memory into two tiers at save time:
+
+- **Tier 1 — Smart Notes:** the distilled facts, classified by your reasoning model into one of eight categories (topology, current_state, doctrine, incident, identity, relationship, decision). Clean, categorized, recalled first.
+- **Tier 2 — Session Logs:** the raw conversation/tool-call archive. Kept in full, tagged `session_log`, and excluded from default recall — it's there when you drill in for specifics, not competing for the top slots.
+
+A cheap pre-filter routes routine logs to Tier 2 for free (no LLM call); everything else gets one short classification call. Default recall returns Tier 1; pass `exclude_categories=[]` to search both tiers. If the model is down, it falls back to the regex tagger and flags the memory for an overnight retry — so a save is never blocked on the classifier.
+
+**Already have a polluted store?** Reclassify it in one command — it rewrites only the category tags, never your embeddings:
+
+```bash
+mnemo-cortex migrate reclassify --all --dry-run   # preview the before→after spread
+mnemo-cortex migrate reclassify --all             # snapshot, then reclassify every store
+```
 
 ### 🌙 Dreaming Mnemo — Cross-Agent Overnight Synthesis
 

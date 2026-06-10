@@ -94,6 +94,16 @@ class CacheConfig:
 
 
 @dataclass
+class ClassificationConfig:
+    # Smart Ingestion (v4.0). When enabled, /writeback classifies uncategorized
+    # memories with the reasoning LLM instead of defaulting to "unknown".
+    # Disable to keep the legacy regex-only behavior (zero LLM calls at save time).
+    enabled: bool = True
+    max_input_chars: int = 1500       # truncate memory text before the classify call
+    dreamer_max_per_cycle: int = 200  # cap reclassifications per nightly maintenance pass
+
+
+@dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 50001
@@ -118,6 +128,7 @@ class AgentBConfig:
     embedding: ResilientProviderConfig = field(default_factory=ResilientProviderConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    classification: ClassificationConfig = field(default_factory=ClassificationConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     data_dir: str = ""
     log_level: str = "info"
@@ -209,6 +220,10 @@ def _parse_config(raw: dict) -> AgentBConfig:
     if "cache" in raw and raw["cache"]:
         c = raw["cache"]
         cfg.cache = CacheConfig(**{k: c[k] for k in c if hasattr(CacheConfig, k)})
+    if "classification" in raw and raw["classification"]:
+        cl = raw["classification"]
+        cfg.classification = ClassificationConfig(
+            **{k: cl[k] for k in cl if hasattr(ClassificationConfig, k)})
     if "server" in raw and raw["server"]:
         s = raw["server"]
         cfg.server = ServerConfig(

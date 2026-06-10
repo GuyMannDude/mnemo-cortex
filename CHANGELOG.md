@@ -1,5 +1,40 @@
 # Changelog
 
+## v4.0.0 (2026-06-09) — LLM-powered Smart Ingestion + reclassification migration
+
+**The problem.** A memory-quality audit across four agent stores proved ambient recall is
+broken. Of 16 representative recall queries against a real store, an average of **0.75 of the
+top-5** results were useful; on **6 of 16 the right answer never surfaced**. Root cause is
+*categorization*, not search: the regex auto-suggester (`provenance.suggest_category`) silently
+returns `unknown` whenever it can't keyword-match, so 31–75% of every store sat uncategorized.
+Real memories ("Tier 1": decisions, doctrines, topology, relationships) and raw session logs
+("Tier 2") then shared one bucket and competed for the same top-k slots — the logs, by volume,
+won. Every operator hits this.
+
+**The fix (smart ingestion — three tracks, all reusing the existing reasoning provider):**
+- **Save-time classification** (`agentb/classify.py`, wired into `/writeback`). A cheap noise
+  pre-filter (`is_routine_log`) demotes raw tool/session logs to `session_log` for FREE — the
+  firehose never costs an LLM call. Everything else is classified into one of the eight real
+  categories by the reasoning LLM (already configured — OpenRouter/Gemini-Flash). Explicit
+  caller categories still win; on LLM failure it falls back to the regex suggester and flags the
+  memory `needs_reclassification`. Result: **zero new `unknown` memories**. Gated by
+  `classification.enabled` (default on; disable for legacy regex-only behavior).
+- **Migration CLI** (`mnemo-cortex migrate reclassify`, `agentb/migrate.py`). One-time sweep that
+  reclassifies every `unknown`/routine-log memory in a store. Rewrites only the JSON `category`
+  field — embeddings and `vec_sources` are never touched (category is disk-only metadata read at
+  recall time), so there is no vector loss. Backs up `memory/` + `vec_index.sqlite` first;
+  `--dry-run` previews the before→after spread; `--all` does every store. Default DEMOTES logs
+  (Tier 2 is the archive, retained); `--purge-noise` deletes only empty/sentinel rows.
+- **Dreamer reclassification pass** (`maintenance_loop`). ~Hourly safety net that reclassifies
+  any straggler `unknown`/flagged memory the live path missed, capped per cycle.
+- **Breaker isolation:** `ResilientReasoning.generate` gains `use_breaker=False` (mirrors the
+  embedding path) so batch reclassification can't trip the live preflight circuit breaker.
+- **Two-tier recall** now works as intended: default recall excludes `session_log` (= Tier 1);
+  `exclude_categories=[]` returns Tier 1 + Tier 2.
+- Version drift fixed: pyproject, CLI, and the MCP bridge all aligned to **4.0.0**.
+- Tests: `test_classify.py` + `test_migrate.py` (19 new) — noise pre-filter, LLM/regex/invalid
+  paths, dry-run writes nothing, backup, purge-only-sentinels. Full suite green.
+
 ## v3.3.1 (2026-05-30) — perf: push the metadata filter into the L3 scan, before the embed
 
 **The problem.** A cross-agent recall *with a category filter* timed out from the

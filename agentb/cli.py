@@ -53,7 +53,7 @@ from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="2.9.0", prog_name="mnemo-cortex")
+@click.version_option(version="4.0.0", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
@@ -1189,6 +1189,63 @@ def dump_tail(agent_id, lines, no_follow):
         subprocess.run(cmd)
     except KeyboardInterrupt:
         pass
+
+
+# ─────────────────────────────────────────────
+#  Migrate — Smart Ingestion reclassification (Mnemo v4)
+# ─────────────────────────────────────────────
+
+@main.group()
+def migrate():
+    """One-time store maintenance (Mnemo v4 Smart Ingestion).
+
+    \b
+    Reclassify uncategorized / 'unknown' / routine-log memories with the
+    reasoning LLM so real memories (Tier 1) stop sharing recall slots with raw
+    session logs (Tier 2). Rewrites only the category field — never embeddings.
+
+    \b
+      mnemo-cortex migrate reclassify --all --dry-run    # preview, write nothing
+      mnemo-cortex migrate reclassify --agent cc         # one store
+      mnemo-cortex migrate reclassify --all              # all stores (backup first)
+    """
+    pass
+
+
+@migrate.command("reclassify")
+@click.option("--agent", "-a", "agents", multiple=True, help="Agent id (repeatable).")
+@click.option("--all", "all_agents", is_flag=True, help="Every agent store found on disk.")
+@click.option("--dry-run", is_flag=True, help="Show projected before→after spread; write nothing.")
+@click.option("--no-backup", is_flag=True, help="Skip the pre-migration snapshot (not recommended).")
+@click.option("--unknown-only", is_flag=True, help="Only touch unknown/missing/flagged; leave routine logs.")
+@click.option("--purge-noise", is_flag=True, help="Also delete empty/sentinel rows (never real session logs).")
+def migrate_reclassify_cmd(agents, all_agents, dry_run, no_backup, unknown_only, purge_noise):
+    """Reclassify uncategorized/unknown/routine-log memories via the LLM."""
+    from agentb.config import load_config
+    from agentb.migrate import migrate_reclassify
+
+    config = load_config()
+
+    if all_agents:
+        base = Path(config.data_dir or DATA_DIR) / "agents"
+        agent_ids = sorted(
+            d.name for d in base.glob("*") if (d / "memory").is_dir()
+        ) if base.exists() else []
+    else:
+        agent_ids = list(agents)
+
+    if not agent_ids:
+        console.print("[yellow]No agents selected. Use [bold]--agent <id>[/] or [bold]--all[/].[/]")
+        return
+
+    console.print(
+        f"[bold]Reclassify[/] {'[yellow](dry run)[/] ' if dry_run else ''}"
+        f"→ {', '.join(agent_ids)}"
+    )
+    migrate_reclassify(
+        agent_ids, dry_run=dry_run, backup=not no_backup,
+        include_routine=not unknown_only, purge_noise=purge_noise, config=config,
+    )
 
 
 if __name__ == "__main__":

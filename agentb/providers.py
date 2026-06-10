@@ -110,27 +110,36 @@ class ResilientReasoning:
         self.active_label = self.primary.label
         self.failed_over = False
 
-    async def generate(self, prompt: str, system: str = "", max_tokens: int = 2048) -> str:
-        # Try primary if circuit is closed
-        if not self.breaker.should_skip():
+    async def generate(self, prompt: str, system: str = "", max_tokens: int = 2048,
+                       *, use_breaker: bool = True) -> str:
+        # Batch callers (the nightly dreamer reclassification pass, batch
+        # writebacks) pass use_breaker=False: they hit the same reasoning backend
+        # as the live preflight/classify path but must NOT share its circuit-breaker
+        # state. A large batch must not be able to trip the breaker (degrading live
+        # preflight) or be blocked by it, and must not perturb live /health
+        # reporting. (batch-vs-live breaker isolation doctrine.)
+        if use_breaker and self.breaker.should_skip():
+            log.info(f"Primary reasoning skipped (circuit open, retry in {self.breaker.retry_in:.0f}s)")
+        else:
             try:
                 result = await self.primary.generate(prompt, system, max_tokens)
-                self.breaker.record_success()
-                self.active_label = self.primary.label
-                self.failed_over = False
+                if use_breaker:
+                    self.breaker.record_success()
+                    self.active_label = self.primary.label
+                    self.failed_over = False
                 return result
             except Exception as e:
-                self.breaker.record_failure()
+                if use_breaker:
+                    self.breaker.record_failure()
                 log.warning(f"Primary reasoning failed ({self.primary.label}): {e}")
-        else:
-            log.info(f"Primary reasoning skipped (circuit open, retry in {self.breaker.retry_in:.0f}s)")
 
         # Try fallbacks in order
         for i, fb in enumerate(self.fallbacks):
             try:
                 result = await fb.generate(prompt, system, max_tokens)
-                self.active_label = fb.label
-                self.failed_over = True
+                if use_breaker:
+                    self.active_label = fb.label
+                    self.failed_over = True
                 log.info(f"Reasoning served by fallback [{i}]: {fb.label}")
                 return result
             except Exception as e:
