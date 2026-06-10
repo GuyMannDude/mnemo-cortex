@@ -1,0 +1,11 @@
+# Interim (2026-06-10, pending Opie/AL decision — bus #604):
+# AL's 200-example passport eval corpus is kept LOCAL for now. mnemo-cortex is a
+# PUBLIC repo and these adversarial/toxic files carry synthetic secret-shaped
+# strings (sk-/api-key/token patterns) + example emails. Do NOT commit until
+# AL/Opie confirm they should be published (scrub-verified all synthetic). The
+# README.md + scoring harness (corpus_migrate.py/corpus_score.py) stay tracked.
+# See README.md. To publish: delete this file after the content review.
+adversarial.yaml
+benign.yaml
+edge.yaml
+toxic.yaml
