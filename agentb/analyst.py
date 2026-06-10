@@ -243,6 +243,17 @@ async def analyze_tenant(
             log.error(f"Analyst persist failed for '{agent_id}': {e}")
             stats["failed"] += 1
 
+    # Any per-note failure (embed/persist) leaves the WHOLE batch unmarked so
+    # it retries next cycle — otherwise the failed note's insight is lost
+    # forever (source read-once, note never derived). Retry is idempotent:
+    # deterministic memory_ids + the dedup gate absorb the notes that DID save.
+    if stats["failed"]:
+        log.warning(
+            f"Analyst '{agent_id}': {stats['failed']} note(s) failed to persist — "
+            f"batch left unmarked for retry next cycle"
+        )
+        return stats
+
     # Mark sources processed — including when zero notes came back. "Nothing
     # worth keeping" is an answer; re-reading the same logs nightly is not.
     for path, entry in batch:

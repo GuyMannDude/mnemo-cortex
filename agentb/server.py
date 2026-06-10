@@ -1072,12 +1072,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
             for tenant_key, tenant in tenants._tenants.items():
                 sessions = tenant["sessions"]
+                memory_dir = tenant["memory_dir"]
 
                 # Precache L1 bundles. use_breaker=False: this is background
                 # batch work — it must not trip or be blocked by the breaker
                 # that guards live /context (batch-vs-live isolation doctrine).
                 try:
-                    memory_dir = tenant["memory_dir"]
                     l1 = tenant["l1"]
                     recent = sorted(memory_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:10]
                     for mem_file in recent:
@@ -1110,6 +1110,43 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     archived = await sessions.archive_hot_sessions(_summarize_session)
                     if archived:
                         log.info(f"Archived {len(archived)} hot sessions for '{tenant_key}'")
+                    # Each archived summary becomes a Tier-2 session_log memory
+                    # in VEC — without this a session leaving the HOT tier
+                    # would vanish from recall entirely (its old home was the
+                    # retired L2 write path). The Analyst distills these like
+                    # any other session log on its next pass.
+                    for arch in archived:
+                        if not arch.get("summary"):
+                            continue
+                        try:
+                            mid = hashlib.sha256(
+                                f"archived:{arch['session_id']}".encode()
+                            ).hexdigest()[:16]
+                            entry = {
+                                "id": mid,
+                                "session_id": arch["session_id"],
+                                "agent_id": tenant_key,
+                                "summary": arch["summary"],
+                                "key_facts": arch.get("key_facts", []),
+                                "projects_referenced": [],
+                                "decisions_made": [],
+                                "timestamp": arch.get("archived_at", ""),
+                                "created_at": time.time(),
+                                "source": "tool",
+                                "category": "session_log",
+                                "additional_tags": ["archived-session"],
+                                "schema_version": 3,
+                            }
+                            (memory_dir / f"{mid}.json").write_text(
+                                json.dumps(entry, indent=2, default=str))
+                            emb = await embedder.embed(arch["summary"], use_breaker=False)
+                            tenant["vec"].upsert(
+                                mid, arch["summary"], emb,
+                                source_file=(memory_dir / f"{mid}.json").as_posix(),
+                                created_at=time.time(),
+                            )
+                        except Exception as e:
+                            log.warning(f"Archived-session indexing failed for '{tenant_key}': {e}")
                 except Exception as e:
                     log.warning(f"Session archival error for '{tenant_key}': {e}")
 

@@ -67,7 +67,12 @@ Tier-1 with provenance (`source=inferred`, `classified_by=analyst`,
   (batch-vs-live isolation); fixed latent unbound-variable crash; warm
   session archival finally summarizes (the hook existed, nothing wired it).
 - config: `server.max_body_bytes` was silently ignored when set via YAML.
-- `/context` chunks now carry `memory_id`.
+- `/context` chunks now carry `memory_id`. Behavior note: `total_found`
+  now equals the number of chunks returned (post-rank trim), not the
+  pre-trim pool size.
+- Archived hot sessions stay recallable: each archived summary is
+  persisted as a Tier-2 `session_log` memory in VEC (their old home was
+  the retired L2 write path), where the Analyst distills them later.
 
 **Tests.** 201 passing (was 152): redaction shapes incl. the sk-or-v1
 regression, gate semantics, ranking contracts, analyst lifecycle, probe

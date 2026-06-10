@@ -137,6 +137,29 @@ def test_analyze_dedups_against_existing_memory(tmp_path):
     store.close()
 
 
+def test_note_persist_failure_leaves_sources_unmarked_for_retry(tmp_path):
+    """A note whose embed fails must not cost the batch its retry — otherwise
+    the insight is silently lost while the source is marked read (the exact
+    data-loss path the v4.1 review caught)."""
+    class FailingEmbedder:
+        async def embed(self, text, *, use_breaker=True):
+            raise RuntimeError("embedder down")
+
+    memory_dir = tmp_path / "memory"
+    _seed_log(memory_dir, "log1", "we chose Hetzner for blast radius")
+    store = VecStore(tmp_path / "vec.sqlite")
+
+    stats = asyncio.run(analyze_tenant(
+        "cc", memory_dir, store, ScriptedReasoner(reply=NOTE_REPLY),
+        FailingEmbedder(), config=AnalysisConfig(),
+    ))
+    assert stats["failed"] == 1
+    assert stats["notes_saved"] == 0
+    entry = json.loads((memory_dir / "log1.json").read_text())
+    assert "analyst_processed" not in entry, "failed note persist must be retryable"
+    store.close()
+
+
 def test_llm_failure_leaves_sources_unmarked_for_retry(tmp_path):
     memory_dir = tmp_path / "memory"
     _seed_log(memory_dir, "log1", "something important happened")
