@@ -101,3 +101,71 @@ async def test_resilient_health_check_is_ttl_cached():
     r._hc_at = time.time() - (r._HC_TTL + 1)
     assert await r.health_check() is True
     assert r.primary.health_check.call_count == 2
+
+
+# ── v4.1: the remaining bool(api_key) liars got real probes too ──
+
+from agentb.providers import (
+    AnthropicReasoning, GoogleReasoning, GoogleEmbedding,
+    HuggingFaceEmbedding, _google_auth_ok,
+)
+
+
+class _FakeParamClient(_FakeClient):
+    """Also records query params (Google probes auth via ?key=)."""
+    last_params = None
+    async def get(self, url, *a, headers=None, params=None, **k):
+        _FakeParamClient.last_params = params
+        return await super().get(url, headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_probe_is_real_and_fail_closed():
+    cfg = ProviderConfig(provider="anthropic", model="x", api_key="sk-ant-test")
+    p = AnthropicReasoning(cfg)
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeClient(200)):
+        assert await p.health_check() is True
+    assert _FakeClient.last_url.endswith("/models")
+    assert _FakeClient.last_headers["x-api-key"] == "sk-ant-test"
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeClient(401)):
+        assert await p.health_check() is False
+    with patch("agentb.providers.httpx.AsyncClient",
+               return_value=_FakeClient(raise_exc=OSError("net down"))):
+        assert await p.health_check() is False
+    assert await AnthropicReasoning(
+        ProviderConfig(provider="anthropic", model="x", api_key="")).health_check() is False
+
+
+@pytest.mark.asyncio
+async def test_google_probe_is_real_and_fail_closed():
+    cfg = ProviderConfig(provider="google", model="gemini", api_key="AIza-test")
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeParamClient(200)):
+        assert await _google_auth_ok(cfg) is True
+        assert await GoogleReasoning(cfg).health_check() is True
+        assert await GoogleEmbedding(cfg).health_check() is True
+    assert _FakeParamClient.last_url.endswith("/models")
+    assert _FakeParamClient.last_params["key"] == "AIza-test"
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeParamClient(400)):
+        assert await _google_auth_ok(cfg) is False
+    assert await _google_auth_ok(
+        ProviderConfig(provider="google", model="x", api_key="")) is False
+
+
+@pytest.mark.asyncio
+async def test_huggingface_probe_hosted_and_self_hosted():
+    hosted = HuggingFaceEmbedding(
+        ProviderConfig(provider="huggingface", model="x", api_key="hf_test"))
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeClient(200)):
+        assert await hosted.health_check() is True
+    assert "whoami-v2" in _FakeClient.last_url
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeClient(401)):
+        assert await hosted.health_check() is False
+
+    tei = HuggingFaceEmbedding(
+        ProviderConfig(provider="huggingface", model="x", api_base="http://tei:8080"))
+    with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeClient(200)):
+        assert await tei.health_check() is True
+    assert _FakeClient.last_url == "http://tei:8080/health"
+    # No key, no api_base → fail closed, not "True because hosted is free"
+    bare = HuggingFaceEmbedding(ProviderConfig(provider="huggingface", model="x"))
+    assert await bare.health_check() is False

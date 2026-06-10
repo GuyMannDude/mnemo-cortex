@@ -386,7 +386,39 @@ class AnthropicReasoning(ReasoningProvider):
             return data["content"][0]["text"] if data.get("content") else ""
 
     async def health_check(self) -> bool:
-        return bool(self.config.api_key)
+        # Real auth probe (v4.1) — GET /models is free and 401s on a bad key.
+        # bool(api_key) was the Session-73 trap: a key STRING is not a working
+        # key. Fail closed on any error so a dead primary screams as degraded
+        # instead of hiding behind the fallback.
+        if not self.config.api_key:
+            return False
+        base = self.config.api_base or "https://api.anthropic.com/v1"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{base}/models",
+                    headers={"x-api-key": self.config.api_key,
+                             "anthropic-version": "2023-06-01"})
+            return resp.status_code == 200
+        except Exception as e:
+            log.warning(f"Anthropic auth probe failed: {e}")
+            return False
+
+
+async def _google_auth_ok(config: ProviderConfig) -> bool:
+    """Real auth probe for a Google AI key: GET /models is free and rejects a
+    bad key. Fail closed (see _openrouter_auth_ok for the rationale)."""
+    if not config.api_key:
+        return False
+    base = config.api_base or "https://generativelanguage.googleapis.com/v1beta"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base}/models",
+                                    params={"key": config.api_key, "pageSize": 1})
+        return resp.status_code == 200
+    except Exception as e:
+        log.warning(f"Google auth probe failed: {e}")
+        return False
 
 
 async def _openrouter_auth_ok(config: ProviderConfig) -> bool:
@@ -464,7 +496,7 @@ class GoogleReasoning(ReasoningProvider):
             return ""
 
     async def health_check(self) -> bool:
-        return bool(self.config.api_key)
+        return await _google_auth_ok(self.config)
 
 
 class GoogleEmbedding(EmbeddingProvider):
@@ -484,7 +516,7 @@ class GoogleEmbedding(EmbeddingProvider):
             return resp.json().get("embedding", {}).get("values", [])
 
     async def health_check(self) -> bool:
-        return bool(self.config.api_key)
+        return await _google_auth_ok(self.config)
 
 
 class HuggingFaceEmbedding(EmbeddingProvider):
@@ -505,7 +537,22 @@ class HuggingFaceEmbedding(EmbeddingProvider):
                 return data[0] if isinstance(data[0], list) else data
 
     async def health_check(self) -> bool:
-        return True
+        # Self-hosted TEI endpoint: probe /health (free). Hosted HF inference:
+        # whoami-v2 validates the token without running a model. Fail closed.
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                if self.config.api_base:
+                    resp = await client.get(f"{self.config.api_base}/health")
+                    return resp.status_code == 200
+                if not self.config.api_key:
+                    return False
+                resp = await client.get(
+                    "https://huggingface.co/api/whoami-v2",
+                    headers={"Authorization": f"Bearer {self.config.api_key}"})
+                return resp.status_code == 200
+        except Exception as e:
+            log.warning(f"HuggingFace auth probe failed: {e}")
+            return False
 
 
 # ─────────────────────────────────────────────
