@@ -102,6 +102,11 @@ class CircuitBreaker:
 class ResilientReasoning:
     """Reasoning provider with circuit-breaker fallback chain."""
 
+    # health_check now does a real (network) auth probe, and /health is
+    # unauthenticated + monitor-polled — cache the result so we don't fire an
+    # upstream probe on every hit.
+    _HC_TTL = 30.0
+
     def __init__(self, config: ResilientProviderConfig):
         self.config = config
         self.primary = _create_reasoning(config.primary)
@@ -109,6 +114,8 @@ class ResilientReasoning:
         self.breaker = CircuitBreaker(config.circuit_breaker_threshold, config.circuit_breaker_cooldown)
         self.active_label = self.primary.label
         self.failed_over = False
+        self._hc_result: Optional[bool] = None
+        self._hc_at = 0.0
 
     async def generate(self, prompt: str, system: str = "", max_tokens: int = 2048,
                        *, use_breaker: bool = True) -> str:
@@ -148,7 +155,15 @@ class ResilientReasoning:
         raise RuntimeError("All reasoning providers failed (primary + all fallbacks)")
 
     async def health_check(self) -> bool:
-        return await self.primary.health_check()
+        # Reports PRIMARY health (truthfully — the probe is real now), so a dead
+        # or 401'ing primary surfaces as degraded instead of hiding behind the
+        # fallback. TTL-cached to keep /health cheap.
+        now = time.time()
+        if self._hc_result is not None and (now - self._hc_at) < self._HC_TTL:
+            return self._hc_result
+        self._hc_result = await self.primary.health_check()
+        self._hc_at = now
+        return self._hc_result
 
     @property
     def status(self) -> dict:
@@ -167,6 +182,8 @@ class ResilientEmbedding:
 
     # Floor for adaptive halving on input-too-long. Mirrors vec.embed_with_adaptive_truncation.
     ADAPTIVE_MIN_CHARS = 500
+    # See ResilientReasoning._HC_TTL — cache the real auth probe behind /health.
+    _HC_TTL = 30.0
 
     def __init__(self, config: ResilientProviderConfig):
         self.config = config
@@ -175,6 +192,8 @@ class ResilientEmbedding:
         self.breaker = CircuitBreaker(config.circuit_breaker_threshold, config.circuit_breaker_cooldown)
         self.active_label = self.primary.label
         self.failed_over = False
+        self._hc_result: Optional[bool] = None
+        self._hc_at = 0.0
 
     async def _try_embed_adaptive(self, provider, text: str) -> list[float]:
         """Embed via one provider, halving input on HTTP 400 (context-length).
@@ -235,7 +254,13 @@ class ResilientEmbedding:
         raise RuntimeError("All embedding providers failed (primary + all fallbacks)")
 
     async def health_check(self) -> bool:
-        return await self.primary.health_check()
+        # Reports PRIMARY health truthfully (real probe), TTL-cached for /health.
+        now = time.time()
+        if self._hc_result is not None and (now - self._hc_at) < self._HC_TTL:
+            return self._hc_result
+        self._hc_result = await self.primary.health_check()
+        self._hc_at = now
+        return self._hc_result
 
     @property
     def status(self) -> dict:
@@ -364,6 +389,27 @@ class AnthropicReasoning(ReasoningProvider):
         return bool(self.config.api_key)
 
 
+async def _openrouter_auth_ok(config: ProviderConfig) -> bool:
+    """Real auth probe for an OpenRouter key: GET /key → 200 iff the key
+    authenticates. A non-empty key STRING is not proof it works — that was the
+    Session-73 trap: health_check returned bool(api_key), so /health reported
+    `reasoning healthy/openrouter` while every real call 401'd and silently failed
+    over to ollama, and a transient 401 looked like a dead key for hours. The /key
+    endpoint is credit-free, so probing it is cheap. Any non-200 or network error
+    → unhealthy (fail closed, so the problem screams instead of hiding)."""
+    if not config.api_key:
+        return False
+    base = config.api_base or "https://openrouter.ai/api/v1"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base}/key",
+                                    headers={"Authorization": f"Bearer {config.api_key}"})
+        return resp.status_code == 200
+    except Exception as e:
+        log.warning(f"OpenRouter auth probe failed: {e}")
+        return False
+
+
 class OpenRouterReasoning(ReasoningProvider):
     async def generate(self, prompt: str, system: str = "", max_tokens: int = 2048) -> str:
         import httpx
@@ -382,7 +428,7 @@ class OpenRouterReasoning(ReasoningProvider):
             return resp.json()["choices"][0]["message"]["content"]
 
     async def health_check(self) -> bool:
-        return bool(self.config.api_key)
+        return await _openrouter_auth_ok(self.config)
 
 
 class OpenRouterEmbedding(EmbeddingProvider):
@@ -397,7 +443,7 @@ class OpenRouterEmbedding(EmbeddingProvider):
             return resp.json()["data"][0]["embedding"]
 
     async def health_check(self) -> bool:
-        return bool(self.config.api_key)
+        return await _openrouter_auth_ok(self.config)
 
 
 class GoogleReasoning(ReasoningProvider):

@@ -1,5 +1,34 @@
 # Changelog
 
+## v4.0.3 (2026-06-09) — fix: health_check never tested auth (a dead/401 key reported "healthy")
+
+**The problem.** `OpenRouterReasoning.health_check()` (and the embedding variant)
+returned `bool(self.config.api_key)` — proof a key *string exists*, never that it
+*works*. So `/health` reported `reasoning healthy / active openrouter` while every
+real call 401'd and silently failed over to ollama. In the field this made a
+**transient** OpenRouter 401 look like a *dead key* for hours (the stack was fine,
+running on fallback, but health hid which side was broken). Diagnosed during the
+Session-73 key-rotation incident.
+
+**The fix.**
+- New `_openrouter_auth_ok(config)` helper: a real probe against OpenRouter's
+  **credit-free `GET /key`** endpoint — `200` ⇒ the key authenticates, anything
+  else (401, error, timeout) ⇒ unhealthy (fail *closed*, so the problem screams).
+  Both `OpenRouterReasoning` and `OpenRouterEmbedding` health checks delegate to it.
+- `health_check()` now reports the **primary's true health**, so a dead/401'ing
+  primary surfaces as `degraded` instead of hiding behind the fallback.
+- Because the probe is now a network call and `/health` is unauthenticated +
+  monitor-polled, `ResilientReasoning`/`ResilientEmbedding` **TTL-cache** the result
+  (30s) so health polling can't hammer OpenRouter.
+
+**Not changed.** The other providers' `health_check` (OpenAI/Google/Anthropic/HF)
+still return `bool(api_key)` — none are in our active stack; left for a follow-up
+rather than widening this fix. Ollama's check was already a real ping.
+
+**Tests.** `tests/test_health_check_probe.py` — 200⇒healthy, 401⇒unhealthy,
+empty-key⇒unhealthy-without-network, network-error⇒fail-closed, provider delegation,
+and the Resilient TTL cache (2nd hit served from cache, re-probes after expiry).
+
 ## v4.0.2 (2026-06-09) — fix: the L1 + L2 tiers also bypassed the category filter
 
 **The problem.** v4.0.1 fixed the VEC tier, but a recall re-probe *still* leaked
