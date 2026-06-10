@@ -412,7 +412,7 @@ process.stdin.on("end", () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.10.1",
+  version: "2.11.0",
 });
 
 // ── Developer Dump (v2.9.0, Mnemo v4 Phase 1) ──────────────────
@@ -1825,6 +1825,68 @@ server.registerTool(
       };
     } catch (err) {
       return { content: [{ type: "text", text: `Fact demote error: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+// ── Tools: capture pause gate (v4.1) ───────────────────────────
+// "I'm about to handle a secret — stop recording." Pauses ambient capture
+// server-wide (auto-sync, captureCall flushes, /ingest). Dead-man switch:
+// auto-resumes at expiry even if everyone forgets. Manual mnemo_save still
+// works while paused — saving the *why* of a sensitive op is the intended
+// workflow.
+
+server.registerTool(
+  "mnemo_capture_pause",
+  {
+    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. Deliberate mnemo_save calls still work while paused. Activity during the pause window is DISCARDED, not buffered.",
+    inputSchema: {
+      minutes: z
+        .number()
+        .int()
+        .min(1)
+        .max(240)
+        .optional()
+        .describe("Pause duration in minutes. Default 15."),
+      reason: z
+        .string()
+        .max(200)
+        .optional()
+        .describe("Why capture is paused — shown in /capture/status."),
+    },
+    annotations: { "title": "Pause Auto-Capture", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true },
+  },
+  async ({ minutes, reason }) => {
+    try {
+      const body = { reason: reason || "" };
+      if (minutes !== undefined) body.minutes = minutes;
+      const data = await mnemoRequest("POST", "/capture/pause", body);
+      const mins = Math.round((data.remaining_seconds || 0) / 60);
+      return {
+        content: [{
+          type: "text",
+          text: `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}\nAuto-resumes at expiry. Resume early with mnemo_capture_resume. Manual mnemo_save still works.`,
+        }],
+      };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Capture pause error: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+server.registerTool(
+  "mnemo_capture_resume",
+  {
+    description: "Resume Mnemo's ambient auto-capture after a mnemo_capture_pause (early — it would auto-resume on its own at expiry).",
+    inputSchema: {},
+    annotations: { "title": "Resume Auto-Capture", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true },
+  },
+  async () => {
+    try {
+      await mnemoRequest("POST", "/capture/resume", {});
+      return { content: [{ type: "text", text: "▶ Ambient capture RESUMED." }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Capture resume error: ${err.message}` }], isError: true };
     }
   }
 );
