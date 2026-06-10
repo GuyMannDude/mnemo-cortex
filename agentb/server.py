@@ -1119,6 +1119,17 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         if not arch.get("summary"):
                             continue
                         try:
+                            # v4.1 (review fix): the reasoner-generated warm summary is the
+                            # one LLM-derived write that didn't pass the redaction
+                            # choke point /writeback + /ingest use. Run it through
+                            # the same module so a summary can't reintroduce a
+                            # secret (defense-in-depth: the source already came
+                            # through redacted ingest, but the LLM output is new).
+                            summary, _sum_red = redact_text(arch["summary"])
+                            if sum(_sum_red.values()):
+                                log.warning(
+                                    f"🔒 Redacted {sum(_sum_red.values())} secret(s) in "
+                                    f"warm summary for '{tenant_key}': {dict(_sum_red)}")
                             mid = hashlib.sha256(
                                 f"archived:{arch['session_id']}".encode()
                             ).hexdigest()[:16]
@@ -1126,7 +1137,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                 "id": mid,
                                 "session_id": arch["session_id"],
                                 "agent_id": tenant_key,
-                                "summary": arch["summary"],
+                                "summary": summary,
                                 "key_facts": arch.get("key_facts", []),
                                 "projects_referenced": [],
                                 "decisions_made": [],
@@ -1139,9 +1150,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             }
                             (memory_dir / f"{mid}.json").write_text(
                                 json.dumps(entry, indent=2, default=str))
-                            emb = await embedder.embed(arch["summary"], use_breaker=False)
+                            emb = await embedder.embed(summary, use_breaker=False)
                             tenant["vec"].upsert(
-                                mid, arch["summary"], emb,
+                                mid, summary, emb,
                                 source_file=(memory_dir / f"{mid}.json").as_posix(),
                                 created_at=time.time(),
                             )
