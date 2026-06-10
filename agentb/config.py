@@ -94,6 +94,20 @@ class CacheConfig:
 
 
 @dataclass
+class RankingConfig:
+    # Composite recall ranking (v4.1). Similarity keeps the majority share so
+    # the other signals re-order plausible matches without letting an
+    # irrelevant memory win. Set enabled=False for raw tier-order/similarity
+    # behavior (pre-v4.1).
+    enabled: bool = True
+    w_similarity: float = 0.55
+    w_recency: float = 0.20
+    w_importance: float = 0.15
+    w_access: float = 0.10
+    recency_half_life_days: float = 30.0
+
+
+@dataclass
 class ClassificationConfig:
     # Smart Ingestion (v4.0). When enabled, /writeback classifies uncategorized
     # memories with the reasoning LLM instead of defaulting to "unknown".
@@ -129,6 +143,7 @@ class AgentBConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     classification: ClassificationConfig = field(default_factory=ClassificationConfig)
+    ranking: RankingConfig = field(default_factory=RankingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     data_dir: str = ""
     log_level: str = "info"
@@ -224,6 +239,10 @@ def _parse_config(raw: dict) -> AgentBConfig:
         cl = raw["classification"]
         cfg.classification = ClassificationConfig(
             **{k: cl[k] for k in cl if hasattr(ClassificationConfig, k)})
+    if "ranking" in raw and raw["ranking"]:
+        rk = raw["ranking"]
+        cfg.ranking = RankingConfig(
+            **{k: rk[k] for k in rk if hasattr(RankingConfig, k)})
     if "server" in raw and raw["server"]:
         s = raw["server"]
         cfg.server = ServerConfig(

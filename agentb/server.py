@@ -41,6 +41,7 @@ from agentb.provenance import (
 from agentb.classify import classify_category, reclassify_memory_dir, is_routine_log
 from agentb.redact import redact_text, redact_obj
 from agentb.capture_gate import CaptureGate
+from agentb.ranking import composite_score
 from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
 
@@ -127,6 +128,9 @@ class ContextChunkResponse(BaseModel):
     source: str
     relevance: float
     cache_tier: str
+    # v4.1 — lets callers/tools reference the exact memory (dedup sweeps,
+    # access tooling) without parsing it out of `source`
+    memory_id: Optional[str] = None
     # v3 fields — surfaced when the chunk carries them
     provenance_source: Optional[str] = None
     category: Optional[str] = None
@@ -459,24 +463,35 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         cache_hits = {"HOT": 0, "L1": 0, "VEC": 0, "L2": 0, "L3": 0, "MEM0": 0}
         all_chunks: list[ContextChunk] = []
 
-        # HOT: Search recent session logs first (fastest, keyword matching)
+        # v4.1: tiers no longer fill a sequential budget. Each tier contributes
+        # its filtered candidates to a pool; the pool is re-ranked by the
+        # composite score (similarity + recency + category importance + access
+        # frequency) and trimmed once at the end. Under the old budget fill,
+        # whichever tier ran first owned the result slots regardless of how
+        # weak its matches were.
+
+        # HOT: keyword search over recent live sessions. These are raw session
+        # logs, so they carry category=session_log and obey the same two-tier
+        # default hiding as every other log (opt back in via
+        # exclude_categories=[]). relevance 0.75: a keyword hit in a recent
+        # session is decent signal, but the old hardcoded 0.95 put raw logs
+        # above every semantic match, sight unseen.
         hot_results = sessions.search_hot(req.prompt, max_results=min(3, req.max_results))
-        hot_chunks: list[ContextChunk] = []
         for hr in hot_results:
             content = f"[{hr['timestamp'][:16]}] User: {hr['prompt']}\nAgent: {hr['response']}"
             if hr.get("actions"):
                 content += "\nActions: " + " | ".join(hr["actions"][:3])
             if hr.get("thinking"):
                 content += f"\nThinking: {hr['thinking']}"
-            hot_chunks.append(ContextChunk(
+            c = ContextChunk(
                 content=content,
                 source=f"hot-session:{hr['session_id']}",
-                relevance=0.95,
+                relevance=0.75,
                 cache_tier="HOT",
-            ))
-        hot_kept = [c for c in hot_chunks if keep_chunk(c)][: req.max_results]
-        all_chunks.extend(hot_kept)
-        cache_hits["HOT"] = len(hot_kept)
+                category="session_log",
+            )
+            if keep_chunk(c):
+                all_chunks.append(c)
 
         try:
             query_embedding = await embedder.embed(req.prompt)
@@ -484,21 +499,16 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             raise HTTPException(503, f"Embedding unavailable: {e}")
 
         # L1
-        remaining = req.max_results - len(all_chunks)
-        if remaining > 0:
-            # v4.0.2: disk-truth the category before filtering — L1's cached
-            # category is stale/absent after the reclassification migration, so
-            # session_log leaked. Resolve per-hit (cheap, over-fetch is small),
-            # like the VEC tier, so the trim below counts only kept chunks.
-            # v4.1: resolve_disk_truth returns None for deleted memories.
-            l1_results = [
-                c for c in (resolve_disk_truth(c, memory_dir)
-                            for c in l1.search(query_embedding, top_k=overfetch, persona=persona))
-                if c is not None and keep_chunk(c)
-            ]
-            kept = l1_results[:remaining]
-            all_chunks.extend(kept)
-            cache_hits["L1"] = len(kept)
+        # v4.0.2: disk-truth the category before filtering — L1's cached
+        # category is stale/absent after the reclassification migration, so
+        # session_log leaked. Resolve per-hit (cheap, over-fetch is small),
+        # like the VEC tier. v4.1: resolve_disk_truth returns None for
+        # deleted memories.
+        all_chunks.extend(
+            c for c in (resolve_disk_truth(c, memory_dir)
+                        for c in l1.search(query_embedding, top_k=overfetch, persona=persona))
+            if c is not None and keep_chunk(c)
+        )
 
         # Cross-tier dedup: a memory written via /writeback ends up in BOTH
         # the vec index and the L2/L3 stores. Without this, the same chunk
@@ -506,14 +516,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         seen_memory_ids: set[str] = {c.memory_id for c in all_chunks if c.memory_id}
 
         # VEC: indexed sqlite-vec lookup over written memories
-        remaining = req.max_results - len(all_chunks)
-        if remaining > 0 and vec_store.count() > 0:
+        if vec_store.count() > 0:
             try:
                 vec_hits = vec_store.search(query_embedding, top_k=overfetch)
             except VecDimMismatch as e:
                 log.error(f"vec query dim mismatch: {e}")
                 vec_hits = []
-            vec_chunks: list[ContextChunk] = []
             for hit in vec_hits:
                 if hit.memory_id in seen_memory_ids:
                     continue
@@ -536,7 +544,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     age_days = (time.time() - hit.created_at) / 86400.0
                     if category:
                         stale = compute_stale_warning(category, hit.created_at)
-                vec_chunks.append(ContextChunk(
+                c = ContextChunk(
                     content=hit.text,
                     source=f"memory:{hit.memory_id}",
                     relevance=relevance,
@@ -546,34 +554,29 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     category=category,
                     age_days=age_days,
                     stale_warning=stale,
-                ))
-                seen_memory_ids.add(hit.memory_id)
-            kept = [c for c in vec_chunks if keep_chunk(c)][:remaining]
-            all_chunks.extend(kept)
-            cache_hits["VEC"] = len(kept)
+                )
+                if keep_chunk(c):
+                    all_chunks.append(c)
+                    seen_memory_ids.add(hit.memory_id)
 
-        # L2
-        remaining = req.max_results - len(all_chunks)
-        if remaining > 0:
-            # v4.0.2: resolve disk-truth category first — L2's metadata cache
-            # kept the pre-migration category, so session_log leaked here too.
-            # v4.1: resolve_disk_truth returns None for deleted memories.
-            l2_results = [
-                c for c in (resolve_disk_truth(c, memory_dir)
-                            for c in l2.search(query_embedding, top_k=overfetch, persona=persona))
-                if c is not None and keep_chunk(c)
-                and (not c.memory_id or c.memory_id not in seen_memory_ids)
-            ]
-            kept = l2_results[:remaining]
-            all_chunks.extend(kept)
-            cache_hits["L2"] = len(kept)
-            for c in kept:
-                if c.memory_id:
-                    seen_memory_ids.add(c.memory_id)
+        # L2 (legacy read-only tier — new writes stopped in v4.1)
+        # v4.0.2: resolve disk-truth category first — L2's metadata cache
+        # kept the pre-migration category, so session_log leaked here too.
+        # v4.1: resolve_disk_truth returns None for deleted memories.
+        l2_results = [
+            c for c in (resolve_disk_truth(c, memory_dir)
+                        for c in l2.search(query_embedding, top_k=overfetch, persona=persona))
+            if c is not None and keep_chunk(c)
+            and (not c.memory_id or c.memory_id not in seen_memory_ids)
+        ]
+        all_chunks.extend(l2_results)
+        for c in l2_results:
+            if c.memory_id:
+                seen_memory_ids.add(c.memory_id)
 
-        # L3
-        remaining = req.max_results - len(all_chunks)
-        if remaining > 0:
+        # L3: the expensive disk-walk (embeds candidates) stays an escape
+        # hatch — only runs when the cheap tiers couldn't fill the request.
+        if len(all_chunks) < req.max_results:
             l3_results = [
                 c for c in await l3_scan(memory_dir, query_embedding,
                                           embed_fn=embedder.embed,
@@ -582,17 +585,45 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                           prefilter=passes_metadata)
                 if keep_chunk(c) and (not c.memory_id or c.memory_id not in seen_memory_ids)
             ]
-            kept = l3_results[:remaining]
-            all_chunks.extend(kept)
-            cache_hits["L3"] = len(kept)
-            for c in kept:
-                if c.memory_id:
-                    seen_memory_ids.add(c.memory_id)
+            all_chunks.extend(l3_results)
+
+        # Composite re-rank over the pooled candidates, then a single trim.
+        if config.ranking.enabled:
+            now = time.time()
+
+            def _age(c: ContextChunk) -> Optional[float]:
+                if c.age_days is not None:
+                    return c.age_days
+                if c.created_at:
+                    return (now - float(c.created_at)) / 86400.0
+                return None
+
+            access = vec_store.access_counts([c.memory_id for c in all_chunks if c.memory_id])
+            all_chunks.sort(
+                key=lambda c: composite_score(
+                    similarity=c.relevance,
+                    age_days=_age(c),
+                    category=c.category,
+                    access_count=access.get(c.memory_id, 0) if c.memory_id else 0,
+                    cfg=config.ranking,
+                ),
+                reverse=True,
+            )
+
+        selected = all_chunks[: req.max_results]
+        for c in selected:
+            cache_hits[c.cache_tier] = cache_hits.get(c.cache_tier, 0) + 1
+
+        # Served memories earn access credit — feeds the next recall's ranking.
+        try:
+            vec_store.bump_access([c.memory_id for c in selected if c.memory_id])
+        except Exception as e:
+            log.warning(f"recall_stats bump failed (non-fatal): {e}")
 
         latency = (time.time() - start) * 1000
         return ContextResponse(
-            chunks=[ContextChunkResponse(**c.to_dict()) for c in all_chunks],
-            total_found=len(all_chunks),
+            chunks=[ContextChunkResponse(**c.to_dict()) for c in selected],
+            total_found=len(selected),
             latency_ms=round(latency, 1),
             cache_hits=cache_hits,
             agent_id=req.agent_id,

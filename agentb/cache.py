@@ -59,6 +59,8 @@ class ContextChunk:
     def to_dict(self) -> dict:
         d = {"content": self.content, "source": self.source,
              "relevance": round(self.relevance, 4), "cache_tier": self.cache_tier}
+        if self.memory_id is not None:
+            d["memory_id"] = self.memory_id
         if self.provenance_source is not None:
             d["provenance_source"] = self.provenance_source
         if self.category is not None:

@@ -95,6 +95,15 @@ class VecStore:
                 memory_id TEXT PRIMARY KEY,
                 embedding FLOAT[{EMBED_DIM}]
             );
+
+            -- v4.1: recall access tracking, feeds the composite ranking's
+            -- access-frequency signal. Kept here (not in the memory JSONs)
+            -- so serving a recall never rewrites a memory file.
+            CREATE TABLE IF NOT EXISTS recall_stats (
+                memory_id TEXT PRIMARY KEY,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                last_accessed REAL
+            );
         """)
         self._conn.execute(
             "INSERT OR IGNORE INTO vec_meta(key, value) VALUES (?, ?)",
@@ -183,6 +192,36 @@ class VecStore:
             )
             for r in rows
         ]
+
+    # ── Recall access stats (v4.1, composite ranking signal) ──
+
+    def bump_access(self, memory_ids: Iterable[str]) -> None:
+        ids = [i for i in memory_ids if i]
+        if not ids:
+            return
+        now = time.time()
+        with self._conn:
+            self._conn.executemany(
+                """
+                INSERT INTO recall_stats(memory_id, access_count, last_accessed)
+                VALUES (?, 1, ?)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    access_count = access_count + 1,
+                    last_accessed = excluded.last_accessed
+                """,
+                [(i, now) for i in ids],
+            )
+
+    def access_counts(self, memory_ids: Iterable[str]) -> dict[str, int]:
+        ids = [i for i in memory_ids if i]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT memory_id, access_count FROM recall_stats WHERE memory_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        return {r["memory_id"]: int(r["access_count"]) for r in rows}
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM vec_embeddings").fetchone()
