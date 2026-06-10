@@ -227,6 +227,21 @@ class VecStore:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM vec_embeddings").fetchone()
         return int(row["n"])
 
+    def get_embedding(self, memory_id: str) -> Optional[list[float]]:
+        """Read back a stored vector (v4.1 — analyst dedup needs true cosine
+        against existing memories, not a kNN distance heuristic)."""
+        try:
+            row = self._conn.execute(
+                "SELECT embedding FROM vec_embeddings WHERE memory_id = ?",
+                (memory_id,),
+            ).fetchone()
+        except sqlite3.Error as e:
+            log.warning(f"get_embedding({memory_id}) failed: {e}")
+            return None
+        if row is None:
+            return None
+        return _deserialize_vector(row["embedding"])
+
     def has(self, memory_id: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM vec_embeddings WHERE memory_id = ? LIMIT 1",
@@ -251,6 +266,11 @@ def _serialize_vector(vec: list[float]) -> bytes:
     """sqlite-vec accepts vectors as little-endian float32 byte blobs."""
     import struct
     return struct.pack(f"<{len(vec)}f", *vec)
+
+
+def _deserialize_vector(blob: bytes) -> list[float]:
+    import struct
+    return list(struct.unpack(f"<{len(blob) // 4}f", blob))
 
 
 # ── Mode detection + backfill ──

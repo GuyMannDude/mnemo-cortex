@@ -42,6 +42,7 @@ from agentb.classify import classify_category, reclassify_memory_dir, is_routine
 from agentb.redact import redact_text, redact_obj
 from agentb.capture_gate import CaptureGate
 from agentb.ranking import composite_score
+from agentb.analyst import analyze_tenant
 from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
 
@@ -1060,6 +1061,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # v4 dreamer: reclassify stragglers ~hourly (every 12th 5-min cycle),
             # not every cycle — this is a safety net behind Track 1 + the migration.
             do_reclassify = config.classification.enabled and cycle % 12 == 0
+            # v4.1 Analyst: distill Tier-2 session logs into Tier-1 notes.
+            # Offset half a period from the reclassify pass so the two LLM
+            # batch jobs never land on the same cycle.
+            do_analyze = (
+                config.analysis.enabled
+                and cycle % config.analysis.interval_cycles
+                == config.analysis.interval_cycles // 2
+            )
 
             for tenant_key, tenant in tenants._tenants.items():
                 sessions = tenant["sessions"]
@@ -1130,6 +1139,23 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             )
                     except Exception as e:
                         log.warning(f"Reclassification pass error for '{tenant_key}': {e}")
+
+                # v4.1 Analyst pass — the smart-session-analysis layer.
+                if do_analyze:
+                    try:
+                        astats = await analyze_tenant(
+                            tenant_key, tenant["memory_dir"], tenant["vec"],
+                            reasoner, embedder, config=config.analysis,
+                        )
+                        if astats["scanned"]:
+                            log.info(
+                                f"Analyst '{tenant_key}': read {astats['scanned']} logs → "
+                                f"{astats['notes_saved']} notes saved "
+                                f"({astats['notes_deduped']} already known, "
+                                f"{astats['failed']} failed)"
+                            )
+                    except Exception as e:
+                        log.warning(f"Analyst pass error for '{tenant_key}': {e}")
 
     # ── Passport Lane (Phase 1) ──
     # Five MCP-facing routes under /passport/*. Self-contained: no shared state

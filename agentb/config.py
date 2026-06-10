@@ -118,6 +118,19 @@ class ClassificationConfig:
 
 
 @dataclass
+class AnalysisConfig:
+    # The Analyst (v4.1, Phase 2): periodically distills unprocessed Tier-2
+    # session logs into Tier-1 notes. Conservative by design — see analyst.py.
+    enabled: bool = True
+    interval_cycles: int = 12         # maintenance cycles between passes (~hourly)
+    max_memories_per_cycle: int = 30  # session logs read per pass per tenant
+    max_batch_chars: int = 12000      # LLM input budget per pass
+    per_memory_chars: int = 1200      # truncation per source log
+    max_notes_per_batch: int = 10     # hard cap on notes accepted per pass
+    dedup_similarity: float = 0.90    # cosine vs nearest existing memory
+
+
+@dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 50001
@@ -144,6 +157,7 @@ class AgentBConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     classification: ClassificationConfig = field(default_factory=ClassificationConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     data_dir: str = ""
     log_level: str = "info"
@@ -243,6 +257,10 @@ def _parse_config(raw: dict) -> AgentBConfig:
         rk = raw["ranking"]
         cfg.ranking = RankingConfig(
             **{k: rk[k] for k in rk if hasattr(RankingConfig, k)})
+    if "analysis" in raw and raw["analysis"]:
+        an = raw["analysis"]
+        cfg.analysis = AnalysisConfig(
+            **{k: an[k] for k in an if hasattr(AnalysisConfig, k)})
     if "server" in raw and raw["server"]:
         s = raw["server"]
         cfg.server = ServerConfig(
