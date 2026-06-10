@@ -490,8 +490,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # category is stale/absent after the reclassification migration, so
             # session_log leaked. Resolve per-hit (cheap, over-fetch is small),
             # like the VEC tier, so the trim below counts only kept chunks.
-            l1_results = [c for c in l1.search(query_embedding, top_k=overfetch, persona=persona)
-                          if keep_chunk(resolve_disk_truth(c, memory_dir))]
+            # v4.1: resolve_disk_truth returns None for deleted memories.
+            l1_results = [
+                c for c in (resolve_disk_truth(c, memory_dir)
+                            for c in l1.search(query_embedding, top_k=overfetch, persona=persona))
+                if c is not None and keep_chunk(c)
+            ]
             kept = l1_results[:remaining]
             all_chunks.extend(kept)
             cache_hits["L1"] = len(kept)
@@ -553,10 +557,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         if remaining > 0:
             # v4.0.2: resolve disk-truth category first — L2's metadata cache
             # kept the pre-migration category, so session_log leaked here too.
+            # v4.1: resolve_disk_truth returns None for deleted memories.
             l2_results = [
                 c for c in (resolve_disk_truth(c, memory_dir)
                             for c in l2.search(query_embedding, top_k=overfetch, persona=persona))
-                if keep_chunk(c) and (not c.memory_id or c.memory_id not in seen_memory_ids)
+                if c is not None and keep_chunk(c)
+                and (not c.memory_id or c.memory_id not in seen_memory_ids)
             ]
             kept = l2_results[:remaining]
             all_chunks.extend(kept)
@@ -1025,7 +1031,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             do_reclassify = config.classification.enabled and cycle % 12 == 0
 
             for tenant_key, tenant in tenants._tenants.items():
-                # Precache L1 bundles
+                sessions = tenant["sessions"]
+
+                # Precache L1 bundles. use_breaker=False: this is background
+                # batch work — it must not trip or be blocked by the breaker
+                # that guards live /context (batch-vs-live isolation doctrine).
                 try:
                     memory_dir = tenant["memory_dir"]
                     l1 = tenant["l1"]
@@ -1038,31 +1048,28 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         bid = hashlib.sha256(content.encode()).hexdigest()[:12]
                         if bid in {b.get("id") for b in l1.bundles}:
                             continue
-                        embedding = await embedder.embed(content)
+                        embedding = await embedder.embed(content, use_breaker=False)
                         mem_id = mem.get("id", mem_file.stem)
                         await l1.add(content, f"precache:{mem_id}", embedding,
                                      memory_id=mem_id, category=mem.get("category"))
                 except Exception as e:
                     log.warning(f"Precache error for '{tenant_key}': {e}")
 
-                # Archive expired hot sessions → warm
+                # Archive expired hot sessions → warm, summarizing each with
+                # the reasoner so warm sessions carry a real summary instead of
+                # the empty string the unwired hook used to leave behind.
+                # use_breaker=False: background batch work.
+                async def _summarize_session(transcript: str) -> str:
+                    return await reasoner.generate(
+                        transcript[-8000:],
+                        system=("Summarize this agent session in 2-4 dense sentences: "
+                                "what was worked on, decided, and shipped. No fluff."),
+                        max_tokens=300, use_breaker=False,
+                    )
                 try:
-                    sessions = tenant["sessions"]
-                    archived = sessions.archive_hot_sessions()
+                    archived = await sessions.archive_hot_sessions(_summarize_session)
                     if archived:
                         log.info(f"Archived {len(archived)} hot sessions for '{tenant_key}'")
-                        # Index archived summaries into L2
-                        for arch in archived:
-                            if arch.get("summary"):
-                                try:
-                                    emb = await embedder.embed(arch["summary"])
-                                    l2 = tenant["l2"]
-                                    await l2.add(arch["summary"],
-                                                f"archived-session:{arch['session_id']}",
-                                                emb,
-                                                metadata={"key_facts": arch.get("key_facts", [])})
-                                except Exception as e:
-                                    log.warning(f"Failed to index archived session: {e}")
                 except Exception as e:
                     log.warning(f"Session archival error for '{tenant_key}': {e}")
 

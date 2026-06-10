@@ -169,16 +169,23 @@ def test_resolve_disk_truth_overrides_stale_chunk_category(tmp_path):
     assert out.category == "session_log"   # disk wins
     assert out.provenance_source == "tool"
 
-    # No memory_id / missing file → no-op, never raises.
+    # No memory_id (legacy entry), clean content → untouched, never raises.
     bare = ContextChunk("y", "l1-cache", 0.9, "L1")
     assert resolve_disk_truth(bare, mem_dir).category is None
+    # No memory_id but auto-capture-shaped content → tagged session_log so the
+    # default two-tier hiding applies to legacy cache entries too (v4.1).
+    noisy = ContextChunk("[AUTO-CAPTURE] 3 tool calls: ...", "l2-memory", 0.9, "L2")
+    assert resolve_disk_truth(noisy, mem_dir).category == "session_log"
+    # memory_id with NO file on disk = deleted memory → dropped (v4.1).
+    # The old no-op here is how purged [AUTO-CAPTURE] rows kept resurfacing
+    # through L2 after the June-9 dedup sweep.
     ghost = ContextChunk("z", "l2-memory", 0.9, "L2", memory_id="nope")
-    assert resolve_disk_truth(ghost, mem_dir).memory_id == "nope"  # untouched
+    assert resolve_disk_truth(ghost, mem_dir) is None
 
 
 def test_l1_add_search_round_trips_memory_id_and_category(tmp_path):
     l1 = L1Cache(tmp_path / "l1", CacheConfig())
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         l1.add("a bundle", "precache:m1", list(VEC), memory_id="m1", category="topology")
     )
     hits = l1.search(list(VEC), top_k=3)

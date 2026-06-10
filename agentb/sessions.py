@@ -254,10 +254,11 @@ class SessionManager:
 
         return []
 
-    def archive_hot_sessions(self, summarize_fn=None) -> list[dict]:
+    async def archive_hot_sessions(self, summarize_fn=None) -> list[dict]:
         """
         Move expired hot sessions to warm storage.
-        Optionally summarize them using the reasoning provider.
+        Optionally summarize them with `summarize_fn` — an ASYNC callable
+        (transcript str) -> str | {"summary": ..., "key_facts": [...]}.
         Returns list of archived sessions.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.config.hot_days)
@@ -304,7 +305,7 @@ class SessionManager:
                         f"User: {e['prompt']}\nAssistant: {e['response']}"
                         for e in exchanges[-20:]  # last 20 exchanges max
                     )
-                    summary_result = summarize_fn(transcript)
+                    summary_result = await summarize_fn(transcript)
                     if isinstance(summary_result, dict):
                         summary_data["summary"] = summary_result.get("summary", "")
                         summary_data["key_facts"] = summary_result.get("key_facts", [])

@@ -231,6 +231,9 @@ def _parse_config(raw: dict) -> AgentBConfig:
             port=s.get("port", 50001),
             cors_origins=s.get("cors_origins", ["*"]),
             auth_token=_resolve_env(s.get("auth_token", "")),
+            # was silently ignored from YAML before v4.1 — the dataclass
+            # default always won
+            max_body_bytes=s.get("max_body_bytes", ServerConfig.max_body_bytes),
         )
     if "data_dir" in raw:
         cfg.data_dir = _resolve_env(raw["data_dir"])

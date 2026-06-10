@@ -72,7 +72,7 @@ class ContextChunk:
         return d
 
 
-def resolve_disk_truth(chunk: ContextChunk, memory_dir: Path) -> ContextChunk:
+def resolve_disk_truth(chunk: ContextChunk, memory_dir: Path) -> Optional[ContextChunk]:
     """Re-read a chunk's canonical category/source from its memory JSON on disk.
 
     L1/L2 cache the category at write time; the v4.0 reclassification migration
@@ -80,14 +80,25 @@ def resolve_disk_truth(chunk: ContextChunk, memory_dir: Path) -> ContextChunk:
     so session_log leaked past the /context category filter (which treats
     category=None as "do not exclude"). Mutates the chunk in place with disk-truth
     metadata, mirroring the v4.0.1 VEC-tier fix, so the filter sees the same
-    category the L3 disk-walk would. No-op when the chunk has no memory_id or its
-    file is gone (pre-v3 or evicted records).
+    category the L3 disk-walk would.
+
+    v4.1 contract changes:
+      - memory_id present but JSON gone → the memory was DELETED (purge sweep,
+        migration). Returns None so the caller drops it — the June-9 dedup sweep
+        purged [AUTO-CAPTURE] rows from vec + disk, yet they kept resurfacing
+        through the L2 cache because this used to no-op.
+      - no memory_id at all (legacy pre-v3 cache entry) → the content itself is
+        the only signal; auto-capture/auto-sync shapes get tagged session_log so
+        the default two-tier hiding finally applies to them.
     """
     if not chunk.memory_id:
+        from agentb.classify import is_routine_log
+        if is_routine_log(chunk.content, None):
+            chunk.category = "session_log"
         return chunk
     mem_path = memory_dir / f"{chunk.memory_id}.json"
     if not mem_path.exists():
-        return chunk
+        return None
     try:
         mem = json.loads(mem_path.read_text())
     except Exception:

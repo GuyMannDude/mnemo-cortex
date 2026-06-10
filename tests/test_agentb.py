@@ -810,7 +810,7 @@ class TestSessionManager:
         sm._current_session_id = None
         sm._current_session_file = None
         time.sleep(0.05)
-        archived = sm.archive_hot_sessions()
+        archived = asyncio.run(sm.archive_hot_sessions())
         assert len(archived) == 1
         assert sm.stats["hot_sessions"] == 0
 
