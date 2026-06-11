@@ -14,7 +14,7 @@ dropping the ~1,238 orphaned/deleted L2 entries that used to mask it.
 
 **The fix (interim, until #468).**
 - `l3_scan` now walks **newest-first** and caps the number of EMBEDS at
-  `cache.l3_max_candidates` (default **150**). Recency order means the bounded sample
+  `cache.l3_max_candidates` (default **80**). Recency order means the bounded sample
   keeps the most-recent (usually most-relevant) candidates, not an arbitrary
   filename-hash slice. Cheap reads/prefilter are not capped — only the expensive embed.
   `None` = uncapped (legacy callers / small stores). Wired through `/context`.

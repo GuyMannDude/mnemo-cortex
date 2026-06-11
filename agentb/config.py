@@ -97,7 +97,7 @@ class CacheConfig:
     # to L3 on every query → 20s, past the bridge timeout. Cap the embeds (recency
     # first) so L3 stays bounded. Interim until vec category-pushdown (#468) keeps
     # session_log out of VEC's top-k so L3 isn't reached at all.
-    l3_max_candidates: int = 150
+    l3_max_candidates: int = 80
 
 
 @dataclass
