@@ -91,6 +91,15 @@ MNEMO_DREAM_DISCORD_WEBHOOK = os.getenv("MNEMO_DREAM_DISCORD_WEBHOOK", "")
 # Disable Stage 0.5 extraction entirely (e.g. to debug pure-synthesis runs)
 DREAM_SKIP_FACTS = os.getenv("DREAM_SKIP_FACTS", "").lower() in ("1", "true", "yes")
 
+# Cap per-agent section size. One high-volume agent (opie's auto-capture has hit
+# ~19MB / ~4.9M tokens) alone exceeds the synthesis model's 1M-token context
+# window and 400s the whole run — the per-agent map-reduce split isn't enough
+# when a SINGLE agent overflows. Recency-first: a "since last dream" synthesis
+# cares most about the newest entries, so the oldest are dropped first. Env-
+# overridable. ~2.5M chars ≈ 600K tokens, comfortably under 1M with room for the
+# system prompt + output; the adaptive-halving retry covers token-density spikes.
+MAX_AGENT_SECTION_CHARS = int(os.getenv("MNEMO_DREAM_MAX_AGENT_SECTION_CHARS", "2500000"))
+
 # Git-sync wedge (opt-in). When enabled, the Dreamer reports whether its watched
 # git checkouts have uncommitted changes, unpushed commits, or are behind their
 # remote — catching the "edited a repo, forgot to push, next machine pulls stale"
@@ -332,21 +341,84 @@ def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 40
     return result["choices"][0]["message"]["content"], result.get("usage", {})
 
 
+def _call_openrouter_adaptive(
+    system_prompt: str, user_content: str, max_tokens: int = 4096, min_chars: int = 20000
+) -> tuple[str, dict]:
+    """_call_openrouter, but halve the input and retry on a context-length 400.
+
+    The per-agent char cap (MAX_AGENT_SECTION_CHARS) prevents overflow in the
+    normal case; this is the belt-and-suspenders for token-density spikes —
+    path/UUID/hash-dense content tokenizes far denser than a char estimate
+    predicts (the adaptive-truncation doctrine). Keeps the TAIL on each halving
+    (sections are chronological, so the tail is the most recent content).
+    """
+    content = user_content
+    while True:
+        try:
+            return _call_openrouter(system_prompt, content, max_tokens=max_tokens)
+        except RuntimeError as e:
+            msg = str(e).lower()
+            is_ctx = "context length" in msg or "maximum context" in msg or "context_length" in msg
+            if is_ctx and len(content) > min_chars:
+                new_len = max(min_chars, len(content) // 2)
+                log.warning(
+                    f"  context-length 400 at {len(content):,} chars; retrying at "
+                    f"{new_len:,} (keeping most recent)"
+                )
+                content = content[-new_len:]
+                continue
+            raise
+
+
+def _render_memory(m: dict) -> str:
+    """Format one memory entry as a chronological block for the LLM."""
+    ts = m.get("timestamp", "?")[:19]
+    parts = [f"\n## [{ts}] session={m.get('session_id', '?')}", m["summary"]]
+    if m["key_facts"]:
+        parts.append("Key facts:")
+        for fact in m["key_facts"]:
+            if fact != "auto_capture_flush":
+                parts.append(f"  - {fact}")
+    if m.get("decisions"):
+        parts.append("Decisions: " + "; ".join(m["decisions"]))
+    return "\n".join(parts)
+
+
 def _build_agent_section(agent_id: str, agent_memories: list[dict]) -> str:
-    """Format one agent's memories as a chronological brief for the LLM."""
-    lines = [f"# Agent: {agent_id} ({len(agent_memories)} entries)"]
-    for m in sorted(agent_memories, key=lambda x: x.get("timestamp", "")):
-        ts = m.get("timestamp", "?")[:19]
-        lines.append(f"\n## [{ts}] session={m.get('session_id', '?')}")
-        lines.append(m["summary"])
-        if m["key_facts"]:
-            lines.append("Key facts:")
-            for fact in m["key_facts"]:
-                if fact != "auto_capture_flush":
-                    lines.append(f"  - {fact}")
-        if m.get("decisions"):
-            lines.append("Decisions: " + "; ".join(m["decisions"]))
-    return "\n".join(lines)
+    """Format one agent's memories as a chronological brief for the LLM.
+
+    Capped at MAX_AGENT_SECTION_CHARS, keeping the MOST RECENT entries — a single
+    high-volume agent (opie's auto-capture has reached ~19MB) would otherwise
+    blow past the model's context window and 400 the whole run. Kept entries are
+    still rendered chronologically. The drop is announced in the header and
+    logged (never a silent truncation).
+    """
+    ordered = sorted(agent_memories, key=lambda x: x.get("timestamp", ""))
+    rendered = [(m, _render_memory(m)) for m in ordered]
+    total = sum(len(r) for _, r in rendered)
+
+    dropped = 0
+    if total > MAX_AGENT_SECTION_CHARS:
+        # Drop oldest-first until under budget (keep the newest entries).
+        kept_rev: list[tuple[dict, str]] = []
+        budget = MAX_AGENT_SECTION_CHARS
+        for m, r in reversed(rendered):
+            if budget - len(r) < 0:
+                break
+            kept_rev.append((m, r))
+            budget -= len(r)
+        dropped = len(rendered) - len(kept_rev)
+        rendered = list(reversed(kept_rev))
+        log.warning(
+            f"  [{agent_id}] section {total:,} chars > {MAX_AGENT_SECTION_CHARS:,} cap — "
+            f"dropped {dropped} oldest of {len(ordered)} entries (kept newest {len(rendered)})"
+        )
+
+    header = f"# Agent: {agent_id} ({len(rendered)} entries"
+    if dropped:
+        header += f"; {dropped} older entries omitted to fit the {MAX_AGENT_SECTION_CHARS:,}-char cap"
+    header += ")"
+    return "\n".join([header] + [r for _, r in rendered])
 
 
 def synthesize(memories: list[dict], dry_run: bool = False) -> str:
@@ -381,19 +453,27 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         section = _build_agent_section(agent_id, agent_memories)
         log.info(f"  stage 1 [{agent_id}]: {len(agent_memories)} entries, {len(section):,} chars")
         try:
-            brief, usage = _call_openrouter(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=2048)
+            brief, usage = _call_openrouter_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=2048)
         except RuntimeError as e:
-            log.error(f"  stage 1 [{agent_id}] failed: {e}")
-            sys.exit(1)
+            # Isolate per-agent failures: one agent's LLM error must not abort the
+            # whole run and suppress the notification that the OTHER agents' good
+            # dreams should fire. Skip this agent, keep going. (Pre-fix this was
+            # sys.exit(1) — opie's 19MB section 400'd and killed every run since.)
+            log.error(f"  stage 1 [{agent_id}] failed, skipping this agent: {e}")
+            continue
         per_agent_briefs.append(f"## Agent {agent_id} brief\n\n{brief}")
         total_prompt_tokens += usage.get("prompt_tokens", 0)
         total_completion_tokens += usage.get("completion_tokens", 0)
+
+    if not per_agent_briefs:
+        log.error("  stage 1: every agent failed — no briefs to roll up, aborting run")
+        sys.exit(1)
 
     # Stage 2: cross-agent rollup
     rollup_input = "# Per-agent briefs to synthesize\n\n" + "\n\n---\n\n".join(per_agent_briefs)
     log.info(f"  stage 2 rollup: {len(per_agent_briefs)} briefs, {len(rollup_input):,} chars")
     try:
-        dream_text, usage = _call_openrouter(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=4096)
+        dream_text, usage = _call_openrouter_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=4096)
     except RuntimeError as e:
         log.error(f"  stage 2 failed: {e}")
         sys.exit(1)
@@ -563,7 +643,7 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     section = _build_agent_section(agent_id, extraction_memories)
     log.info(f"  stage 0.5 [{agent_id}]: extracting facts from {len(extraction_memories)}/{len(agent_memories)} entries (filtered auto-capture), {len(section):,} chars")
     try:
-        raw, usage = _call_openrouter(FACT_EXTRACTION_SYSTEM_PROMPT, section, max_tokens=4096)
+        raw, usage = _call_openrouter_adaptive(FACT_EXTRACTION_SYSTEM_PROMPT, section, max_tokens=4096)
     except RuntimeError as e:
         log.error(f"  stage 0.5 [{agent_id}] LLM call failed: {e}")
         return []

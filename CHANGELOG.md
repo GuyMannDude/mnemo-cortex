@@ -1,5 +1,32 @@
 # Changelog
 
+## v4.2.1 (2026-06-11) — Dreamer (mnemo-dream.py): stop one big agent from killing the nightly run
+
+**Problem (found via bus #616 — "no Discord beeps overnight").** The nightly Dreamer
+(`mnemo-dream.py`, cron 3:15) had silently been failing since ~June 9; its last successful
+dream was June 8. Two faults, compounding:
+- **One agent's volume overflowed the model.** Stage-1 synthesis builds one section per
+  agent and sends it to a 1M-token model. opie's auto-capture had grown to **2081 entries /
+  ~19MB / ~4.9M tokens** — a *single* agent's section blew past the context window and 400'd.
+  The existing per-agent map-reduce split doesn't help when one agent alone overflows.
+- **A per-agent failure aborted the whole run.** Stage-1 caught the 400 and then `sys.exit(1)`
+  — so opie's failure killed the run before cc/dave/rocky's *successful* dreams could roll up
+  or fire the notification. That's why there were no beeps: the run died before notifying
+  (the Discord hook itself was fine — it posted a git-sync beep as recently as June 8). The
+  stuck "last dream" timestamp also meant each retry harvested a larger window → death spiral.
+
+**Fix.**
+- `_build_agent_section` is now capped at `MNEMO_DREAM_MAX_AGENT_SECTION_CHARS` (default
+  2.5M chars ≈ 600K tokens), **recency-first** — oldest entries dropped to fit, and the drop
+  is announced in the section header and logged (never silent).
+- New `_call_openrouter_adaptive` halves the input and retries on a context-length 400
+  (belt-and-suspenders for token-density spikes; keeps the most-recent tail). Used by stage
+  0.5, stage 1, and the rollup.
+- Stage 1 now **skips** a failed agent (`continue`) instead of `sys.exit(1)`; only aborts if
+  *every* agent fails. One agent's failure can no longer suppress the others' notification.
+
+Note: this is the cron script only — no server/API change, `/health` stays 4.2.0.
+
 ## v4.2.0 (2026-06-10) — VEC category pushdown (#468): the real fix for the L3 fall-through
 
 **The problem.** The sqlite-vec (VEC) tier was **category-blind** — `search()` returned the
