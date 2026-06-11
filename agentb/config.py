@@ -98,6 +98,11 @@ class CacheConfig:
     # first) so L3 stays bounded. Interim until vec category-pushdown (#468) keeps
     # session_log out of VEC's top-k so L3 isn't reached at all.
     l3_max_candidates: int = 80
+    # #468: category-filtered VEC search over-fetches top_k * this from the kNN
+    # then filters by the category column, so a session_log-dominated store still
+    # returns enough on-category hits to fill the budget without the L3 disk-walk.
+    # Bump for very thin categories (e.g. topology ~5-9% of a store).
+    vec_category_overfetch_multiplier: int = 5
 
 
 @dataclass

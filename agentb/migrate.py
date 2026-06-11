@@ -105,19 +105,31 @@ async def _run_one(agent_id: str, data_dir: Path, *, dry_run: bool, backup: bool
         backup_path = _backup(data_dir)
         console.print(f"  [dim]{agent_id}: backed up → {backup_path}[/]")
 
+    # #468: keep vec_sources.category in step with the JSON as we reclassify, so
+    # the search pre-filter column never goes stale. Opened only for real runs.
+    from agentb.vec import VecStore
+    vec_path = data_dir / "vec_index.sqlite"
+    store = VecStore(vec_path) if (vec_path.exists() and not dry_run) else None
+    on_reclassified = store.update_category if store is not None else None
+
     total = len(list(memory_dir.glob("*.json")))
-    with Progress(
-        TextColumn("[cyan]" + agent_id + "[/]"), BarColumn(),
-        TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
-        console=console, transient=True,
-    ) as progress:
-        task = progress.add_task("reclassify", total=total)
-        stats = await reclassify_memory_dir(
-            memory_dir, reasoner,
-            limit=None, max_input_chars=max_input_chars,
-            include_routine=include_routine, dry_run=dry_run, use_breaker=False,
-            on_progress=lambda done, tot: progress.update(task, completed=done, total=tot),
-        )
+    try:
+        with Progress(
+            TextColumn("[cyan]" + agent_id + "[/]"), BarColumn(),
+            TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
+            console=console, transient=True,
+        ) as progress:
+            task = progress.add_task("reclassify", total=total)
+            stats = await reclassify_memory_dir(
+                memory_dir, reasoner,
+                limit=None, max_input_chars=max_input_chars,
+                include_routine=include_routine, dry_run=dry_run, use_breaker=False,
+                on_progress=lambda done, tot: progress.update(task, completed=done, total=tot),
+                on_reclassified=on_reclassified,
+            )
+    finally:
+        if store is not None:
+            store.close()
     stats["agent"] = agent_id
     stats["before"] = before
     stats["backup"] = str(backup_path) if backup_path else None
@@ -175,4 +187,44 @@ def migrate_reclassify(agent_ids: list[str], *, dry_run: bool, backup: bool,
         include_routine=include_routine, purge_noise=purge_noise, config=config,
     ))
     render_results(results, dry_run)
+    return results
+
+
+# ─────────────────────────────────────────────
+#  #468 — one-time vec_sources.category backfill
+# ─────────────────────────────────────────────
+
+def migrate_vec_backfill(agent_ids: list[str], *, config=None) -> list[dict]:
+    """Populate vec_sources.category from disk truth for each agent's store.
+
+    The deploy step for #468: existing stores get a NULL category column after
+    the additive ALTER. This walks each indexed memory's JSON and writes its
+    category to the column — NO embedding, just metadata, so it's fast and safe
+    to run while the server is up (single-row UPDATEs). Idempotent; re-running
+    just re-syncs. Backs up the sqlite file first (cheap insurance).
+    """
+    from agentb.vec import VecStore, backfill_categories
+    config = config or load_config()
+    results = []
+    for agent_id in agent_ids:
+        data_dir = get_agent_data_dir(config, agent_id)
+        memory_dir = data_dir / "memory"
+        vec_path = data_dir / "vec_index.sqlite"
+        if not vec_path.exists() or not memory_dir.is_dir():
+            console.print(f"  [yellow]{agent_id}: no vec index / memory dir — skipping[/]")
+            results.append({"agent": agent_id, "skipped": True})
+            continue
+        backup_path = _backup(data_dir)
+        console.print(f"  [dim]{agent_id}: backed up → {backup_path}[/]")
+        store = VecStore(vec_path)
+        try:
+            stats = backfill_categories(store, memory_dir)
+        finally:
+            store.close()
+        stats["agent"] = agent_id
+        results.append(stats)
+        console.print(
+            f"  [green]{agent_id}[/]: {stats['updated']} rows synced from disk, "
+            f"{stats['missing_json']} indexed rows with no JSON"
+        )
     return results

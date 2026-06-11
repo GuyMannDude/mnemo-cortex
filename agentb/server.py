@@ -333,7 +333,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        log.info(f"⚡ Mnemo Cortex v4.1.1 — I remember everything so your agent doesn't have to.")
+        log.info(f"⚡ Mnemo Cortex v4.2.0 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
         log.info(f"  Data dir:  {config.data_dir}")
@@ -346,7 +346,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.1.1",
+        version="4.2.0",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -399,7 +399,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.1.1",
+            version="4.2.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -516,10 +516,27 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # appears once per tier and burns max_results budget.
         seen_memory_ids: set[str] = {c.memory_id for c in all_chunks if c.memory_id}
 
-        # VEC: indexed sqlite-vec lookup over written memories
+        # VEC: indexed sqlite-vec lookup over written memories.
+        # #468: push the category filter INTO the kNN. A session_log-dominated
+        # store (cc) otherwise hands back an all-hidden top-k → every category
+        # filter falls through to the slow L3 disk-walk. With the category
+        # column, search over-fetches and filters in-index so VEC fills the
+        # budget. keep_chunk below still disk-truths every hit (final authority).
+        # Note the over-fetch compounds: top_k here is already `overfetch`
+        # (3×max_results, for the post-filter trim), and search multiplies THAT
+        # by the multiplier — so the kNN fetches ~15×max_results candidates when
+        # a category filter is active. Intentional headroom for thin categories;
+        # the kNN cost of a larger k is negligible and the handler trims to
+        # max_results regardless.
         if vec_store.count() > 0:
             try:
-                vec_hits = vec_store.search(query_embedding, top_k=overfetch)
+                vec_hits = vec_store.search(
+                    query_embedding,
+                    top_k=overfetch,
+                    include_category=req.category,
+                    exclude_categories=effective_exclude,
+                    overfetch_multiplier=config.cache.vec_category_overfetch_multiplier,
+                )
             except VecDimMismatch as e:
                 log.error(f"vec query dim mismatch: {e}")
                 vec_hits = []
@@ -577,7 +594,21 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         # L3: the expensive disk-walk (embeds candidates) stays an escape
         # hatch — only runs when the cheap tiers couldn't fill the request.
-        if len(all_chunks) < req.max_results:
+        # #468: when the caller pinned a specific category AND the VEC tier
+        # actually served on-category hits, VEC already did the category-filtered
+        # over-fetch that L3 would duplicate — a thin category genuinely has few
+        # memories, and a partial result beats the multi-second disk-walk (which
+        # on a large store can exceed the bridge timeout). Return partial instead.
+        # Gate on a real VEC contribution, NOT just "category set + index
+        # non-empty": in the un-backfilled deploy window every column is NULL, so
+        # an include filter matches nothing and VEC returns zero — there L3 is
+        # still the escape hatch that finds the memories via disk-truth. Every
+        # VEC chunk that reached all_chunks already passed keep_chunk, so when a
+        # category is pinned a VEC chunk here is by definition on-category.
+        vec_served_category = bool(req.category) and any(
+            c.cache_tier == "VEC" for c in all_chunks
+        )
+        if len(all_chunks) < req.max_results and not vec_served_category:
             l3_results = [
                 c for c in await l3_scan(memory_dir, query_embedding,
                                           embed_fn=embedder.embed,
@@ -804,6 +835,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     embedding,
                     source_file=(memory_dir / f"{memory_id}.json").as_posix(),
                     created_at=time.time(),
+                    category=category_used,  # #468: mirror category into the search pre-filter column
                 )
             except VecDimMismatch as e:
                 # Dim mismatch is a configuration/contract bug, not a runtime
@@ -1156,6 +1188,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                 mid, summary, emb,
                                 source_file=(memory_dir / f"{mid}.json").as_posix(),
                                 created_at=time.time(),
+                                category="session_log",  # #468: matches the entry's category
                             )
                         except Exception as e:
                             log.warning(f"Archived-session indexing failed for '{tenant_key}': {e}")
@@ -1175,11 +1208,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 # breaker (batch-vs-live isolation); capped per cycle.
                 if do_reclassify:
                     try:
+                        _vec = tenant["vec"]
                         rstats = await reclassify_memory_dir(
                             tenant["memory_dir"], reasoner,
                             limit=config.classification.dreamer_max_per_cycle,
                             max_input_chars=config.classification.max_input_chars,
                             use_breaker=False,
+                            # #468: keep vec_sources.category in step with the JSON
+                            on_reclassified=_vec.update_category,
                         )
                         if rstats["reclassified"]:
                             log.info(

@@ -157,15 +157,18 @@ async def reclassify_memory_dir(
     dry_run: bool = False,
     use_breaker: bool = False,
     on_progress=None,
+    on_reclassified=None,
 ) -> dict:
     """Walk a tenant's memory dir and reclassify the entries that need it.
 
     A candidate is any memory whose category is `unknown`/missing, that carries
     `needs_reclassification`, or (when include_routine) is a routine log not yet
     tagged `session_log`. Only the JSON `category` (+ `classified_by`) field is
-    rewritten — embeddings and `vec_sources` are untouched because category is
-    disk-only metadata read at recall time. Shared by the nightly dreamer pass
-    (limit-capped) and the `migrate reclassify` CLI (full sweep with backup).
+    rewritten — embeddings are never recomputed. As of #468, category is also a
+    `vec_sources` pre-filter column; pass `on_reclassified(memory_id, new_cat)`
+    so the caller can refresh that column (otherwise category-filtered recall
+    would see a stale value). Shared by the nightly dreamer pass (limit-capped)
+    and the `migrate reclassify` CLI (full sweep with backup).
 
     `on_progress(done, total)` is called as the scan advances. Returns stats:
     {scanned, reclassified, skipped, failed, by_category, by_method}.
@@ -222,6 +225,17 @@ async def reclassify_memory_dir(
         except Exception as e:
             stats["failed"] += 1
             log.error(f"Failed to write reclassified memory {path}: {e}")
+            continue
+        # #468: the JSON category is now mirrored in vec_sources.category as a
+        # search pre-filter. Notify the caller so it can refresh the column —
+        # a stale column would wrongly exclude this memory from category recall.
+        # Only fire after the disk write succeeds (the column tracks disk truth).
+        if on_reclassified is not None:
+            memory_id = entry.get("id") or path.stem
+            try:
+                on_reclassified(memory_id, new_cat)
+            except Exception as e:
+                log.warning(f"on_reclassified hook failed for {memory_id}: {e}")
     if on_progress:
         on_progress(total, total)
     return stats

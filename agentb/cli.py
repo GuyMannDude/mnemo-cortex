@@ -1248,5 +1248,31 @@ def migrate_reclassify_cmd(agents, all_agents, dry_run, no_backup, unknown_only,
     )
 
 
+@migrate.command("vec-backfill")
+@click.option("--agent", "-a", "agents", multiple=True, help="Agent id (repeatable).")
+@click.option("--all", "all_agents", is_flag=True, help="Every agent store found on disk.")
+def migrate_vec_backfill_cmd(agents, all_agents):
+    """Populate vec_sources.category from disk (#468 one-time deploy step)."""
+    from agentb.config import load_config
+    from agentb.migrate import migrate_vec_backfill
+
+    config = load_config()
+
+    if all_agents:
+        base = Path(config.data_dir or DATA_DIR) / "agents"
+        agent_ids = sorted(
+            d.name for d in base.glob("*") if (d / "memory").is_dir()
+        ) if base.exists() else []
+    else:
+        agent_ids = list(agents)
+
+    if not agent_ids:
+        console.print("[yellow]No agents selected. Use [bold]--agent <id>[/] or [bold]--all[/].[/]")
+        return
+
+    console.print(f"[bold]Vec category backfill[/] → {', '.join(agent_ids)}")
+    migrate_vec_backfill(agent_ids, config=config)
+
+
 if __name__ == "__main__":
     main()

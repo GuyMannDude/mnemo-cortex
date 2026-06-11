@@ -1,5 +1,49 @@
 # Changelog
 
+## v4.2.0 (2026-06-10) — VEC category pushdown (#468): the real fix for the L3 fall-through
+
+**The problem.** The sqlite-vec (VEC) tier was **category-blind** — `search()` returned the
+nearest top-k regardless of category, then `/context` filtered them *after the fact* by
+reading each hit's JSON from disk. On a `session_log`-dominated store (cc: ~1,100 of ~2,540
+memories are logs) the VEC top-k is almost entirely the hidden-by-default `session_log`
+category, so a category-filtered recall got an all-hidden top-k → VEC contributed nothing →
+the pool underfilled → `/context` fell through to **L3**, the disk-walk that embeds every
+prefilter-passing file (O(store size) ollama calls = seconds). v4.1.1 capped L3 to 80 embeds
+as a stopgap (cc 20s→6.2s) but that trades recall completeness for latency. This is the
+structural fix.
+
+**The fix.** `category` is now a column on `vec_sources`, filtered *inside* the kNN:
+- **Schema v2** — additive `ALTER TABLE … ADD COLUMN category TEXT`, idempotent on open. Old
+  code ignores the column; search-without-category is byte-for-byte unchanged. Safe to deploy
+  live (non-destructive).
+- **`search(include_category=, exclude_categories=, overfetch_multiplier=)`** — with a filter,
+  the kNN over-fetches `top_k × multiplier` (config `cache.vec_category_overfetch_multiplier`,
+  default **5**) and filters by the column, returning the nearest `top_k` survivors. Filter
+  semantics mirror the handler's predicate exactly (include requires an exact match; a
+  NULL-category row is *not* excluded). If the filtered set is thin, the **partial set is
+  returned — `/context` does not fall through to L3** when a category is pinned (partial beats
+  a multi-second/timeout disk-walk).
+- **Column stays disk-truth.** `upsert()` writes category; the writeback + archived-session
+  paths pass it. The trap: reclassification rewrites the JSON category but historically left
+  `vec_sources` untouched ("category is disk-only"). A stale column would *wrongly exclude* a
+  reclassified memory — a silent recall false-negative. Closed with `update_category()`, fired
+  from a new `on_reclassified` hook in `reclassify_memory_dir` (wired into both the dreamer
+  pass and the `migrate reclassify` CLI). The handler's disk-truth `keep_chunk` remains the
+  correctness authority, so the column can never cause a false *include*.
+- **Deploy step** — `mnemo-cortex migrate vec-backfill [--agent X | --all]` (`backfill_categories`)
+  populates the column from disk for existing rows. No embedding, single-row UPDATEs, idempotent,
+  backs up the sqlite file first — safe to run while the server is up.
+
+**Tests.** `test_vec.py`: column add/ALTER on a legacy v1 db, upsert+search carry category,
+include/exclude pushdown, NULL-category not excluded, partial-when-thin, `update_category`
+refresh + no-op, `backfill_categories` from disk. `test_context_vec_filter.py`: end-to-end
+through `/context` — a pinned category does **not** call `l3_scan` (spied), while a plain
+underfilling recall still does (guard is specific, doesn't over-suppress the escape hatch).
+216 passing (lone pre-existing passport #425 failure aside).
+
+**Follow-up.** Once verified live, raise the `l3_max_candidates` default (the v4.1.1 stopgap)
+since L3 is no longer reached on category-filtered recall.
+
 ## v4.1.1 (2026-06-10) — bound the L3 disk-walk (cc recall latency) + warm-summary redaction
 
 **The problem (found in the v4.1.0 deploy smoke test).** cc's `/context` took **20s**

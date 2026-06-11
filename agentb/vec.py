@@ -32,7 +32,7 @@ import sqlite_vec
 log = logging.getLogger("agentb.vec")
 
 EMBED_DIM = 768  # nomic-embed-text
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: vec_sources.category column (#468 category pushdown)
 
 # nomic-embed-text accepts ~2048 tokens. For typical English prose that's
 # ~6-8k chars, but path-heavy content (long file URIs, UUIDs, hash strings)
@@ -52,6 +52,7 @@ class VecHit:
     distance: float
     source_file: Optional[str] = None
     created_at: Optional[float] = None
+    category: Optional[str] = None
 
 
 class VecDimMismatch(ValueError):
@@ -88,7 +89,8 @@ class VecStore:
                 memory_id TEXT PRIMARY KEY,
                 text TEXT NOT NULL,
                 source_file TEXT,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                category TEXT
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
@@ -105,8 +107,16 @@ class VecStore:
                 last_accessed REAL
             );
         """)
+        # v2 (#468): `category` column on an existing v1 table. Additive and
+        # idempotent — old code ignores the column, search-without-category is
+        # unchanged, so this is safe to run live. The column starts NULL on
+        # existing rows; `backfill_categories` (migrate vec-backfill) populates
+        # it from disk truth, and every upsert keeps it current thereafter.
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(vec_sources)")}
+        if "category" not in cols:
+            self._conn.execute("ALTER TABLE vec_sources ADD COLUMN category TEXT")
         self._conn.execute(
-            "INSERT OR IGNORE INTO vec_meta(key, value) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO vec_meta(key, value) VALUES (?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
         )
         self._conn.execute(
@@ -131,8 +141,15 @@ class VecStore:
         *,
         source_file: Optional[str] = None,
         created_at: Optional[float] = None,
+        category: Optional[str] = None,
     ) -> None:
-        """Insert or replace a memory's source text and embedding."""
+        """Insert or replace a memory's source text and embedding.
+
+        `category` (#468) is the same value the memory JSON carries, promoted to
+        a column so category-filtered search filters inside the kNN instead of
+        reading every candidate's JSON. The handler's disk-truth filter stays the
+        correctness authority — this column is a pre-filter for speed.
+        """
         if len(embedding) != EMBED_DIM:
             raise VecDimMismatch(
                 f"Expected embedding of dim {EMBED_DIM}, got {len(embedding)}. "
@@ -142,14 +159,15 @@ class VecStore:
         with self._conn:
             self._conn.execute(
                 """
-                INSERT INTO vec_sources(memory_id, text, source_file, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO vec_sources(memory_id, text, source_file, created_at, category)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(memory_id) DO UPDATE SET
                     text = excluded.text,
                     source_file = excluded.source_file,
-                    created_at = excluded.created_at
+                    created_at = excluded.created_at,
+                    category = excluded.category
                 """,
-                (memory_id, text, source_file, ts),
+                (memory_id, text, source_file, ts, category),
             )
             self._conn.execute(
                 "DELETE FROM vec_embeddings WHERE memory_id = ?",
@@ -165,33 +183,89 @@ class VecStore:
             self._conn.execute("DELETE FROM vec_sources WHERE memory_id = ?", (memory_id,))
             self._conn.execute("DELETE FROM vec_embeddings WHERE memory_id = ?", (memory_id,))
 
+    def update_category(self, memory_id: str, category: Optional[str]) -> None:
+        """Refresh a memory's category column without re-embedding.
+
+        Reclassification rewrites the JSON category but historically left
+        vec_sources untouched (category was disk-only). Now that category is a
+        search pre-filter column, a stale value would wrongly EXCLUDE a
+        reclassified memory from category-filtered recall — a silent
+        false-negative. Every reclassify path must call this so the column
+        tracks disk truth. No-op if the memory isn't indexed.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE vec_sources SET category = ? WHERE memory_id = ?",
+                (category, memory_id),
+            )
+
     # ── Reads ──
 
-    def search(self, query_embedding: list[float], *, top_k: int = 8) -> list[VecHit]:
+    def search(
+        self,
+        query_embedding: list[float],
+        *,
+        top_k: int = 8,
+        include_category: Optional[str] = None,
+        exclude_categories: Optional[Iterable[str]] = None,
+        overfetch_multiplier: int = 5,
+    ) -> list[VecHit]:
+        """kNN search, optionally category-filtered inside the index (#468).
+
+        Without a category filter this is the original top-k nearest search.
+
+        With `include_category` and/or `exclude_categories`, the kNN fetches
+        `top_k * overfetch_multiplier` candidates and filters them by the
+        `category` column, returning the nearest `top_k` survivors. This keeps
+        a session_log-dominated store from handing back an all-hidden top-k that
+        forces the slow L3 disk-walk — the category-blindness this fixes.
+
+        Filter semantics mirror the handler's metadata predicate exactly so the
+        column stays a pure pre-filter (the disk-truth check remains authority):
+          - include: keep only rows whose category == include_category
+            (a NULL-category row can't satisfy a positive category filter)
+          - exclude: drop rows whose category is in exclude_categories
+            (a NULL-category row is NOT excluded — unknown ≠ hidden)
+        If the filtered set is smaller than top_k, the partial set is returned —
+        the caller must NOT fall through to L3 (partial beats a timeout).
+        """
         if len(query_embedding) != EMBED_DIM:
             raise VecDimMismatch(
                 f"Query embedding dim {len(query_embedding)} != index dim {EMBED_DIM}"
             )
+        exclude = set(exclude_categories or ())
+        filtering = bool(include_category) or bool(exclude)
+        k = top_k * overfetch_multiplier if filtering else top_k
         rows = self._conn.execute(
             """
-            SELECT s.memory_id, s.text, s.source_file, s.created_at, v.distance
+            SELECT s.memory_id, s.text, s.source_file, s.created_at, s.category, v.distance
             FROM vec_embeddings v
             JOIN vec_sources s ON s.memory_id = v.memory_id
             WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
             """,
-            (_serialize_vector(query_embedding), top_k),
+            (_serialize_vector(query_embedding), k),
         ).fetchall()
-        return [
-            VecHit(
-                memory_id=r["memory_id"],
-                text=r["text"],
-                distance=float(r["distance"]),
-                source_file=r["source_file"],
-                created_at=r["created_at"],
+        hits: list[VecHit] = []
+        for r in rows:
+            cat = r["category"]
+            if include_category is not None and cat != include_category:
+                continue
+            if cat is not None and cat in exclude:
+                continue
+            hits.append(
+                VecHit(
+                    memory_id=r["memory_id"],
+                    text=r["text"],
+                    distance=float(r["distance"]),
+                    source_file=r["source_file"],
+                    created_at=r["created_at"],
+                    category=cat,
+                )
             )
-            for r in rows
-        ]
+            if filtering and len(hits) >= top_k:
+                break
+        return hits
 
     # ── Recall access stats (v4.1, composite ranking signal) ──
 
@@ -284,8 +358,10 @@ def detect_mode(memory_dir: Path) -> str:
     return "clean"
 
 
-def iter_memory_entries(memory_dir: Path) -> Iterable[tuple[str, str, Path, Optional[float]]]:
-    """Yield (memory_id, canonical_text, source_path, created_at) for each memory JSON.
+def iter_memory_entries(
+    memory_dir: Path,
+) -> Iterable[tuple[str, str, Path, Optional[float], Optional[str]]]:
+    """Yield (memory_id, canonical_text, source_path, created_at, category) per memory JSON.
 
     Canonical text matches what writeback embeds: summary + key_facts joined
     by newline. Texts longer than MAX_EMBED_INPUT_CHARS are truncated — the
@@ -311,7 +387,7 @@ def iter_memory_entries(memory_dir: Path) -> Iterable[tuple[str, str, Path, Opti
                 f"{len(text)} -> {MAX_EMBED_INPUT_CHARS} chars"
             )
             text = text[:MAX_EMBED_INPUT_CHARS]
-        yield memory_id, text, path, entry.get("created_at")
+        yield memory_id, text, path, entry.get("created_at"), entry.get("category")
 
 
 async def embed_with_adaptive_truncation(
@@ -371,7 +447,7 @@ async def backfill(
     skipped = 0
     failed = 0
     truncated = 0
-    for memory_id, text, path, created_at in iter_memory_entries(memory_dir):
+    for memory_id, text, path, created_at, category in iter_memory_entries(memory_dir):
         total += 1
         if skip_existing and store.has(memory_id):
             skipped += 1
@@ -390,6 +466,7 @@ async def backfill(
                 vec,
                 source_file=path.as_posix(),
                 created_at=created_at,
+                category=category,
             )
             embedded += 1
         except Exception as e:
@@ -414,3 +491,43 @@ async def backfill(
         "truncated": truncated,
         "elapsed_sec": round(elapsed, 2),
     }
+
+
+def backfill_categories(store: VecStore, memory_dir: Path) -> dict:
+    """Populate vec_sources.category from disk truth for already-indexed rows.
+
+    The #468 one-time deploy step: existing v1 stores have a NULL category
+    column after the ALTER. This reads each indexed memory's category from its
+    JSON and writes it to the column — NO embedding, just metadata, so it's fast
+    and safe to run while the server is up (each UPDATE is a single row). Rows
+    not on disk keep their existing value; the category-filtered search still
+    disk-truths every survivor, so a missed row is at worst a slower fall-through,
+    never a wrong result.
+
+    Returns {indexed, updated, missing_json}.
+    """
+    start = time.time()
+    updated = 0
+    indexed = 0
+    for path in sorted(memory_dir.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text())
+        except Exception as e:
+            log.warning(f"backfill_categories: skipping unreadable {path}: {e}")
+            continue
+        memory_id = entry.get("id") or path.stem
+        if not store.has(memory_id):
+            continue
+        indexed += 1
+        store.update_category(memory_id, entry.get("category"))
+        updated += 1
+    # vec rows with no JSON on disk (orphans) keep whatever category they had.
+    # store.has() gates `indexed` 1:1 with a vec row (memory_id is the PK), so
+    # this difference is exact, not an estimate.
+    missing = max(0, store.count() - indexed)
+    elapsed = time.time() - start
+    log.info(
+        f"Category backfill done: {indexed} indexed rows updated from disk, "
+        f"{missing} indexed rows without a JSON on disk, {elapsed:.1f}s"
+    )
+    return {"indexed": indexed, "updated": updated, "missing_json": missing}
