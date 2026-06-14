@@ -227,3 +227,72 @@ def test_extract_one_bad_chunk_does_not_drop_agent(monkeypatch):
 
     assert len(seen) >= 3, "expected several chunks"
     assert len(facts) == len(seen) - 1, "one bad chunk must not zero out the agent"
+
+
+# ── Stage 0.5 fact extraction: salvage truncated arrays (the 2026-06-14 fix) ──
+#
+# Follow-up to the chunking fix: 20K-char input chunks STILL overran the 4096-token
+# output cap (truncated at output char ~10-13K). The v4.2.2 chunking kept one bad
+# chunk from dropping the whole agent, but a truncated chunk still lost ALL its facts
+# — including the complete objects before the cut. _parse_fact_array recovers them.
+
+def test_salvage_clean_array_not_flagged():
+    raw = '[{"entity":"a","attribute":"b","value":"v1"},{"entity":"c","attribute":"d","value":"v2"}]'
+    facts, salvaged = dream._parse_fact_array(raw)
+    assert salvaged is False and len(facts) == 2
+
+
+def test_salvage_truncated_string_keeps_complete_objects():
+    """The exact 2026-06-14 shape: array truncated mid-string ('Unterminated string').
+    Plain json.loads would lose all 3; salvage keeps the 2 complete objects."""
+    raw = ('[\n {"entity":"a","attribute":"b","value":"v1"},\n'
+           ' {"entity":"c","attribute":"d","value":"v2"},\n'
+           ' {"entity":"e","attribute":"f","value":"unterminated stri')
+    facts, salvaged = dream._parse_fact_array(raw)
+    assert salvaged is True
+    assert [f["value"] for f in facts] == ["v1", "v2"]
+
+
+def test_salvage_truncated_after_comma_keeps_complete_objects():
+    """The other 2026-06-14 shape: cut right after a comma ('Expecting property name')."""
+    raw = ('[{"entity":"a","attribute":"b","value":"v1"},'
+           '{"entity":"c","attribute":"d","value":"v2"},{')
+    facts, salvaged = dream._parse_fact_array(raw)
+    assert salvaged is True and len(facts) == 2
+
+
+def test_salvage_bare_object_wrapped():
+    """A lone object (not an array) is wrapped, not lost."""
+    facts, salvaged = dream._parse_fact_array('{"entity":"x","attribute":"y","value":"z"}')
+    assert salvaged is False and len(facts) == 1
+
+
+def test_salvage_unrecoverable_returns_empty():
+    facts, salvaged = dream._parse_fact_array("I could not find any facts.")
+    assert salvaged is True and facts == []
+
+
+def test_salvage_skips_stray_preamble_bracket():
+    """A '[' in LLM preamble before a truncated array must not mis-anchor the scan
+    and discard recoverable facts — the salvage must skip to the real array."""
+    raw = ('Facts [extracted] from session:\n'
+           '[{"entity":"a","attribute":"b","value":"v1"},'
+           '{"entity":"c","attribute":"d","value":"v2"},{"entity":"e","attr')
+    facts, salvaged = dream._parse_fact_array(raw)
+    assert salvaged is True
+    assert [f["value"] for f in facts] == ["v1", "v2"]
+
+
+def test_salvage_empty_array_is_clean():
+    facts, salvaged = dream._parse_fact_array("[]")
+    assert salvaged is False and facts == []
+
+
+def test_extract_section_salvages_truncated_call(monkeypatch):
+    """End-to-end: a truncated LLM response yields the complete facts, not None."""
+    truncated = ('[{"entity":"a","attribute":"b","value":"v1"},'
+                 '{"entity":"c","attribute":"d","value":"v2"},{"entity":"e","attr')
+    monkeypatch.setattr(dream, "_call_openrouter_adaptive", lambda *a, **k: (truncated, {}))
+    facts = dream._extract_facts_from_section("cc", "section", label=" chunk 1/4")
+    assert facts is not None
+    assert [f["value"] for f in facts] == ["v1", "v2"]

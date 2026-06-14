@@ -1,5 +1,33 @@
 # Changelog
 
+## v4.2.3 (2026-06-14) — Dreamer: salvage truncated fact arrays + raise the output ceiling (quality recall)
+
+**Problem (found in the 2026-06-14 morning verify).** The v4.2.2 chunking fix kept one
+truncated chunk from dropping a whole agent's facts — but its assumption ("each call's
+output array fits well inside max_tokens") was too optimistic. The 06-14 run showed cc's
+20K-char input chunks STILL overran the **4096-token** output cap, truncating mid-array at
+output char ~10-13K. Each truncated chunk failed `json.loads` and returned `[]`, so cc kept
+only **24 facts across 1/4 chunks** — the 3 truncated chunks lost every fact, *including the
+complete objects that arrived before the cut.* Resilient, but lossy: ~75% of the night's cc
+facts thrown away.
+
+**Fix (two complementary changes — both needed).**
+- **`_parse_fact_array` salvage parser.** On a clean parse, behaves like `json.loads`. On a
+  truncated/corrupt array, walks complete top-level objects out of it with
+  `JSONDecoder().raw_decode` and keeps every one before the cut — so a truncated chunk now
+  yields N−1 facts instead of zero. Also wraps a bare object (LLM returned one fact, not an
+  array) instead of discarding it. Stdlib-only, no new dependency. The parse site in
+  `_extract_facts_from_section` now logs `salvaged N complete fact object(s)` (warn) on
+  recovery and only returns `None` when nothing is recoverable.
+- **Raise the fact-extraction output ceiling** from 4096 → **8192** tokens
+  (`MNEMO_DREAM_FACT_MAX_TOKENS`, env-overridable). Facts are cheap output; the headroom lets
+  most chunks finish cleanly so truncation becomes rare, and salvage makes the rare remainder
+  near-lossless. Input chunking (`MNEMO_DREAM_FACT_CHUNK_CHARS=20000`) is unchanged.
+
+**Tests.** 7 new cases in `tests/test_dream_cap.py` covering the two exact 06-14 truncation
+shapes (unterminated string, cut-after-comma), bare-object wrap, unrecoverable garbage, empty
+array, and end-to-end salvage through `_extract_facts_from_section`. Full dream suite: 20 pass.
+
 ## v4.2.2 (2026-06-13) — Dreamer: chunk Stage-0.5 fact extraction so a heavy day doesn't lose all its facts
 
 **Problem (found in the 2026-06-13 morning verify).** Stage 0.5 (`extract_facts_for_agent`)

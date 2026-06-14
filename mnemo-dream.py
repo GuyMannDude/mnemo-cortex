@@ -102,10 +102,16 @@ DREAM_SKIP_FACTS = os.getenv("DREAM_SKIP_FACTS", "").lower() in ("1", "true", "y
 MAX_AGENT_SECTION_CHARS = int(os.getenv("MNEMO_DREAM_MAX_AGENT_SECTION_CHARS", "1000000"))
 # Stage 0.5 fact extraction is chunked so each LLM call's OUTPUT (a JSON fact
 # array) stays within max_tokens. One big batch (e.g. cc's 165-entry / 64K-char
-# day on 2026-06-13) overruns the 4096-token output cap, truncates mid-string,
-# and fails json.loads for the WHOLE agent. Chunking by input chars bounds the
-# output array per call. Env-overridable.
+# day on 2026-06-13) overruns the output cap, truncates mid-string, and fails
+# json.loads. Chunking by input chars bounds the output array per call.
+# Env-overridable.
 FACT_EXTRACTION_CHUNK_CHARS = int(os.getenv("MNEMO_DREAM_FACT_CHUNK_CHARS", "20000"))
+# Output ceiling for a fact-extraction call. The 2026-06-14 verify showed 20K-char
+# input chunks STILL overran a 4096-token output (truncated at output char ~10-13K),
+# so the v4.2.2 chunking assumption ("fits well inside max_tokens") was too optimistic.
+# 8192 gives the fact array room to finish; the salvage parser recovers anything that
+# still truncates. Facts are cheap output — headroom here costs little.
+FACT_EXTRACTION_MAX_TOKENS = int(os.getenv("MNEMO_DREAM_FACT_MAX_TOKENS", "8192"))
 
 # Git-sync wedge (opt-in). When enabled, the Dreamer reports whether its watched
 # git checkouts have uncommitted changes, unpushed commits, or are behind their
@@ -647,6 +653,60 @@ def _chunk_memories_by_chars(memories: list[dict], budget: int) -> list[list[dic
     return chunks
 
 
+def _parse_fact_array(cleaned: str) -> tuple[list, bool]:
+    """Parse a JSON array of fact objects, salvaging a truncated tail.
+
+    The fact array is the LLM's OUTPUT; on a heavy chunk it can exceed the
+    output-token ceiling and arrive truncated mid-object ("Unterminated string",
+    "Expecting property name") — the 2026-06-14 failure mode. A plain json.loads
+    throws away EVERY fact in such an array, including the complete ones before the
+    cut. So: try a clean parse first; if that fails, walk complete top-level objects
+    out of the (possibly truncated) array with raw_decode and keep what parsed.
+
+    Returns (facts, salvaged): salvaged=False on a clean parse, True when we fell
+    back to object-by-object recovery (so the caller can log it).
+    """
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return data, False
+        # A bare object instead of an array — wrap it so one fact isn't lost.
+        if isinstance(data, dict):
+            return [data], False
+    except json.JSONDecodeError:
+        pass
+
+    # Salvage path: greedily decode complete objects out of the array. Anchor on a
+    # '[' that actually begins a decodable array — LLM preamble can carry a stray
+    # bracket ("Facts [extracted]:") that would otherwise mis-anchor the scan; if a
+    # candidate '[' yields nothing, advance to the next one. Within the real array we
+    # stop at the first decode failure (the truncation point), keeping all complete
+    # objects before it.
+    salvaged: list = []
+    decoder = json.JSONDecoder()
+    n = len(cleaned)
+    search = 0
+    while True:
+        start = cleaned.find("[", search)
+        if start == -1:
+            return salvaged, True
+        i = start + 1
+        while i < n:
+            while i < n and cleaned[i] in " \t\r\n,":
+                i += 1
+            if i >= n or cleaned[i] == "]":
+                break
+            try:
+                obj, end = decoder.raw_decode(cleaned, i)
+            except json.JSONDecodeError:
+                break  # truncated mid-object — stop, keep the complete ones before it
+            salvaged.append(obj)
+            i = end
+        if salvaged:
+            return salvaged, True
+        search = start + 1  # this '[' was a stray bracket in prose; try the next
+
+
 def _extract_facts_from_section(agent_id: str, section: str, label: str = "") -> list[dict] | None:
     """One fact-extraction LLM call for a single section. Returns the validated
     fact list, or None if the call or JSON parse failed. Pulled out of
@@ -654,7 +714,9 @@ def _extract_facts_from_section(agent_id: str, section: str, label: str = "") ->
     agent's facts (the bug that lost all 585 cc entries' facts on 2026-06-13).
     """
     try:
-        raw, _ = _call_openrouter_adaptive(FACT_EXTRACTION_SYSTEM_PROMPT, section, max_tokens=4096)
+        raw, _ = _call_openrouter_adaptive(
+            FACT_EXTRACTION_SYSTEM_PROMPT, section, max_tokens=FACT_EXTRACTION_MAX_TOKENS
+        )
     except RuntimeError as e:
         log.error(f"  stage 0.5 [{agent_id}]{label} LLM call failed: {e}")
         return None
@@ -667,14 +729,19 @@ def _extract_facts_from_section(agent_id: str, section: str, label: str = "") ->
             cleaned = cleaned.rsplit("```", 1)[0]
     cleaned = cleaned.strip()
 
-    try:
-        facts = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        log.warning(f"  stage 0.5 [{agent_id}]{label} JSON parse failed: {e}; first 200 chars: {cleaned[:200]}")
-        return None
-    if not isinstance(facts, list):
-        log.warning(f"  stage 0.5 [{agent_id}]{label} expected list, got {type(facts).__name__}")
-        return None
+    facts, salvaged = _parse_fact_array(cleaned)
+    if salvaged:
+        if facts:
+            log.warning(
+                f"  stage 0.5 [{agent_id}]{label} JSON incomplete (likely output truncation) "
+                f"— salvaged {len(facts)} complete fact object(s) from the array"
+            )
+        else:
+            log.warning(
+                f"  stage 0.5 [{agent_id}]{label} JSON parse failed, nothing salvageable; "
+                f"first 200 chars: {cleaned[:200]}"
+            )
+            return None
 
     valid = []
     for f in facts:
