@@ -152,7 +152,11 @@ class ExpansionConfig:
     enabled: bool = True
     relevance_floor: float = 0.5   # first pass is "weak" if its top relevance < this
     max_variants: int = 4          # alternative phrasings requested from Flash
-    timeout_ms: int = 800          # hard cap on the expansion LLM call; expire → no expansion
+    # Hard cap on the expansion LLM call; expire → no expansion (graceful). 2.5s:
+    # live OpenRouter Flash latency straddles ~1s, and 800ms timed out on exactly
+    # the whiffs expansion exists to rescue. A whiff already returned nothing, so
+    # spending up to this long to try is worth it; still well under bridge timeout.
+    timeout_ms: int = 2500
     min_query_words: int = 3       # skip expansion for short/entity-lookup queries
     model: str = "google/gemini-2.5-flash"  # fast model for phrasing generation (OpenRouter)
     # api_key / api_base default to whatever OpenRouter provider is already

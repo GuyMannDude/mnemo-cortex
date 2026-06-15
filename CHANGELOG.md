@@ -25,7 +25,8 @@ reached), which makes default-ON safe.
   data-loss regression.)
 - **`expand_query` — isolated, fail-safe.** One OpenRouter Flash call (`google/gemini-2.5
   -flash` by default), reusing whatever OpenRouter key the reasoning chain already carries.
-  Hard `timeout_ms` (default 800), kept entirely off the shared reasoner circuit breaker (a
+  Hard `timeout_ms` (default 2500 — tuned up from 800 after a live deploy showed Flash
+  latency straddling ~1s), kept entirely off the shared reasoner circuit breaker (a
   Flash hiccup must never poison preflight/classification), and LRU-cached by normalized
   query so repeat recalls (`agent_startup`, etc.) are free. Any failure/timeout/no-key →
   `[]` → the handler behaves exactly as it did pre-v4.2.
@@ -33,7 +34,7 @@ reached), which makes default-ON safe.
   callers can force it off per request with `expand: false`.
 
 **Config.** New `expansion` block: `enabled` (default true), `relevance_floor`,
-`max_variants` (4), `timeout_ms` (800), `min_query_words` (3 — short/entity lookups skip
+`max_variants` (4), `timeout_ms` (2500), `min_query_words` (3 — short/entity lookups skip
 expansion), `model`, optional `api_key`/`api_base`.
 
 **Tests.** `tests/test_query_expansion.py` (19 cases): max-relevance merge incl. single-pass

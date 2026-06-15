@@ -430,7 +430,9 @@ async def expand_query(prompt: str, cfg: ExpansionConfig, api_key: str, api_base
             # would AttributeError past this try and 500 the live recall path).
             text = resp.json()["choices"][0]["message"].get("content") or ""
     except Exception as e:
-        log.warning(f"query expansion call failed (no expansion this query): {e}")
+        # type name matters: a bare timeout str()s to empty, hiding the cause.
+        log.warning(f"query expansion call failed (no expansion this query): "
+                    f"{type(e).__name__}: {e}")
         return []
 
     original = prompt.strip().lower()
