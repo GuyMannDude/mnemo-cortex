@@ -13,7 +13,7 @@
   "tagline": "Persistent semantic memory for AI agents — local-first, decay-aware, cross-agent dreaming.",
   "summary": "Memory coprocessor that gives AI agents persistent recall across sessions. Local SQLite + FTS5 working memory plus a structured Facts table (entity/attribute/value triples with a three-state confidence ladder) for the lookups semantic search gets wrong. Every memory record carries provenance (source + category) and decays on a category-aware schedule — topology facts age fast, doctrine stays perpetual, and recall returns a structured stale_warning when a fact is past its threshold so the agent verifies before acting. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.",
   "backstory": "Guy Hutchins started exploring AI memory with ChatGPT 3.5 using basic text files. When OpenClaw launched and needed better memory, he gave Opie (Claude) a simple prompt: \"If you were a ClawdBot and your user wanted you to have the best memory you could build yourself, what would it look like?\" Opie was on extended thinking and just built it — no clarifying questions, no spec, just shipped a working memory system. Guy gave the same prompt to AL (ChatGPT), who built his own version independently. AL saw Opie's and said it was more in depth. Opie saw AL's and said it had ideas worth blending. The two versions merged. When it came time to name it, the first two suggestions were \"Mnemo\" and \"Cortex.\" Guy picked both. Mnemo Cortex.",
-  "version": "4.1.0",
+  "version": "4.2.3",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/mnemo-cortex",
   "source": "https://github.com/GuyMannDude/mnemo-cortex",
@@ -135,7 +135,8 @@
   },
 
   "related": [
-    {"name": "FrankenClaw", "url": "https://github.com/GuyMannDude/frankenclaw", "purpose": "MCP tool server giving agents hands — search, vision, browser, Shopify, NotebookLM. Pairs with Mnemo (memory) for a fully-equipped agent."},
+    {"name": "FrankenClaw", "url": "https://github.com/GuyMannDude/frankenclaw", "purpose": "MCP tool chassis — build your own agent tools in ~5 minutes (drop a Python file in tools/, flip it on). Ships one example tool (web_scrape). Pairs with Mnemo (memory) to give an agent both recall and hands."},
+    {"name": "Cortex Harness", "url": "https://github.com/GuyMannDude/cortex-harness", "purpose": "Forkable, generic AI-agent framework built on the Mnemo Cortex memory layer. Pick a vertical, edit one config file, build a memory-backed agent."},
     {"name": "Disco-Bus", "url": "https://github.com/GuyMannDude/disco-bus", "purpose": "Push-based agent-to-agent messaging mesh. Pair with Mnemo for multi-agent setups where agents need both shared memory and direct communication."},
     {"name": "llms.txt", "url": "./llms.txt", "purpose": "LLM-friendly documentation index (llmstxt.org convention)."},
     {"name": "robot.install", "url": "./robot.install", "purpose": "Non-interactive install manifest for this product."},

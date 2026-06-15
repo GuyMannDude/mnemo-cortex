@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v4.0
+# ⚡ Mnemo Cortex v4.2.3
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -35,6 +35,9 @@
 | 📬 **Sparks Bus** | Agent-to-agent messaging with delivery confirmation. A2A-compatible. |
 | 🪪 **Developer's Passport** | Safe behavioral-claim ingestion layer. Review queue + 32 detectors + provenance buckets. Dev-targeted beta. |
 | 🔩 **Structured Facts** | Key-value store with confidence tracking. When semantic search is the wrong tool — names, settings, entity attributes — facts give you sub-millisecond exact lookup with a three-state confidence ladder. |
+
+> [!NOTE]
+> **Upgraded by Claude Fable 5.** Mnemo's **v4.1 "Fable pass"** — composite recall ranking (the fix that pulled real signal back to the top of every search), the **Analyst** (distills raw session logs into clean Tier-1 notes), secret redaction at ingest, and tier hygiene — was designed and built during Claude Fable 5's brief availability. Fable reasoned and reviewed the whole codebase; an Opus model reviewed, hardened, and shipped each change. A frontier model auditing and improving the memory layer it runs on, in one window.
 
 ### 🚀 Get Started
 
@@ -85,6 +88,12 @@ A cheap pre-filter routes routine logs to Tier 2 for free (no LLM call); everyth
 mnemo-cortex migrate reclassify --all --dry-run   # preview the before→after spread
 mnemo-cortex migrate reclassify --all             # snapshot, then reclassify every store
 ```
+
+### 🔭 On the Roadmap — The Thesaurus Loop (Query Expansion)
+
+Every recall commits to one phrasing. If a memory was stored under different words than you searched for, the match is weak or misses entirely — call it *assumption misalignment* between how you ask and how it was filed. The **Thesaurus Loop** fixes it: when a search comes back empty or weak, Mnemo fans the query into a handful of alternative phrasings, searches them all, and lets the best match win (multi-query retrieval / RAG-Fusion).
+
+The design choice that makes it safe is **escalation** — the loop only fires on a *miss*. Good searches run exactly as fast as they do today; the expansion pass costs nothing until a search actually whiffs, which is precisely when it's worth paying for. *In development — escalation model designed, build in progress.*
 
 ### 🌙 Dreaming Mnemo — Cross-Agent Overnight Synthesis
 
@@ -396,7 +405,7 @@ If the directory doesn't exist, those tools simply don't register — the model 
 | + wiki dir | 16 |
 | Both | 22 |
 
-Pair with [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) for web search, vision, browser, NotebookLM, Shopify, and Google Drive tools. Same MCP config pattern — just add a second `mcpServers` entry.
+Pair with [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) — an MCP tool chassis for giving your agent hands. Drop a Python file in `tools/`, flip it on, and you have a custom tool in ~5 minutes; it ships one example tool (`web_scrape`) as the template. Same MCP config pattern — just add a second `mcpServers` entry.
 
 ### Tips
 
@@ -864,6 +873,7 @@ Mnemo Cortex started as a memory coprocessor designed by a small multi-agent tea
 - **Opie** (Claude Opus 4.6 / 4.7) — Architecture design, schema design, compaction strategy
 - **AL** (ChatGPT) — Implementation, watcher/refresher daemons, test suite
 - **CC** (Claude Code) — Deployment, integration, live testing, bug fixes; built the WikAI compiler and the Sparks Bus integration
+- **Claude Fable 5** — the v4.1 review-and-improve pass: composite recall ranking, the Analyst, secret redaction at ingest, tier hygiene (built during Fable 5's brief availability)
 - **Rocky** and **Alice** (OpenClaw agents) — first production users + test subjects
 
 **External inspirations** (the Clapton Method — adopt the best ideas, credit openly, build on top):
