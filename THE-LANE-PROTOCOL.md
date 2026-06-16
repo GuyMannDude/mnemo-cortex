@@ -207,4 +207,55 @@ Each layer has a job. Skip any one and the system gets weaker. Run all three and
 
 ---
 
+## Windows agents
+
+The protocol works on Windows — the ritual is the same, the tooling differs. If you're running an agent on Windows (PowerShell, cmd, or a Windows-native agent framework), these notes prevent the common traps.
+
+### Git on Windows
+
+- **Use `origin`, never type the repo URL.** Your remote is already configured. `git push origin main` — not `git push https://github.com/...`. Typing the URL by hand invites typos that create phantom remotes.
+- **Use `-m` on every commit.** `git commit -m "brain: updated lane"` — not bare `git commit`. Without `-m`, Git opens an editor (usually vim or nano) that a non-interactive agent can't escape, hanging the session.
+- **Credentials live at `C:\Users\<you>\.git-credentials`** (Git credential store) or are managed by Git Credential Manager. If `git push` prompts for auth, the credential store isn't configured — fix it once, not per-push.
+- **Stage specific files, not all.** `git add agent-lanes/dave.md active.md` — not `git add -A`. On Windows, `-A` can pull in desktop.ini, Thumbs.db, and other OS debris. Stage only what you changed.
+
+### Paths and encoding
+
+- **Use `$env:USERPROFILE` not `$env:HOME`.** Windows doesn't set HOME by default. Mnemo, brain paths, and config files should reference USERPROFILE (`C:\Users\<you>`).
+- **Forward slashes work in most contexts.** Python, Node, and Git all accept `/` on Windows. Use forward slashes in JSON configs to avoid double-backslash escaping (`C:/Users/guita/brain` not `C:\\Users\\guita\\brain`).
+- **stdout encoding matters.** If your agent runs as a Scheduled Task or under redirection (pipe, log file), Windows defaults to cp1252, which crashes on Unicode characters (emoji, special symbols). Mnemo v4.3.1+ handles this automatically. For other tools, set `$env:PYTHONIOENCODING = "utf-8"` or use `python -X utf8`.
+
+### MCP bridges on Windows
+
+- **Use the direct path to `mcp-bridge/server.js`**, not symlinks. Windows symlinks are unreliable (require admin or Developer Mode). Point your Claude Desktop config at the actual file.
+- **Use `cmd /c npx`** instead of bare `npx` in Windows config JSON if the bridge is launched via npx.
+- **Run `npm install` in the bridge directory first.** The `ERR_MODULE_NOT_FOUND` crash means dependencies weren't installed — `cd mcp-bridge && npm install` fixes it.
+
+### The ritual on Windows (PowerShell)
+
+Same six steps, different commands:
+
+```powershell
+# 1. Pull
+cd C:\Users\you\brain-repo
+git pull
+
+# 2. Read your lane + active.md
+Get-Content agent-lanes\your-name.md
+Get-Content active.md
+
+# 3-4. Work normally.
+
+# 5. Write back
+# (edit your files, then:)
+git add agent-lanes\your-name.md active.md
+git commit -m "brain: session update"
+
+# 6. Push
+git push origin main
+```
+
+The protocol doesn't care about your shell. It cares that you pull before reading and push after writing.
+
+---
+
 *Part of the [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex) ecosystem by [Project Sparks](https://projectsparks.ai). MIT licensed — fork it, edit it, make it yours.*
