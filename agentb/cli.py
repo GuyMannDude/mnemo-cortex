@@ -31,7 +31,25 @@ from rich.table import Table
 from rich.prompt import Prompt, Confirm
 from rich import print as rprint
 
-console = Console()
+# Windows redirected-stdout safety (issue #3): under a Scheduled Task / service /
+# pipe, stdout is not a real console and defaults to the system codepage (cp1252),
+# which can't encode the banner's ⚡ (U+26A1) — the CLI crashed before the watcher
+# ever started, silently killing auto-capture. Reconfigure the streams to
+# utf-8/replace (belt), and keep rich off the Windows legacy-console path when
+# stdout isn't a TTY (suspenders). Both are no-ops on a normal interactive terminal.
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        try:
+            _reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+_stdout_is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+console = Console(
+    legacy_windows=False if not _stdout_is_tty else None,
+    force_terminal=False if not _stdout_is_tty else None,
+)
 
 CONFIG_DIR = Path.home() / ".config" / "agentb"
 CONFIG_FILE = CONFIG_DIR / "agentb.yaml"
@@ -53,7 +71,7 @@ from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="4.0.3", prog_name="mnemo-cortex")
+@click.version_option(version="4.3.1", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:

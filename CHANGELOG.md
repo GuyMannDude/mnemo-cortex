@@ -1,5 +1,23 @@
 # Changelog
 
+## v4.3.1 (2026-06-16) — Fix: Windows CLI crash on redirected stdout (issue #3)
+
+**Problem.** Any CLI command that prints the banner — notably `mnemo-cortex watch` — crashed
+on Windows when stdout was redirected to a file or pipe (a Scheduled Task, a service, or
+`... *>> watch.log`) with `UnicodeEncodeError: 'charmap' codec can't encode character '⚡'`.
+Redirected stdout is not a real console, so it falls back to the system codepage (cp1252),
+which can't encode the banner's ⚡ (U+26A1). The process exited before the watcher loop ever
+started, so **auto-capture was silently dead in any scheduled/piped Windows setup** — exactly
+the out-of-the-box story Windows users expect after `mnemo-cortex init`.
+
+**Fix.** At CLI startup, reconfigure stdout/stderr to utf-8 with `errors="replace"` (belt),
+and construct rich's `Console` with `legacy_windows=False` / `force_terminal=False` when
+stdout is not a TTY (suspenders), keeping it off the Windows legacy-console path that grabs
+the file handle directly. Both are no-ops on a normal interactive terminal. Verified on
+Windows 11 / Python 3.13: the redirected banner and `--help` now render as plain text instead
+of crashing. Also de-drifts the version strings in `pyproject.toml` (was 4.1.1) and the CLI
+`--version` (was 4.0.3) up to the real current release.
+
 ## v4.3.0 (2026-06-15) — The Thesaurus Loop: query expansion on a whiff
 
 **Problem.** A recall commits to one phrasing. If a memory was filed under different
