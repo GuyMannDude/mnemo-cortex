@@ -8,13 +8,53 @@ Data layout at $MNEMO_PASSPORT_DIR (default ~/.mnemo/passport):
 """
 from __future__ import annotations
 
-import fcntl
 import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+# ─── Cross-platform advisory file locking ────────────────────────────────────
+# POSIX uses fcntl.flock (real shared + exclusive advisory locks). Windows has no
+# fcntl, so we fall back to msvcrt for an exclusive whole-file lock. Shared read
+# locks degrade to no-ops on Windows — safe here because every writer goes through
+# _atomic_yaml_write (tmp file + os.replace, which is atomic on Windows too), so a
+# reader can never observe a torn file. The lock that actually guards a
+# read-modify-write block (exclusive_lock) still serialises via msvcrt on Windows.
+try:
+    import fcntl  # POSIX
+
+    def _lock_shared(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+
+    def _lock_exclusive(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+
+    def _unlock(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+except ImportError:  # Windows (no fcntl)
+    import msvcrt
+
+    _LOCK_BYTES = 0x7FFFFFFF  # largest region msvcrt.locking accepts
+
+    def _lock_shared(f) -> None:
+        # No shared mode on Windows; atomic os.replace writes make torn reads
+        # impossible, so a shared read lock is unnecessary here.
+        pass
+
+    def _lock_exclusive(f) -> None:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, _LOCK_BYTES)
+
+    def _unlock(f) -> None:
+        f.seek(0)
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, _LOCK_BYTES)
+        except OSError:
+            pass
 
 
 STABLE_FILENAME = "passport_shared_behavior.yaml"
@@ -123,11 +163,11 @@ def _initial_audit_doc() -> dict:
 
 def load_yaml(path: Path) -> dict:
     with path.open("r") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        _lock_shared(f)
         try:
             data = yaml.safe_load(f)
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock(f)
     return data or {}
 
 
@@ -135,13 +175,13 @@ def _atomic_yaml_write(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        _lock_exclusive(f)
         try:
             yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False, allow_unicode=True)
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock(f)
     os.replace(tmp, path)
 
 
@@ -151,11 +191,11 @@ def exclusive_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     lockfile = path.with_suffix(path.suffix + ".lock")
     with lockfile.open("a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        _lock_exclusive(f)
         try:
             yield
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock(f)
 
 
 # ─── Typed accessors ────────────────────────────────────────────────────────

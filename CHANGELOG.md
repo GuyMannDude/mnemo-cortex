@@ -1,5 +1,29 @@
 # Changelog
 
+## v4.4.1 (2026-06-23) — Native Windows: cross-platform Passport file locking
+
+**Problem.** The server failed to import on native Windows. `agentb.server.create_app()`
+mounts the Passport router, whose `passport/storage.py` did `import fcntl` at module load.
+`fcntl` is Unix-only, so the import raised `ModuleNotFoundError: No module named 'fcntl'`
+and the whole server refused to start — blocking the Mnemo Cortex server from running as a
+native Python process on Windows (everything else in `agentb` already imports and runs there,
+including the `sqlite-vec` vector index).
+
+**Fix — abstract the three advisory locks behind platform helpers.**
+- **POSIX is byte-for-byte unchanged**: `_lock_shared`/`_lock_exclusive`/`_unlock` wrap the
+  same `fcntl.flock` LOCK_SH/LOCK_EX/LOCK_UN calls as before.
+- **Windows** (no `fcntl`) falls back to `msvcrt` for the exclusive whole-file lock that guards
+  read-modify-write (`exclusive_lock`) and atomic writes. The shared *read* lock degrades to a
+  no-op there — safe because `_atomic_yaml_write` already writes via a temp file + `os.replace`
+  (atomic on Windows too), so a reader can never observe a torn file.
+
+No new dependency; no behavior change on Linux/macOS. This makes the Mnemo Cortex server
+natively Windows-capable.
+
+**Known follow-up:** `mnemo-wiki-compile.py` (a standalone CLI tool, not in the server import
+path) still `import fcntl` for its single-instance run lock; it is unaffected by this change and
+will get the same treatment separately.
+
 ## v4.4.0 (2026-06-17) — Recalibrate the Thesaurus Loop: gap signal, not an absolute floor
 
 **Problem.** The v4.3.0 query expansion shipped but **fired 0× in production** — diagnosed
