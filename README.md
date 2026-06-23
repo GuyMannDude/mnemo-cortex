@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v4.3.0
+# ⚡ Mnemo Cortex v4.4.1
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -644,7 +644,7 @@ Five steps from a fresh checkout to a running server connected to your agent. Th
 
 ### Platforms
 
-Mnemo Cortex runs on **Linux, macOS, and Windows**. The core (Python + SQLite) is cross-platform. Platform differences are mostly about how you keep the server running across reboots:
+Mnemo Cortex runs on **Linux, macOS, and Windows**. The core (Python + SQLite) is cross-platform. As of **v4.4.1**, the server runs **natively on Windows** — its file locking is cross-platform (POSIX `fcntl` with an `msvcrt` fallback), so `agentb.server` starts and serves recall on native Windows Python with no WSL required. Platform differences are mostly about how you keep the server running across reboots:
 
 | | Linux | macOS | Windows |
 |---|---|---|---|

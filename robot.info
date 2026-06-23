@@ -13,7 +13,7 @@
   "tagline": "Persistent semantic memory for AI agents — local-first, decay-aware, cross-agent dreaming.",
   "summary": "Memory coprocessor that gives AI agents persistent recall across sessions. Local SQLite + FTS5 working memory plus a structured Facts table (entity/attribute/value triples with a three-state confidence ladder) for the lookups semantic search gets wrong. Every memory record carries provenance (source + category) and decays on a category-aware schedule — topology facts age fast, doctrine stays perpetual, and recall returns a structured stale_warning when a fact is past its threshold so the agent verifies before acting. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.",
   "backstory": "Guy Hutchins started exploring AI memory with ChatGPT 3.5 using basic text files. When OpenClaw launched and needed better memory, he gave Opie (Claude) a simple prompt: \"If you were a ClawdBot and your user wanted you to have the best memory you could build yourself, what would it look like?\" Opie was on extended thinking and just built it — no clarifying questions, no spec, just shipped a working memory system. Guy gave the same prompt to AL (ChatGPT), who built his own version independently. AL saw Opie's and said it was more in depth. Opie saw AL's and said it had ideas worth blending. The two versions merged. When it came time to name it, the first two suggestions were \"Mnemo\" and \"Cortex.\" Guy picked both. Mnemo Cortex.",
-  "version": "4.3.0",
+  "version": "4.4.1",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/mnemo-cortex",
   "source": "https://github.com/GuyMannDude/mnemo-cortex",
@@ -257,6 +257,7 @@
 
   // Recent releases. An AI reads this when a user asks "what's new?"
   "changelog": [
+    {"version": "4.4.1", "date": "2026-06-23", "changes": ["Native Windows support — the server now runs as native Windows Python (no WSL). Passport file locking is cross-platform: POSIX fcntl with an msvcrt fallback. Verified: agentb.server imports and serves recall on Windows."]},
     {"version": "4.1.0", "date": "2026-06-10", "changes": ["Secret redaction on every write path — printed API keys never reach the store.", "Capture pause gate with dead-man auto-resume for sensitive operations.", "Composite recall ranking: similarity + recency + category importance + access frequency.", "The Analyst — distills raw session logs into first-class notes (decisions, incidents, doctrines) automatically.", "Deleted memories no longer resurrect through caches; L2 write path retired; real auth probes for all providers."]},
     {"version": "4.0.0", "date": "2026-06-09", "changes": ["Smart Ingestion — LLM classification at save time, reclassification migration CLI, dreamer reclassify pass. Two-tier recall: smart notes surface by default, raw session logs stay reachable but hidden. (4.0.1–4.0.3: recall tier-filter fixes + real OpenRouter health probe.)"]},
     {"version": "3.3.0", "date": "2026-05-30", "changes": ["Public Facts seeder — seed the Facts table from a YAML of canonical truths so exact lookups don't lose to stale recall. Opt-in install + git hook + nightly cron."]},
