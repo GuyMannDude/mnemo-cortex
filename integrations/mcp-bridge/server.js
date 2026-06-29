@@ -968,7 +968,8 @@ async function readBrainCapped(path, cap = STARTUP_FILE_CAP) {
   return (
     content.slice(0, cap) +
     `\n\n…[truncated ${content.length - cap} of ${content.length} chars — ` +
-    `newest content kept; use read_brain_file for the full file]…\n`
+    `top of file kept (newest-first lanes → most-recent; active.md → highest-priority); ` +
+    `use read_brain_file for the full file]…\n`
   );
 }
 
