@@ -1,8 +1,8 @@
 # Mnemo Cortex
 
-> Persistent semantic memory for AI agents. Local-first SQLite + FTS5 working memory. Every record carries provenance + category and decays on a category-aware schedule. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.
+> Cognitive coprocessor with active memory for AI agents. Local-first SQLite + FTS5 working memory. Every record carries provenance + category and decays on a category-aware schedule. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.
 
-Mnemo Cortex is a memory coprocessor that gives AI agents persistent recall across sessions. It runs as a local FastAPI service (default port 50001), exposes both REST endpoints and a Streamable-HTTP MCP facade, and ships drop-in integrations for the major MCP hosts (Claude Desktop, Claude Code, OpenClaw, LM Studio, AnythingLLM, Agent Zero, Hermes Agent, Open WebUI, llama.cpp, LobeChat, Jan).
+Mnemo Cortex is a cognitive coprocessor with active memory that gives AI agents persistent recall across sessions. It runs as a local FastAPI service (default port 50001), exposes both REST endpoints and a Streamable-HTTP MCP facade, and ships drop-in integrations for the major MCP hosts (Claude Desktop, Claude Code, OpenClaw, LM Studio, AnythingLLM, Agent Zero, Hermes Agent, Open WebUI, llama.cpp, LobeChat, Jan).
 
 v3 (Bridge 2.8.0, May 2026) added provenance + decay: every memory record carries `source` (user / tool / inferred / brain / migrated) and `category` (topology / current_state / doctrine / incident / identity / relationship / decision / session_log / unknown). Topology facts decay fast (warn at 30d, stale at 90d) so agents don't trust a stale IP from three months ago. Doctrine, incident, identity, and decision are perpetual. Recall returns a structured `stale_warning` field that programmatic agents branch on before acting.
 

@@ -2,7 +2,7 @@
   <img src="docs/mnemo-cortex-constellation.png" alt="Mnemo Cortex constellation — verified hosts: Claude Desktop, LM Studio, AnythingLLM, OpenClaw, Agent Zero, Ollama. Local-first, cross-agent, open source. A Mnemo in Every Bot." width="540">
 </p>
 
-# ⚡ Mnemo Cortex v4.4.1
+# ⚡ Mnemo Cortex v4.5.2 — Cognitive Coprocessor with Active Memory
 
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
@@ -22,13 +22,16 @@
 >   parse the JSON object on stdout. Zero prompts, exit `0` on success.
 >   Full schema below in "Non-interactive install."
 
-## Memory That Dreams, Compiles, and Connects
+## It's Not Just Memory — It's Cognitive Coprocessing
 
-> Every AI agent has amnesia. Mnemo Cortex fixes that — and then some.
-> Persistent memory that survives across sessions, searches by meaning, and costs $0 to run.
+> Every AI agent has amnesia. Mnemo Cortex is the cure.
+> Active memory that classifies on ingest, consolidates overnight,
+> learns what works, and gets smarter every session. No commands needed —
+> you just talk naturally and your AI remembers.
 
 | | |
 |---|---|
+| 🔥 **Active Memory** | Memory that works while you don't. Auto-capture, smart classification, overnight consolidation, trajectory learning. No "remember this" commands needed. |
 | 🧠 **Deep Recall** | Persistent memory across sessions. Semantic search. $0 to run. |
 | 🌙 **Dreaming** | Cross-agent overnight synthesis. Every agent wakes up knowing what the others did. |
 | 📚 **WikAI** | Auto-compiled knowledge base. The wiki is regenerated nightly from Mnemo. Never goes stale. |
@@ -613,7 +616,7 @@ future additions (Mnemo v4 Phase 1.5+).
 
 ## What It Does
 
-Mnemo Cortex is a **sidecar memory coprocessor** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.
+Mnemo Cortex is a **cognitive coprocessor with active memory** for AI agents. It watches your agent's session files from the outside, ingests every message into a local SQLite database, compresses older messages into summaries via LLM-backed compaction, and writes a `MNEMO-CONTEXT.md` file that your agent reads at bootstrap.
 
 No hooks. No agent modifications. No cloud dependency. Mnemo keeps your memory on disk — if either process restarts, the data is already there.
 
@@ -857,14 +860,14 @@ OpenClaw 2026.4.10 shipped a native Active Memory plugin. Some people have asked
 
 ### When to use which
 
-- **Active Memory:** Intra-session, same-agent, fast local recall. Your agent's personal scratchpad.
+- **OpenClaw's Active Memory:** Intra-session, same-agent, fast local recall. Your agent's personal scratchpad.
 - **Mnemo Cortex:** Cross-agent memory bus. When Agent A needs to know what Agent B learned. When memory must survive session resets, machine moves, or agent restarts.
 
-We run both. Active Memory handles per-agent recent context. Mnemo handles everything that crosses agents or needs durable archival. They stack; they don't compete.
+We run both. OpenClaw's Active Memory handles per-agent recent context. Mnemo handles everything that crosses agents or needs durable archival. They stack; they don't compete.
 
 ## Origin Story
 
-Mnemo Cortex started as a memory coprocessor designed by a small multi-agent team: a non-developer operator and several Claude/OpenClaw agents working as architect, builder, and live test subjects. The full backstory — how the architecture got designed, why agents pair-program with humans well, and what failed along the way — is in [Finding Mnemo](FINDING-MNEMO.md).
+Mnemo Cortex started as a memory system and evolved into a cognitive coprocessor, designed by a small multi-agent team: a non-developer operator and several Claude/OpenClaw agents working as architect, builder, and live test subjects. The full backstory — how the architecture got designed, why agents pair-program with humans well, and what failed along the way — is in [Finding Mnemo](FINDING-MNEMO.md).
 
 ## Credits
 
