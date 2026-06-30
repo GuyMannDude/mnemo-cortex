@@ -1,5 +1,24 @@
 # Changelog
 
+## v4.5.2 (2026-06-30) — Embedder refuse-and-alert (foundation-audit 4.5) + silence non-git-repo dreamer noise (2.4)
+
+**Problem.** On embedder failure the resilient chain failed over to any configured fallback and
+returned its vector unchecked. If that fallback's dimension differed from the index's locked 768-dim,
+the write hit `VecDimMismatch` deep in the insert path (ugly 500, no operator signal); and a total
+embedder outage raised a bare `RuntimeError` with no alert — the memory could quietly stop accepting
+saves with nobody told (audit 4.5). Separately, the nightly dreamer logged "⚠️ not a git repo —
+skipped" for any watched path without a `.git` (e.g. IGOR-2's `BRAIN_DIR` is the `brain/` subdir),
+cluttering every brief (audit 2.4).
+
+**Fix.** `ResilientEmbedding` self-calibrates a dimension lock from the first successful **primary**
+embed and rejects any later vector (primary or fallback) of a different dimension — a wrong-dim
+fallback can never reach the index. When nothing yields a valid-dim vector the embed is **REFUSED**
+(`EmbeddingRefused`, a `RuntimeError` subclass) and a rate-limited Discord alert fires (webhook from
+`MNEMO_ALERT_DISCORD_WEBHOOK` → `MNEMO_DREAM_DISCORD_WEBHOOK`; fail-safe if unset). Never silently
+lose context, never corrupt the index — the operator decides whether to wait or continue aware.
+`vec.py`'s 768-dim check remains the deeper backstop. Dreamer now skips non-git paths silently. Tests
+added for lock / same-dim-serve / wrong-dim-refuse / all-down-refuse+alert.
+
 ## bridge v2.12.2 (2026-06-29) — Fix: agent_startup overflowed the tool-result cap on large brain files
 
 **Problem.** `_runStartup` read the session lane file and the cross-agent docs (`active.md` etc.)

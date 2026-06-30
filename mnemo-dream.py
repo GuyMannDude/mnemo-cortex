@@ -1000,8 +1000,7 @@ def check_git_sync() -> str | None:
     for repo in _git_sync_repos():
         label = repo.name
         if not (repo / ".git").exists():
-            blocks.append(f"**{label}** (`{repo}`)\n- ⚠️ not a git repo — skipped")
-            continue
+            continue  # not a git checkout (e.g. BRAIN_DIR is a subdir) — skip silently (audit 2.4)
 
         lines = [f"**{label}** (`{repo}`)"]
 

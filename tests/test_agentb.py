@@ -19,6 +19,7 @@ from agentb.providers import (
     CircuitBreaker, ResilientReasoning, ResilientEmbedding,
     OllamaReasoning, OpenAIReasoning,
     create_resilient_reasoning, create_resilient_embedding,
+    EmbeddingRefused,
 )
 from agentb.cache import L1Cache, L2Index, l3_scan, cosine_similarity, ContextChunk
 
@@ -269,11 +270,97 @@ class TestResilientEmbedding:
             fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
         )
         resilient = create_resilient_embedding(config)
+        resilient._locked_dim = 3  # already-calibrated embedder; fallback matches index dim
         resilient.primary.embed = AsyncMock(side_effect=Exception("ollama down"))
         resilient.fallbacks[0].embed = AsyncMock(return_value=[0.4, 0.5, 0.6])
 
         result = await resilient.embed("test")
         assert result == [0.4, 0.5, 0.6]
+        assert resilient.failed_over
+
+    # ── Refuse-and-alert on embedder outage / wrong-dim fallback (4.5) ──
+
+    @pytest.mark.asyncio
+    async def test_wrong_dim_fallback_is_refused(self):
+        """Once the dim is locked from the primary, a fallback of a different dim
+        is rejected; with no valid vector the embed is REFUSED (protect index)."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
+        )
+        resilient = create_resilient_embedding(config)
+        # prime the lock from a good primary embed (dim 4)
+        resilient.primary.embed = AsyncMock(return_value=[0.1, 0.2, 0.3, 0.4])
+        assert await resilient.embed("ok") == [0.1, 0.2, 0.3, 0.4]
+        assert resilient._locked_dim == 4
+        # primary down; fallback returns a WRONG-dim vector (dim 3) → refuse
+        resilient.primary.embed = AsyncMock(side_effect=Exception("ollama down"))
+        resilient.fallbacks[0].embed = AsyncMock(return_value=[0.9, 0.9, 0.9])
+        with pytest.raises(EmbeddingRefused):
+            await resilient.embed("boom")
+
+    @pytest.mark.asyncio
+    async def test_same_dim_fallback_still_serves(self):
+        """A fallback matching the locked dim is still used — no false refusal."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
+        )
+        resilient = create_resilient_embedding(config)
+        resilient.primary.embed = AsyncMock(return_value=[1.0, 2.0, 3.0])  # lock dim 3
+        assert await resilient.embed("a") == [1.0, 2.0, 3.0]
+        resilient.primary.embed = AsyncMock(side_effect=Exception("down"))
+        resilient.fallbacks[0].embed = AsyncMock(return_value=[4.0, 5.0, 6.0])  # dim 3 OK
+        assert await resilient.embed("b") == [4.0, 5.0, 6.0]
+        assert resilient.failed_over
+
+    @pytest.mark.asyncio
+    async def test_all_down_refuses_and_alerts(self):
+        """All providers failing → EmbeddingRefused + exactly one Discord scream."""
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
+        )
+        resilient = create_resilient_embedding(config)
+        resilient.primary.embed = AsyncMock(side_effect=Exception("ollama down"))
+        resilient.fallbacks[0].embed = AsyncMock(side_effect=Exception("openai down"))
+        with patch("agentb.providers._alerter.scream", new=AsyncMock()) as scream:
+            with pytest.raises(EmbeddingRefused):
+                await resilient.embed("boom")
+            scream.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cold_start_wrong_dim_fallback_refused(self):
+        """The cold-start hole: primary never succeeded (no lock yet) and a
+        wrong-dim fallback. Validated against the hard index dim → refused, not
+        silently passed to vec (audit 4.5 review)."""
+        from agentb.vec import EMBED_DIM
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="google", model="gemini", api_key="k")],
+        )
+        resilient = create_resilient_embedding(config)
+        assert resilient._locked_dim is None  # nothing has embedded yet
+        resilient.primary.embed = AsyncMock(side_effect=Exception("down from boot"))
+        resilient.fallbacks[0].embed = AsyncMock(return_value=[0.1, 0.2])  # dim 2 != index
+        with pytest.raises(EmbeddingRefused):
+            await resilient.embed("x")
+        assert len([0.1, 0.2]) != EMBED_DIM  # sanity: the fallback was genuinely wrong-dim
+
+    @pytest.mark.asyncio
+    async def test_cold_start_index_dim_fallback_serves(self):
+        """Cold start with an index-dim fallback (the live Gemini-768 config)
+        still serves — the cold-start guard must not over-refuse."""
+        from agentb.vec import EMBED_DIM
+        config = ResilientProviderConfig(
+            primary=ProviderConfig(provider="ollama", model="nomic", api_base="http://localhost:11434"),
+            fallbacks=[ProviderConfig(provider="google", model="gemini", api_key="k")],
+        )
+        resilient = create_resilient_embedding(config)
+        resilient.primary.embed = AsyncMock(side_effect=Exception("down from boot"))
+        good = [0.0] * EMBED_DIM
+        resilient.fallbacks[0].embed = AsyncMock(return_value=good)
+        assert await resilient.embed("x") == good
         assert resilient.failed_over
 
     # ── Adaptive truncation on HTTP 400 (input too long) — v2.11.5 ──
@@ -336,6 +423,7 @@ class TestResilientEmbedding:
             fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
         )
         resilient = create_resilient_embedding(config)
+        resilient._locked_dim = 2  # already-calibrated embedder; fallback matches index dim
         # Primary 400s at every length, fallback succeeds.
         resilient.primary.embed = AsyncMock(side_effect=self._make_400())
         resilient.fallbacks[0].embed = AsyncMock(return_value=[0.7, 0.8])
@@ -353,6 +441,7 @@ class TestResilientEmbedding:
             fallbacks=[ProviderConfig(provider="openai", model="text-embedding-3-small", api_key="sk-test")],
         )
         resilient = create_resilient_embedding(config)
+        resilient._locked_dim = 1  # already-calibrated embedder; fallback matches index dim
         req = httpx.Request("POST", "http://localhost:11434/api/embed")
         resp_503 = httpx.Response(503, request=req)
         resilient.primary.embed = AsyncMock(

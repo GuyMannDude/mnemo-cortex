@@ -3,6 +3,7 @@ AgentB Provider Abstraction Layer v0.3.0
 Pluggable backends with circuit-breaker fallback chains.
 """
 
+import os
 import time
 import logging
 from abc import ABC, abstractmethod
@@ -13,6 +14,47 @@ import httpx
 from agentb.config import ProviderConfig, ResilientProviderConfig
 
 log = logging.getLogger("agentb.providers")
+
+
+class EmbeddingRefused(RuntimeError):
+    """No embedder produced a valid index-dim vector, so the embed is REFUSED.
+
+    Foundation-audit 4.5 (refuse-and-alert): on embedder outage or a wrong-dim
+    fallback we refuse rather than write a mismatched/missing vector — never
+    silently lose context, never corrupt the index. Subclasses RuntimeError so
+    existing `except RuntimeError`/`except Exception` callers still catch it.
+    """
+
+
+class _EmbedAlerter:
+    """Rate-limited Discord 'scream' for embedder refusal. Fail-safe: a missing
+    webhook or a failed post is logged, never raised — alerting must not add a
+    second failure on top of the embedder being down."""
+
+    _COOLDOWN = 300.0  # one alert per 5 min, so a sustained outage doesn't spam
+
+    def __init__(self):
+        self._last = 0.0
+
+    async def scream(self, msg: str):
+        now = time.time()
+        if now - self._last < self._COOLDOWN:
+            return
+        self._last = now
+        url = (os.environ.get("MNEMO_ALERT_DISCORD_WEBHOOK")
+               or os.environ.get("MNEMO_DREAM_DISCORD_WEBHOOK")
+               or os.environ.get("DISCORD_WEBHOOK_URL"))
+        if not url:
+            log.error(f"[ALERT no-webhook] {msg}")
+            return
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as c:
+                await c.post(url, json={"content": f"🚨 Mnemo embedder: {msg}"})
+        except Exception as e:
+            log.error(f"Discord embedder-alert post failed: {e}")
+
+
+_alerter = _EmbedAlerter()
 
 
 # ─────────────────────────────────────────────
@@ -194,6 +236,40 @@ class ResilientEmbedding:
         self.failed_over = False
         self._hc_result: Optional[bool] = None
         self._hc_at = 0.0
+        # Index dimension lock (4.5): self-calibrated from the first successful
+        # PRIMARY embed (the source of truth). Any later vector — primary or
+        # fallback — must match it, else it's rejected so a wrong-dim fallback
+        # can never reach the index. vec.EMBED_DIM is the deeper backstop.
+        self._locked_dim: Optional[int] = None
+
+    def _check_dim(self, vec: list[float], label: str, *, is_primary: bool) -> Optional[list[float]]:
+        """Return `vec` if its dimension is safe for the index, else None.
+
+        The lock self-calibrates from the first successful PRIMARY embed. Until
+        then — cold start, where the primary has never succeeded (e.g. a restart
+        during a primary outage) — a fallback is validated against vec's hard
+        EMBED_DIM, so a wrong-dim fallback can never reach the index even before
+        the lock is set."""
+        n = len(vec)
+        if self._locked_dim is None:
+            if is_primary:
+                self._locked_dim = n
+                return vec
+            from agentb.vec import EMBED_DIM
+            if n == EMBED_DIM:
+                return vec
+            log.error(
+                f"{label} cold-start fallback dim {n} != index dim {EMBED_DIM}; "
+                f"rejecting to protect the index (4.5)"
+            )
+            return None
+        if n == self._locked_dim:
+            return vec
+        log.error(
+            f"{label} returned dim {n} != locked index dim {self._locked_dim}; "
+            f"rejecting this vector to protect the index (4.5)"
+        )
+        return None
 
     async def _try_embed_adaptive(self, provider, text: str) -> list[float]:
         """Embed via one provider, halving input on HTTP 400 (context-length).
@@ -230,11 +306,15 @@ class ResilientEmbedding:
         else:
             try:
                 result = await self._try_embed_adaptive(self.primary, text)
-                if use_breaker:
-                    self.breaker.record_success()
-                    self.active_label = self.primary.label
-                    self.failed_over = False
-                return result
+                checked = self._check_dim(result, self.primary.label, is_primary=True)
+                if checked is not None:
+                    if use_breaker:
+                        self.breaker.record_success()
+                        self.active_label = self.primary.label
+                        self.failed_over = False
+                    return checked
+                # Wrong-dim primary = misconfig, not an outage — don't trip the
+                # breaker; fall through to fallbacks, then refuse.
             except Exception as e:
                 if use_breaker:
                     self.breaker.record_failure()
@@ -243,15 +323,28 @@ class ResilientEmbedding:
         for i, fb in enumerate(self.fallbacks):
             try:
                 result = await self._try_embed_adaptive(fb, text)
+                checked = self._check_dim(result, fb.label, is_primary=False)
+                if checked is None:
+                    continue  # wrong-dim fallback rejected — would corrupt the index
                 if use_breaker:
                     self.active_label = fb.label
                     self.failed_over = True
                 log.info(f"Embedding served by fallback [{i}]: {fb.label}")
-                return result
+                return checked
             except Exception as e:
                 log.warning(f"Fallback [{i}] embedding failed ({fb.label}): {e}")
 
-        raise RuntimeError("All embedding providers failed (primary + all fallbacks)")
+        # 4.5 refuse-and-alert: nothing produced a valid index-dim vector. Scream
+        # on Discord and refuse — never write a missing/wrong-dim vector.
+        await _alerter.scream(
+            f"no embedder produced a valid {self._locked_dim or '?'}-dim vector — REFUSING new "
+            f"saves to protect the index (primary={self.primary.label}, {len(self.fallbacks)} fallback(s)). "
+            "Recall + writes will error until the embedder is back."
+        )
+        raise EmbeddingRefused(
+            f"No embedder produced a valid index-dim vector "
+            f"(primary={self.primary.label} + {len(self.fallbacks)} fallback(s)); save refused."
+        )
 
     async def health_check(self) -> bool:
         # Reports PRIMARY health truthfully (real probe), TTL-cached for /health.
