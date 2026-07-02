@@ -1,5 +1,28 @@
 # Changelog
 
+## v4.6.0 (2026-07-01) — nomic task-prefix fix + full store re-embed (`migrate reindex`)
+
+**Problem.** The live embedder is ollama `nomic-embed-text`, which REQUIRES task-instruction
+prefixes (`search_query: ` for queries, `search_document: ` for stored content) — and ollama does
+not add them. Mnemo embedded both sides bare, compressing the whole similarity band to ~0.49–0.62
+(gibberish ~0.50, on-topic 0.51–0.58), so good recalls and noise overlapped. That compression is
+what forced v4.3.0's dead `relevance_floor` and v4.5.3's noise-limited `gap_threshold` nudge.
+
+**Fix.** Threaded a `task_type` ("query"/"document") through the embed path; the prefix is applied
+INSIDE `OllamaEmbedding` on the API payload only — callers' text, `vec_sources.text`, and the
+4000-char truncation math stay un-prefixed. Default is "document" so a missed call site degrades to
+the already-correct document case, never a mis-prefixed query. The Google fallback maps to its
+native `taskType` (`RETRIEVAL_QUERY`/`RETRIEVAL_DOCUMENT`) instead of a text prefix; other
+providers accept-and-ignore. Because the existing store was embedded prefix-less, query prefixes
+alone would create a train/serve mismatch — so this ships with **`mnemo-cortex migrate reindex`**:
+per-tenant backup (memory/ + vec_index.sqlite + trajectories/), re-embed of every memory AND
+trajectory through the PRIMARY embedder only (aborts loudly if it goes down — a mid-run fallback
+would write mixed-space vectors, the exact corruption being removed), then an L1/L2 cache wipe
+(they hold old-space document embeddings; L3 re-embeds live and self-heals). Idempotent and
+resumable. Run offline (server stopped): old and new vectors have no consistent-recall path while
+they coexist. Post-migration follow-up: re-measure the decompressed band and retune
+`gap_threshold` (0.02 was tuned for the compressed band).
+
 ## v4.5.3 (2026-07-01) — Query-expansion `gap_threshold` retuned for IGOR-2's nomic embedder (0.03 → 0.02)
 
 **Problem.** The Thesaurus Loop's whiff trigger (`should_expand`) escalates when a first pass is

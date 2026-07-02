@@ -189,7 +189,7 @@ async def analyze_tenant(
         full_text = summary + ("\n" + "\n".join(key_facts) if key_facts else "")
 
         try:
-            embedding = await embedder.embed(full_text, use_breaker=False)
+            embedding = await embedder.embed(full_text, use_breaker=False, task_type="document")
         except Exception as e:
             log.warning(f"Analyst embed failed for '{agent_id}': {e}")
             stats["failed"] += 1

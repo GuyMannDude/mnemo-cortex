@@ -71,7 +71,7 @@ from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="4.5.3", prog_name="mnemo-cortex")
+@click.version_option(version="4.6.0", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
@@ -1264,6 +1264,53 @@ def migrate_reclassify_cmd(agents, all_agents, dry_run, no_backup, unknown_only,
         agent_ids, dry_run=dry_run, backup=not no_backup,
         include_routine=not unknown_only, purge_noise=purge_noise, config=config,
     )
+
+
+@migrate.command("reindex")
+@click.option("--agent", "-a", "agents", multiple=True, help="Agent id (repeatable).")
+@click.option("--all", "all_agents", is_flag=True, help="Every agent store found on disk.")
+@click.option("--dry-run", is_flag=True, help="Count what would be re-embedded; write nothing.")
+@click.option("--no-backup", is_flag=True, help="Skip the pre-migration snapshot (not recommended).")
+@click.option("--include-trajectories/--no-trajectories", default=True,
+              help="Also re-embed the per-tenant trajectory index (default: on).")
+def migrate_reindex_cmd(agents, all_agents, dry_run, no_backup, include_trajectories):
+    """Re-embed every stored vector with the nomic task prefix (server must be STOPPED).
+
+    \b
+    One-time deploy step for the search_document:/search_query: prefix fix.
+    Backs up memory/ + vec_index.sqlite + trajectories/ per tenant, re-embeds
+    through the PRIMARY embedder only (aborts loudly if it goes down), then
+    wipes the L1/L2 caches so no old-space vector survives. Idempotent.
+    """
+    from agentb.config import load_config
+    from agentb.migrate import migrate_reindex, ReindexAbort
+
+    config = load_config()
+
+    if all_agents:
+        base = Path(config.data_dir or DATA_DIR) / "agents"
+        agent_ids = sorted(
+            d.name for d in base.glob("*") if (d / "memory").is_dir()
+        ) if base.exists() else []
+    else:
+        agent_ids = list(agents)
+
+    if not agent_ids:
+        console.print("[yellow]No agents selected. Use [bold]--agent <id>[/] or [bold]--all[/].[/]")
+        return
+
+    console.print(
+        f"[bold]Reindex[/] {'[yellow](dry run)[/] ' if dry_run else ''}"
+        f"→ {', '.join(agent_ids)}"
+    )
+    try:
+        migrate_reindex(
+            agent_ids, dry_run=dry_run, backup=not no_backup,
+            include_trajectories=include_trajectories, config=config,
+        )
+    except ReindexAbort as e:
+        console.print(f"[bold red]ABORTED:[/] {e}")
+        raise SystemExit(1)
 
 
 @migrate.command("vec-backfill")

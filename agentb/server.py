@@ -573,7 +573,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.5.3",
+        version="4.6.0",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -626,7 +626,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.5.3",
+            version="4.6.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -842,7 +842,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             if len(pass_chunks) < req.max_results and not vec_served_category:
                 l3_results = [
                     c for c in await l3_scan(memory_dir, query_embedding,
-                                              embed_fn=embedder.embed,
+                                              # L3 embeds candidate DOCUMENTS, not the query
+                                              embed_fn=lambda t: embedder.embed(t, task_type="document"),
                                               threshold=config.cache.l3_similarity_threshold,
                                               top_k=overfetch,
                                               prefilter=passes_metadata,
@@ -854,7 +855,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             return pass_chunks
 
         try:
-            query_embedding = await embedder.embed(req.prompt)
+            query_embedding = await embedder.embed(req.prompt, task_type="query")
         except Exception as e:
             raise HTTPException(503, f"Embedding unavailable: {e}")
 
@@ -873,7 +874,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             extra_passes = []
             for v in variants:
                 try:
-                    v_emb = await embedder.embed(v)
+                    v_emb = await embedder.embed(v, task_type="query")
                 except Exception as e:
                     # A failed variant embed must not sink the recall — skip it.
                     log.warning(f"expansion variant embed failed (skipped): {e}")
@@ -947,7 +948,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         # Cross-reference memory
         try:
-            query_embedding = await embedder.embed(req.prompt)
+            query_embedding = await embedder.embed(req.prompt, task_type="query")
             l1_hits = l1.search(query_embedding, top_k=2, persona=persona)
             l2_hits = l2.search(query_embedding, top_k=2, persona=persona)
             context_chunks = l1_hits + l2_hits
@@ -1090,7 +1091,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         l1_updated = 0
         try:
             full_text = summary + "\n" + "\n".join(key_facts)
-            embedding = await embedder.embed(full_text, use_breaker=not req.batch)
+            embedding = await embedder.embed(full_text, use_breaker=not req.batch, task_type="document")
             # v4.1: new memories index into VEC only. The legacy L2 tier kept a
             # full copy of every embedding in one index.json rewritten on every
             # save (cc's had grown to 43 MB → ~43 MB of disk writes per minute
@@ -1118,7 +1119,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 pfacts = [f for f in key_facts if project.lower() in f.lower()]
                 if pfacts:
                     pc += "Facts:\n" + "\n".join(f"- {f}" for f in pfacts)
-                pe = await embedder.embed(pc, use_breaker=not req.batch)
+                pe = await embedder.embed(pc, use_breaker=not req.batch, task_type="document")
                 await l1.add(pc, f"project:{project}", pe)
                 l1_updated += 1
         except HTTPException:
@@ -1154,7 +1155,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # recalled (silent loss is the failure mode Vapor Truth forbids).
         text = traj_embedding_text(req.task_description, req.outcome, steps)
         try:
-            embedding = await embedder.embed(text)
+            embedding = await embedder.embed(text, task_type="document")
         except Exception as e:
             log.error(f"Trajectory embed failed (agent={req.agent_id}): {e}")
             raise HTTPException(503, f"Embedder unavailable, trajectory not saved: {e}")
@@ -1195,7 +1196,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         traj: TrajectoryStore = tenant["trajectories"]
 
         try:
-            query_embedding = await embedder.embed(req.query)
+            query_embedding = await embedder.embed(req.query, task_type="query")
         except Exception as e:
             log.error(f"Trajectory recall embed failed (agent={req.agent_id}): {e}")
             raise HTTPException(503, f"Embedder unavailable: {e}")
@@ -1345,7 +1346,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         stats = await vec_backfill(
             vec_store,
             memory_dir,
-            embedder.primary.embed,
+            lambda t: embedder.primary.embed(t, task_type="document"),
             skip_existing=skip_existing,
         )
         return {"agent_id": agent_id or "default", **stats}
@@ -1465,7 +1466,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         bid = hashlib.sha256(content.encode()).hexdigest()[:12]
                         if bid in {b.get("id") for b in l1.bundles}:
                             continue
-                        embedding = await embedder.embed(content, use_breaker=False)
+                        embedding = await embedder.embed(content, use_breaker=False, task_type="document")
                         mem_id = mem.get("id", mem_file.stem)
                         await l1.add(content, f"precache:{mem_id}", embedding,
                                      memory_id=mem_id, category=mem.get("category"))
@@ -1527,7 +1528,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             }
                             (memory_dir / f"{mid}.json").write_text(
                                 json.dumps(entry, indent=2, default=str))
-                            emb = await embedder.embed(summary, use_breaker=False)
+                            emb = await embedder.embed(summary, use_breaker=False, task_type="document")
                             tenant["vec"].upsert(
                                 mid, summary, emb,
                                 source_file=(memory_dir / f"{mid}.json").as_posix(),

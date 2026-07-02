@@ -43,7 +43,7 @@ class ScriptedEmbedder:
     def __init__(self, vec):
         self.vec = vec
 
-    async def embed(self, text, *, use_breaker=True):
+    async def embed(self, text, *, use_breaker=True, task_type="document"):
         assert use_breaker is False, "analyst must not touch the live breaker"
         return list(self.vec)
 
@@ -142,7 +142,7 @@ def test_note_persist_failure_leaves_sources_unmarked_for_retry(tmp_path):
     the insight is silently lost while the source is marked read (the exact
     data-loss path the v4.1 review caught)."""
     class FailingEmbedder:
-        async def embed(self, text, *, use_breaker=True):
+        async def embed(self, text, *, use_breaker=True, task_type="document"):
             raise RuntimeError("embedder down")
 
     memory_dir = tmp_path / "memory"

@@ -83,7 +83,11 @@ class EmbeddingProvider(ABC):
         self.config = config
 
     @abstractmethod
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
+        # task_type: "query" for retrieval queries, "document" for stored
+        # content. Default "document" — a call site that forgets to thread it
+        # degrades to the (already-correct) document case, never mis-prefixes
+        # a query. Providers that don't distinguish task types ignore it.
         pass
 
     @abstractmethod
@@ -271,7 +275,7 @@ class ResilientEmbedding:
         )
         return None
 
-    async def _try_embed_adaptive(self, provider, text: str) -> list[float]:
+    async def _try_embed_adaptive(self, provider, text: str, *, task_type: str = "document") -> list[float]:
         """Embed via one provider, halving input on HTTP 400 (context-length).
 
         An input-too-long 400 is a property of the input, not the provider —
@@ -282,7 +286,7 @@ class ResilientEmbedding:
         current = text
         while True:
             try:
-                return await provider.embed(current)
+                return await provider.embed(current, task_type=task_type)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400 and len(current) > self.ADAPTIVE_MIN_CHARS:
                     new_len = max(self.ADAPTIVE_MIN_CHARS, len(current) // 2)
@@ -294,7 +298,7 @@ class ResilientEmbedding:
                     continue
                 raise
 
-    async def embed(self, text: str, *, use_breaker: bool = True) -> list[float]:
+    async def embed(self, text: str, *, use_breaker: bool = True, task_type: str = "document") -> list[float]:
         # Batch callers (e.g. the nightly dreamer) pass use_breaker=False: they
         # hit the same embedding backend as the live /context path but must NOT
         # share its circuit-breaker failure state. A large batch must not be
@@ -305,7 +309,7 @@ class ResilientEmbedding:
             log.info(f"Primary embedding skipped (circuit open, retry in {self.breaker.retry_in:.0f}s)")
         else:
             try:
-                result = await self._try_embed_adaptive(self.primary, text)
+                result = await self._try_embed_adaptive(self.primary, text, task_type=task_type)
                 checked = self._check_dim(result, self.primary.label, is_primary=True)
                 if checked is not None:
                     if use_breaker:
@@ -322,7 +326,7 @@ class ResilientEmbedding:
 
         for i, fb in enumerate(self.fallbacks):
             try:
-                result = await self._try_embed_adaptive(fb, text)
+                result = await self._try_embed_adaptive(fb, text, task_type=task_type)
                 checked = self._check_dim(result, fb.label, is_primary=False)
                 if checked is None:
                     continue  # wrong-dim fallback rejected — would corrupt the index
@@ -392,12 +396,21 @@ class OllamaReasoning(ReasoningProvider):
             return False
 
 
+# nomic-embed-text requires task-instruction prefixes and ollama does NOT add
+# them automatically — un-prefixed embeds compress the similarity band (~0.49–
+# 0.62 measured live) so on-topic and noise overlap. The prefix rides only the
+# API payload, never the caller's text, so stored snippets stay un-prefixed.
+# Strict dict access: an unknown task_type is a caller bug — fail loud.
+_NOMIC_PREFIX = {"query": "search_query: ", "document": "search_document: "}
+
+
 class OllamaEmbedding(EmbeddingProvider):
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
         import httpx
+        payload_text = f"{_NOMIC_PREFIX[task_type]}{text}"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{self.config.api_base}/api/embed",
-                                     json={"model": self.config.model, "input": text})
+                                     json={"model": self.config.model, "input": payload_text})
             resp.raise_for_status()
             embeddings = resp.json().get("embeddings", [[]])
             return embeddings[0] if embeddings else []
@@ -443,7 +456,7 @@ class OpenAIEmbedding(EmbeddingProvider):
     def _url(self):
         return self.config.api_base or "https://api.openai.com/v1"
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
         import httpx
         headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -557,7 +570,7 @@ class OpenRouterReasoning(ReasoningProvider):
 
 
 class OpenRouterEmbedding(EmbeddingProvider):
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
         import httpx
         headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
         base = self.config.api_base or "https://openrouter.ai/api/v1"
@@ -593,11 +606,16 @@ class GoogleReasoning(ReasoningProvider):
 
 
 class GoogleEmbedding(EmbeddingProvider):
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
         import httpx
         base = self.config.api_base or "https://generativelanguage.googleapis.com/v1beta"
         url = f"{base}/models/{self.config.model}:embedContent?key={self.config.api_key}"
-        payload: dict = {"content": {"parts": [{"text": text}]}}
+        # No text prefix (nomic-specific) — map to Gemini's native taskType
+        # param instead so fallback embeds are task-correct too.
+        payload: dict = {
+            "content": {"parts": [{"text": text}]},
+            "taskType": "RETRIEVAL_QUERY" if task_type == "query" else "RETRIEVAL_DOCUMENT",
+        }
         # Matryoshka truncation: gemini-embedding-* models output 3072 dims natively
         # but support outputDimensionality to truncate. Set extra.output_dimensionality
         # in config to match the consumer's vec store width (e.g. 768 for nomic compat).
@@ -613,7 +631,7 @@ class GoogleEmbedding(EmbeddingProvider):
 
 
 class HuggingFaceEmbedding(EmbeddingProvider):
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
         import httpx
         if self.config.api_base:
             async with httpx.AsyncClient(timeout=15.0) as client:

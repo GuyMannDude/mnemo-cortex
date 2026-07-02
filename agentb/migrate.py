@@ -36,7 +36,7 @@ console = Console()
 
 
 def _backup(data_dir: Path) -> Path:
-    """Snapshot memory/ + vec_index.sqlite to a timestamped backup dir."""
+    """Snapshot memory/ + vec_index.sqlite + trajectories/ to a timestamped backup dir."""
     ts = time.strftime("%Y%m%d-%H%M%S")
     dest = data_dir / ".migrate-backups" / ts
     dest.mkdir(parents=True, exist_ok=True)
@@ -46,6 +46,9 @@ def _backup(data_dir: Path) -> Path:
     vec = data_dir / "vec_index.sqlite"
     if vec.exists():
         shutil.copy2(vec, dest / "vec_index.sqlite")
+    traj = data_dir / "trajectories"
+    if traj.is_dir():
+        shutil.copytree(traj, dest / "trajectories")
     return dest
 
 
@@ -187,6 +190,198 @@ def migrate_reclassify(agent_ids: list[str], *, dry_run: bool, backup: bool,
         include_routine=include_routine, purge_noise=purge_noise, config=config,
     ))
     render_results(results, dry_run)
+    return results
+
+
+# ─────────────────────────────────────────────
+#  nomic-prefix migration — full store re-embed
+# ─────────────────────────────────────────────
+
+class ReindexAbort(RuntimeError):
+    """Primary embedder is down mid-reindex — stop the whole run.
+
+    The reindex exists to make the store single-space (document-prefixed
+    primary vectors). Falling back to another provider mid-run would silently
+    re-create the mixed-space problem, so a persistent primary failure aborts.
+    Re-running resumes safely: memory_ids are deterministic and upsert REPLACEs.
+    """
+
+
+async def _embed_or_abort(embed, text: str) -> tuple[list[float], str]:
+    """Embed with adaptive truncation; retry transient failures, then abort."""
+    from agentb.vec import embed_with_adaptive_truncation
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            return await embed_with_adaptive_truncation(embed, text)
+        except Exception as e:
+            last_err = e
+            if attempt < 3:
+                await asyncio.sleep(2.0 * attempt)
+    raise ReindexAbort(f"primary embedder failed 3x, aborting reindex: {last_err}")
+
+
+def _wipe_caches(data_dir: Path) -> int:
+    """Delete L1 bundles + the L2 index — they hold OLD-space document
+    embeddings that would be cosine-compared against NEW-space queries.
+    L3 re-embeds live, so it self-heals. Returns files removed."""
+    removed = 0
+    l1 = data_dir / "cache" / "l1"
+    if l1.is_dir():
+        for f in l1.glob("*.json"):
+            f.unlink(missing_ok=True)
+            removed += 1
+    l2_index = data_dir / "cache" / "l2" / "index.json"
+    if l2_index.exists():
+        l2_index.unlink()
+        removed += 1
+    return removed
+
+
+async def _reindex_one(agent_id: str, data_dir: Path, embed, *, dry_run: bool,
+                       backup: bool, include_trajectories: bool) -> dict:
+    from agentb.vec import VecStore, iter_memory_entries
+    from agentb.trajectory import TrajectoryStore, embedding_text
+
+    memory_dir = data_dir / "memory"
+    if not memory_dir.is_dir():
+        console.print(f"  [yellow]{agent_id}: no memory dir at {memory_dir} — skipping[/]")
+        return {"agent": agent_id, "skipped_empty": True}
+
+    entries = list(iter_memory_entries(memory_dir))
+    traj_dir = data_dir / "trajectories"
+    traj_records: list[dict] = []
+    if include_trajectories and traj_dir.is_dir():
+        ts = TrajectoryStore(traj_dir)
+        try:
+            traj_records = list(ts._load(None).values())
+        finally:
+            ts.close()
+
+    stats = {"agent": agent_id, "memories": len(entries), "trajectories": len(traj_records),
+             "reembedded": 0, "traj_reembedded": 0, "truncated": 0, "cache_files_wiped": 0,
+             "backup": None}
+    if dry_run:
+        return stats
+
+    if backup:
+        backup_path = _backup(data_dir)
+        stats["backup"] = str(backup_path)
+        console.print(f"  [dim]{agent_id}: backed up → {backup_path}[/]")
+
+    store = VecStore(data_dir / "vec_index.sqlite")
+    try:
+        with Progress(
+            TextColumn("[cyan]" + agent_id + " memories[/]"), BarColumn(),
+            TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
+            console=console, transient=True,
+        ) as progress:
+            task = progress.add_task("reindex", total=len(entries))
+            for memory_id, text, path, created_at, category in entries:
+                vec, stored_text = await _embed_or_abort(embed, text)
+                if len(stored_text) < len(text):
+                    stats["truncated"] += 1
+                store.upsert(
+                    memory_id, stored_text, vec,
+                    source_file=path.as_posix(),
+                    created_at=created_at,
+                    category=category,
+                )
+                stats["reembedded"] += 1
+                progress.update(task, advance=1)
+    finally:
+        store.close()
+
+    if traj_records:
+        ts = TrajectoryStore(traj_dir)
+        try:
+            with Progress(
+                TextColumn("[cyan]" + agent_id + " trajectories[/]"), BarColumn(),
+                TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
+                console=console, transient=True,
+            ) as progress:
+                task = progress.add_task("traj-reindex", total=len(traj_records))
+                for rec in traj_records:
+                    text = embedding_text(
+                        rec.get("task_description", ""), rec.get("outcome", ""),
+                        rec.get("steps") or [],
+                    )
+                    if not text or not rec.get("id"):
+                        progress.update(task, advance=1)
+                        continue
+                    vec, stored_text = await _embed_or_abort(embed, text)
+                    ts.vec.upsert(
+                        rec["id"], stored_text, vec,
+                        source_file=ts._jsonl_path(rec.get("task_type", "unknown")).as_posix(),
+                        created_at=rec.get("created_at"),
+                        category=rec.get("task_type"),
+                    )
+                    stats["traj_reembedded"] += 1
+                    progress.update(task, advance=1)
+        finally:
+            ts.close()
+
+    stats["cache_files_wiped"] = _wipe_caches(data_dir)
+    return stats
+
+
+async def run_reindex(agent_ids: list[str], *, dry_run: bool, backup: bool,
+                      include_trajectories: bool, config=None, embed=None) -> list[dict]:
+    config = config or load_config()
+    if embed is None and not dry_run:
+        from agentb.providers import create_resilient_embedding
+        # Force PRIMARY (nomic) — never the resilient wrapper. A fallback embed
+        # mid-migration would write a different-space vector, which is the exact
+        # corruption this reindex exists to remove.
+        embedder = create_resilient_embedding(config.embedding)
+        primary = embedder.primary
+        if not await primary.health_check():
+            raise ReindexAbort(
+                f"primary embedder {primary.label} failed health check — "
+                "bring it up, then re-run (idempotent)."
+            )
+        embed = lambda t: primary.embed(t, task_type="document")
+    results = []
+    for agent_id in agent_ids:
+        data_dir = get_agent_data_dir(config, agent_id)
+        results.append(await _reindex_one(
+            agent_id, data_dir, embed, dry_run=dry_run, backup=backup,
+            include_trajectories=include_trajectories,
+        ))
+    return results
+
+
+def render_reindex_results(results: list[dict], dry_run: bool) -> None:
+    table = Table(title="Reindex " + ("(DRY RUN — nothing written)" if dry_run else "complete"))
+    table.add_column("agent", style="cyan")
+    table.add_column("memories", justify="right")
+    table.add_column("re-embedded", justify="right")
+    table.add_column("trajectories", justify="right")
+    table.add_column("traj re-embedded", justify="right")
+    table.add_column("truncated", justify="right")
+    table.add_column("caches wiped", justify="right")
+    for r in results:
+        if r.get("skipped_empty"):
+            table.add_row(r["agent"], "—", "—", "—", "—", "—", "—")
+            continue
+        table.add_row(
+            r["agent"], str(r["memories"]), str(r["reembedded"]),
+            str(r["trajectories"]), str(r["traj_reembedded"]),
+            str(r["truncated"]), str(r["cache_files_wiped"]),
+        )
+    console.print(table)
+
+
+def migrate_reindex(agent_ids: list[str], *, dry_run: bool, backup: bool,
+                    include_trajectories: bool, config=None) -> list[dict]:
+    """Sync entrypoint for the CLI. Re-embeds every stored vector through the
+    PRIMARY embedder with the nomic `search_document: ` prefix (one-time deploy
+    step for the task-prefix fix — run with the server STOPPED)."""
+    results = asyncio.run(run_reindex(
+        agent_ids, dry_run=dry_run, backup=backup,
+        include_trajectories=include_trajectories, config=config,
+    ))
+    render_reindex_results(results, dry_run)
     return results
 
 

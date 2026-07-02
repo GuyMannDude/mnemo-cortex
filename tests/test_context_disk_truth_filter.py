@@ -40,7 +40,7 @@ class FakeEmbedding:
     active_label = "fake/embed"
     @property
     def status(self): return _STATUS
-    async def embed(self, text, *, use_breaker=True): return list(VEC)
+    async def embed(self, text, *, use_breaker=True, task_type="document"): return list(VEC)
     async def health_check(self): return True
 
 

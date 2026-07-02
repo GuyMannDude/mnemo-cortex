@@ -262,7 +262,7 @@ class _RecordingEmbedding:
     def status(self):
         return _STATUS
 
-    async def embed(self, text, *, use_breaker=True):
+    async def embed(self, text, *, use_breaker=True, task_type="document"):
         self.embedded.append(text)
         return list(VEC)
 
@@ -278,7 +278,7 @@ class _DiscriminatingEmbedding(_RecordingEmbedding):
     not just hand-fed relevances (gap = 1.0 - 0.894 = 0.106 >= gap_threshold)."""
     active_label = "fake/embed-discriminating"
 
-    async def embed(self, text, *, use_breaker=True):
+    async def embed(self, text, *, use_breaker=True, task_type="document"):
         self.embedded.append(text)
         v = [0.0] * 768
         v[0] = 1.0
