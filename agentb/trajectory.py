@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -107,6 +108,11 @@ class TrajectoryStore:
         # task_type stem -> (mtime, {id: record}). Avoids re-parsing JSONL on
         # every recall; invalidated when the file's mtime changes.
         self._cache: dict[str, tuple[float, dict[str, dict]]] = {}
+        # Recall reinforcement (v4.7): mutable counters live in a sidecar JSON,
+        # NOT in the recipe JSONLs — those are append-only crash-safe truth, and
+        # in-place mutation would break their torn-line recovery story. The
+        # sidecar is rewritten whole via tmp+rename (atomic on POSIX and NTFS).
+        self._stats_path = traj_dir / "recall_stats.json"
 
     def close(self) -> None:
         self.vec.close()
@@ -129,6 +135,9 @@ class TrajectoryStore:
         token_cost: Optional[int] = None,
         model: Optional[str] = None,
         duration_seconds: Optional[int] = None,
+        derived_from: Optional[str] = None,
+        source: str = "agent",
+        evidence_source: Optional[str] = None,
     ) -> dict:
         """Append a trajectory to its JSONL and index its embedding.
 
@@ -153,6 +162,13 @@ class TrajectoryStore:
             "token_cost": token_cost,
             "model": model,
             "duration_seconds": duration_seconds,
+            # v4.7 provenance: source="agent" (hand-saved recipe, Phase 1) or
+            # "dreamer" (Stage 0.7 distilled strategy). derived_from marks
+            # whether a distilled lesson came from a success or a failure —
+            # hand-saved recipes are implicitly successes and leave it None.
+            "derived_from": derived_from,
+            "source": source,
+            "evidence_source": evidence_source,
             "timestamp": _iso(ts),
             "created_at": ts,
         }
@@ -224,6 +240,47 @@ class TrajectoryStore:
         self._cache[path.stem] = (mtime, records)
         return records
 
+    # ── Recall stats (v4.7 reinforcement) ──
+
+    def _load_stats(self) -> dict[str, dict]:
+        if not self._stats_path.exists():
+            return {}
+        try:
+            data = json.loads(self._stats_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError) as e:
+            # Stats are reinforcement metadata, not recipe truth — a corrupt
+            # sidecar must never break recall. Start fresh, loudly.
+            log.warning(f"recall_stats.json unreadable ({e}); resetting stats")
+            return {}
+
+    def _bump_recall_stats(self, traj_ids: list[str]) -> None:
+        # Structural guarantee: reinforcement metadata must NEVER sink a recall.
+        # Shape-coerce each entry (a sidecar that parses as JSON can still hold
+        # scalars or junk counts), and catch everything else at the boundary —
+        # the caller has already built its results.
+        if not traj_ids:
+            return
+        try:
+            stats = self._load_stats()
+            now = time.time()
+            for tid in traj_ids:
+                entry = stats.get(tid)
+                if not isinstance(entry, dict):
+                    entry = {}
+                    stats[tid] = entry
+                try:
+                    count = int(entry.get("recall_count") or 0)
+                except (TypeError, ValueError):
+                    count = 0
+                entry["recall_count"] = count + 1
+                entry["last_recalled"] = now
+            tmp = self._stats_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(stats, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self._stats_path)
+        except Exception as e:
+            log.warning(f"recall stats bump failed (non-fatal, recall unaffected): {e}")
+
     def recall(
         self,
         query_embedding: list[float],
@@ -275,6 +332,11 @@ class TrajectoryStore:
                 "composite": round(composite, 4),
             }
             out.append(result)
+        # Reinforcement: every returned recipe counts as a recall. This is the
+        # observable proxy for "recalled and used" — the curator (Stage 0.7
+        # flag pass) treats never-recalled trajectories as consolidation
+        # candidates after STALE_AFTER_DAYS.
+        self._bump_recall_stats([r["id"] for r in out])
         return out
 
     def count(self) -> int:

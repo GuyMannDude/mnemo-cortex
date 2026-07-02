@@ -26,7 +26,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -262,6 +262,15 @@ class TrajectorySaveRequest(BaseModel):
     token_cost: Optional[int] = Field(None, ge=0)
     model: Optional[str] = None
     duration_seconds: Optional[int] = Field(None, ge=0)
+    # v4.7 provenance (Dreamer Stage 0.7 distillation). Hand-saved Phase-1
+    # recipes omit all three: source defaults to "agent", derived_from stays
+    # None (a hand-saved recipe is implicitly a success).
+    derived_from: Optional[Literal["success", "failure"]] = Field(
+        None, description="For distilled strategies: lesson from a success or a failure")
+    source: Literal["agent", "dreamer"] = Field(
+        "agent", description="agent = hand-saved recipe; dreamer = Stage 0.7 distilled")
+    evidence_source: Optional[str] = Field(
+        None, max_length=500, description="Where the lesson was observed, e.g. session id + date")
 
 
 class TrajectorySaveResponse(BaseModel):
@@ -573,7 +582,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.6.0",
+        version="4.7.0",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -626,7 +635,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.6.0",
+            version="4.7.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -1172,6 +1181,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 token_cost=req.token_cost,
                 model=req.model,
                 duration_seconds=req.duration_seconds,
+                derived_from=req.derived_from,
+                source=req.source,
+                evidence_source=req.evidence_source,
             )
         except VecDimMismatch as e:
             log.error(f"Trajectory vec dim mismatch (agent={req.agent_id}): {e}")

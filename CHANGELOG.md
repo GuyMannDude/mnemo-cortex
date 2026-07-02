@@ -1,5 +1,28 @@
 # Changelog
 
+## v4.7.0 (2026-07-02) — Trajectory Phase 2: Dreamer strategy distillation (Stage 0.7)
+
+**Problem.** Phase 1 (v4.5.0) captures task recipes only when an agent explicitly calls
+`mnemo_save_trajectory` — learning the agent doesn't think to save evaporates with the session.
+The original Phase-2 spec assumed the Developer Dump would supply raw trajectories, but the dump
+hook lives in the MCP bridge and only sees Mnemo tool calls (325 lines in 7 weeks for the busiest
+agent) — it cannot reconstruct how a task was actually executed, and it accumulates on the agent's
+machine, not the Dreamer's.
+
+**Fix.** New Dreamer **Stage 0.7** distills strategies from the jsonl-sync **session streams**
+already landing server-side as `session_log` writebacks (ordered tool sequences + the agent's
+narrated turns, grouped by a real `session_id`). Per session, an LLM judge segments the stream at
+task boundaries (context switches — never fixed windows, which split tasks into fragments), then
+conservatively emits 0..N strategy items from clear successes AND clear failures. Items are stored
+in the existing Phase-1 trajectory store via `/trajectory/save` (`source="dreamer"`,
+`derived_from=success|failure`, `evidence_source`) and recalled through `mnemo_recall_trajectory`
+— zero new retrieval infrastructure, no new L2 category. Reinforcement per Opie bus #995:
+`/trajectory/recall` now bumps a `recall_stats.json` sidecar (atomic tmp+rename; counters never
+touch the append-only recipe JSONLs), and a nightly curation pass flags trajectories with no
+save/recall activity in 90 days for review — flag-only, nothing is auto-deleted. Gated by
+`MNEMO_DREAM_STRATEGIES` (default OFF); `--dry-run` runs distillation and prints items without
+posting (the human quality gate).
+
 ## v4.6.0 (2026-07-01) — nomic task-prefix fix + full store re-embed (`migrate reindex`)
 
 **Problem.** The live embedder is ollama `nomic-embed-text`, which REQUIRES task-instruction

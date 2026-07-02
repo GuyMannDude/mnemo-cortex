@@ -127,6 +127,28 @@ FACT_EXTRACTION_CHUNK_CHARS = int(os.getenv("MNEMO_DREAM_FACT_CHUNK_CHARS", "200
 # still truncates. Facts are cheap output — headroom here costs little.
 FACT_EXTRACTION_MAX_TOKENS = int(os.getenv("MNEMO_DREAM_FACT_MAX_TOKENS", "8192"))
 
+# Stage 0.7 — trajectory strategy distillation (v4.7, Trajectory Phase 2, Opie
+# bus #995). Opt-in and default OFF like the Developer Dump: set
+# MNEMO_DREAM_STRATEGIES=1 to enable. --dry-run runs the distillation and
+# prints the items but never posts them (the human quality gate).
+MNEMO_DREAM_STRATEGIES = os.getenv("MNEMO_DREAM_STRATEGIES", "").lower() in ("1", "true", "yes")
+# One session's stream goes to the LLM WHOLE — task segmentation happens inside
+# the call (bus #995: boundaries are context switches, and pre-chunking would
+# split tasks mid-stream into useless fragments). Oversize sessions keep the
+# newest entries, announced loudly, same recency-first rule as synthesis.
+STRATEGY_SESSION_MAX_CHARS = int(os.getenv("MNEMO_DREAM_STRATEGY_SESSION_MAX_CHARS", "400000"))
+STRATEGY_MAX_TOKENS = int(os.getenv("MNEMO_DREAM_STRATEGY_MAX_TOKENS", "8192"))
+# Sessions with fewer sync batches than this are slivers with no trajectory to
+# judge; skipped with a log line (never silently).
+STRATEGY_MIN_BATCHES = int(os.getenv("MNEMO_DREAM_STRATEGY_MIN_BATCHES", "3"))
+# Curation window (bus #995): a trajectory with no save/recall activity for
+# this many days is FLAGGED in the dream report for review. Flag-only —
+# consolidate/merge/demote stays a Dreamer-judgment phase once flagged data
+# actually exists; nothing is ever auto-deleted.
+STRATEGY_STALE_DAYS = float(os.getenv("MNEMO_DREAM_STRATEGY_STALE_DAYS", "90"))
+# Cap on the intentional-saves narrative block appended to each session stream.
+STRATEGY_NARRATIVE_MAX_CHARS = int(os.getenv("MNEMO_DREAM_STRATEGY_NARRATIVE_MAX_CHARS", "30000"))
+
 # Git-sync wedge (opt-in). When enabled, the Dreamer reports whether its watched
 # git checkouts have uncommitted changes, unpushed commits, or are behind their
 # remote — catching the "edited a repo, forgot to push, next machine pulls stale"
@@ -645,6 +667,29 @@ Format: [{"entity": "...", "attribute": "...", "value": "...", "evidence_source"
 Output ONLY the JSON list, no preamble, no explanation."""
 
 
+def _is_auto_capture(m: dict) -> bool:
+    """Ambient auto-capture noise, as opposed to intentional saves. Three flavors:
+      1. Bridge captureCall flush — "[AUTO-CAPTURE] N tool calls:" prefix
+      2. CC JSONL sync — session_id starts with "cc-jsonl-" + summary contains
+         "session activity (auto-sync from JSONL"
+      3. Generic auto pattern — session_id matches "<agent>-auto-<unixts>"
+    Stage 0.5 SKIPS these (no entity-attribute-value shape to extract);
+    Stage 0.7 SELECTS the jsonl-sync flavor (they ARE the session streams).
+    """
+    summary = m.get("summary", "")
+    sid = m.get("session_id", "")
+    if summary[:50].startswith("[AUTO-CAPTURE]"):
+        return True
+    if "auto-sync from JSONL" in summary[:200]:
+        return True
+    if "auto_capture_flush" in (m.get("key_facts") or []):
+        return True
+    # session_id patterns: cc-auto-<ts>, opie-auto-<ts>, rocky-auto-<ts>, cc-jsonl-<uuid>
+    if "-auto-" in sid or sid.startswith(("cc-jsonl-", "opie-jsonl-", "rocky-jsonl-")):
+        return True
+    return False
+
+
 def _chunk_memories_by_chars(memories: list[dict], budget: int) -> list[list[dict]]:
     """Split chronologically-ordered memories into chunks whose rendered size
     stays within `budget` chars, so each fact-extraction call's OUTPUT array fits
@@ -785,25 +830,6 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     """
     if not agent_memories:
         return []
-    # Filter auto-capture noise BEFORE building the section. Three flavors:
-    #   1. Bridge captureCall flush — "[AUTO-CAPTURE] N tool calls:" prefix
-    #   2. CC JSONL sync — session_id starts with "cc-jsonl-" + summary contains
-    #      "session activity (auto-sync from JSONL"
-    #   3. Generic auto pattern — session_id matches "<agent>-auto-<unixts>"
-    def _is_auto_capture(m: dict) -> bool:
-        summary = m.get("summary", "")
-        sid = m.get("session_id", "")
-        if summary[:50].startswith("[AUTO-CAPTURE]"):
-            return True
-        if "auto-sync from JSONL" in summary[:200]:
-            return True
-        if "auto_capture_flush" in (m.get("key_facts") or []):
-            return True
-        # session_id patterns: cc-auto-<ts>, opie-auto-<ts>, rocky-auto-<ts>, cc-jsonl-<uuid>
-        if "-auto-" in sid or sid.startswith(("cc-jsonl-", "opie-jsonl-", "rocky-jsonl-")):
-            return True
-        return False
-
     extraction_memories = [m for m in agent_memories if not _is_auto_capture(m)]
     if not extraction_memories:
         log.info(f"  stage 0.5 [{agent_id}]: all {len(agent_memories)} memories are auto-capture noise; skipping")
@@ -881,6 +907,305 @@ def post_facts(extracted: list[dict], source_agent: str) -> list[dict]:
         except (httpx.HTTPError, json.JSONDecodeError) as e:
             log.warning(f"  /facts POST exception for {fact['entity']}/{fact['attribute']}: {e}")
     return contradictions
+
+
+# ---------------------------------------------------------------------------
+# Trajectory Phase 2: Stage 0.7 — strategy distillation (v4.7, Opie bus #995)
+# ---------------------------------------------------------------------------
+# Source of truth pivot (bus #996): the Developer Dump only sees Mnemo-bridge
+# tool calls, so it cannot reconstruct task execution. The trajectory substrate
+# is the jsonl-sync session stream — ordered tool sequences + the agent's own
+# narrated turns, already landing server-side as session_log writebacks and
+# grouped by a real session_id. Distilled items are stored in the Phase-1
+# trajectory store (source="dreamer") and recalled via mnemo_recall_trajectory
+# — no new retrieval infrastructure.
+
+STRATEGY_DISTILL_SYSTEM_PROMPT = """You are distilling reusable task strategies from one agent's work-session activity stream.
+
+Input: one session in chronological order — activity batches carrying turn snippets and tool-call sequences ([tool: Bash] etc.), optionally followed by a NARRATIVE CONTEXT block of the agent's own intentional memory saves from the same period (these carry task outcomes and the agent's own stated lessons).
+
+Step 1 — SEGMENT the session into tasks. A task boundary is a context switch: new topic, new file, new problem. A trajectory is the story of ONE task from start to finish: what was attempted, what failed, what worked, the final approach. Never treat a session as one task if it clearly switches contexts.
+
+Step 2 — JUDGE each task and DISTILL. Emit a strategy item ONLY when the task carries a transferable, reusable lesson — a proven recipe (from a success) or a pitfall plus its recovery (from a failure). Failure lessons are often the most valuable: "X breaks when Y; do Z instead."
+
+Output ONLY a JSON array (an empty array is valid AND COMMON — most sessions yield zero items):
+[{
+  "task_type": "kebab-case-task-class",
+  "task_description": "one line, phrased as the situation a future agent would search for",
+  "steps": [{"action": "what to do", "tool_used": "tool/command or null", "result_summary": "what it produces"}],
+  "outcome": "final result plus the distilled lesson in one or two sentences",
+  "rating": 1-5,
+  "derived_from": "success" or "failure",
+  "evidence": "short quote from the stream that grounds this lesson"
+}]
+
+Rules:
+1. CONSERVATIVE: if in doubt, emit nothing. Routine work, one-off trivia, and lessons not evidenced in the stream yield nothing.
+2. steps is the distilled recipe (3-8 steps), NOT a replay of every tool call.
+3. rating measures transferability: 5 = would clearly change how this task class is done next time; 1 = marginal.
+4. Never invent steps or outcomes not evidenced in the input.
+5. Output only the JSON array. No preamble, no markdown fences."""
+
+
+def _session_streams(memories: list[dict]) -> dict[str, dict[str, list[dict]]]:
+    """Group jsonl-sync activity batches into per-agent session streams.
+
+    Returns {agent_id: {session_id: [batches, chronological]}}. Only sessions
+    with >= STRATEGY_MIN_BATCHES batches survive — slivers carry no trajectory
+    worth an LLM call; skips are logged, never silent.
+    """
+    streams: dict[str, dict[str, list[dict]]] = {}
+    for m in memories:
+        sid = m.get("session_id") or ""
+        if "-jsonl-" not in sid:
+            continue
+        streams.setdefault(m.get("agent_id", "unknown"), {}).setdefault(sid, []).append(m)
+
+    for agent_id in list(streams):
+        skipped = 0
+        for sid in list(streams[agent_id]):
+            if len(streams[agent_id][sid]) < STRATEGY_MIN_BATCHES:
+                del streams[agent_id][sid]
+                skipped += 1
+            else:
+                streams[agent_id][sid].sort(key=lambda x: x.get("timestamp", ""))
+        if skipped:
+            log.info(
+                f"  stage 0.7 [{agent_id}]: skipped {skipped} session(s) with "
+                f"< {STRATEGY_MIN_BATCHES} sync batches (too thin to judge)"
+            )
+        if not streams[agent_id]:
+            del streams[agent_id]
+    return streams
+
+
+def _build_session_section(agent_id: str, session_id: str, batches: list[dict],
+                           narrative: str) -> str:
+    """Render one session's stream (+ narrative context) for the distill call.
+
+    Recency-first cap, same rule as synthesis sections: if the stream exceeds
+    STRATEGY_SESSION_MAX_CHARS the oldest batches are dropped, loudly.
+    """
+    rendered = [(m, _render_memory(m)) for m in batches]
+    total = sum(len(r) for _, r in rendered)
+    dropped = 0
+    if total > STRATEGY_SESSION_MAX_CHARS:
+        kept_rev: list[tuple[dict, str]] = []
+        budget = STRATEGY_SESSION_MAX_CHARS
+        for m, r in reversed(rendered):
+            if budget - len(r) < 0:
+                break
+            kept_rev.append((m, r))
+            budget -= len(r)
+        dropped = len(rendered) - len(kept_rev)
+        rendered = list(reversed(kept_rev))
+        log.warning(
+            f"  stage 0.7 [{agent_id}] session {session_id}: stream {total:,} chars "
+            f"> {STRATEGY_SESSION_MAX_CHARS:,} cap — dropped {dropped} oldest of "
+            f"{len(batches)} batches (kept newest {len(rendered)})"
+        )
+    header = f"# Session stream: agent={agent_id} session={session_id} ({len(rendered)} batches"
+    if dropped:
+        header += f"; {dropped} older batches omitted"
+    header += ")"
+    parts = [header] + [r for _, r in rendered]
+    if narrative:
+        parts.append("\n# NARRATIVE CONTEXT — the agent's own intentional saves from this window")
+        parts.append(narrative)
+    return "\n".join(parts)
+
+
+def _narrative_context(memories: list[dict], agent_id: str) -> str:
+    """The agent's intentional (non-auto-capture) saves in the window — the
+    outcome/lesson signal the raw stream lacks. Newest kept under the cap."""
+    intentional = [
+        m for m in memories
+        if m.get("agent_id") == agent_id and not _is_auto_capture(m)
+    ]
+    if not intentional:
+        return ""
+    ordered = sorted(intentional, key=lambda x: x.get("timestamp", ""))
+    rendered = [_render_memory(m) for m in ordered]
+    text = "\n".join(rendered)
+    if len(text) > STRATEGY_NARRATIVE_MAX_CHARS:
+        text = text[-STRATEGY_NARRATIVE_MAX_CHARS:]
+    return text
+
+
+def _validate_strategy_items(raw_items: list, agent_id: str, session_id: str) -> list[dict]:
+    """Normalize + validate judge output into /trajectory/save bodies.
+    Malformed items are dropped with a log line, never a crash."""
+    dream_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    valid: list[dict] = []
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        task_type = str(it.get("task_type") or "").strip()
+        task_description = str(it.get("task_description") or "").strip()
+        outcome = str(it.get("outcome") or "").strip()
+        derived_from = str(it.get("derived_from") or "").strip().lower()
+        raw_steps = it.get("steps")
+        if not (task_type and task_description and outcome
+                and derived_from in ("success", "failure")
+                and isinstance(raw_steps, list) and raw_steps):
+            log.warning(f"  stage 0.7 [{agent_id}] dropped malformed item: {str(it)[:150]}")
+            continue
+        steps = []
+        for s in raw_steps:
+            if isinstance(s, dict) and str(s.get("action") or "").strip():
+                steps.append({
+                    "action": str(s["action"]),
+                    "tool_used": (str(s["tool_used"]) if s.get("tool_used") else None),
+                    "result_summary": str(s.get("result_summary") or ""),
+                })
+            elif isinstance(s, str) and s.strip():
+                steps.append({"action": s.strip(), "tool_used": None, "result_summary": ""})
+        if not steps:
+            log.warning(f"  stage 0.7 [{agent_id}] dropped item with no usable steps: {task_type}")
+            continue
+        try:
+            rating = max(1, min(5, int(it.get("rating", 3))))
+        except (TypeError, ValueError):
+            rating = 3
+        evidence = str(it.get("evidence") or "").strip()
+        evidence_source = f"dream:{dream_date} {session_id}"
+        if evidence:
+            evidence_source += f" — {evidence}"
+        valid.append({
+            "agent_id": agent_id,
+            "task_type": task_type[:128],
+            "task_description": task_description[:10000],
+            "steps": steps,
+            "outcome": outcome[:10000],
+            "rating": rating,
+            "derived_from": derived_from,
+            "source": "dreamer",
+            "evidence_source": evidence_source[:500],
+            "model": DREAM_MODEL,
+        })
+    return valid
+
+
+def distill_strategies_for_agent(agent_id: str, agent_streams: dict[str, list[dict]],
+                                 narrative: str) -> list[dict]:
+    """Stage 0.7: one distill call per session stream. A failed call or parse
+    costs that ONE session, mirroring Stage 0.5's per-chunk isolation."""
+    items: list[dict] = []
+    for sid in sorted(agent_streams):
+        section = _build_session_section(agent_id, sid, agent_streams[sid], narrative)
+        try:
+            raw, _ = _call_openrouter_adaptive(
+                STRATEGY_DISTILL_SYSTEM_PROMPT, section, max_tokens=STRATEGY_MAX_TOKENS
+            )
+        except RuntimeError as e:
+            log.error(f"  stage 0.7 [{agent_id}] session {sid} LLM call failed: {e}")
+            continue
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned.rsplit("```", 1)[0]
+        cleaned = cleaned.strip()
+        parsed, salvaged = _parse_fact_array(cleaned)
+        if salvaged and not parsed:
+            log.warning(
+                f"  stage 0.7 [{agent_id}] session {sid} JSON parse failed, nothing "
+                f"salvageable; first 200 chars: {cleaned[:200]}"
+            )
+            continue
+        if salvaged:
+            log.warning(
+                f"  stage 0.7 [{agent_id}] session {sid} JSON incomplete — salvaged "
+                f"{len(parsed)} complete item(s)"
+            )
+        got = _validate_strategy_items(parsed, agent_id, sid)
+        log.info(f"  stage 0.7 [{agent_id}] session {sid}: {len(got)} strategy item(s)")
+        items.extend(got)
+    return items
+
+
+def post_strategies(items: list[dict]) -> tuple[int, int]:
+    """POST distilled strategies to /trajectory/save. Returns (saved, failed);
+    failures are logged per-item and never abort the batch."""
+    saved = failed = 0
+    for body in items:
+        try:
+            resp = httpx.post(
+                f"{MNEMO_URL}/trajectory/save", json=body,
+                headers=MNEMO_AUTH_HEADERS, timeout=30.0,
+            )
+            if resp.status_code == 200:
+                saved += 1
+            else:
+                failed += 1
+                log.warning(
+                    f"  /trajectory/save {resp.status_code} for "
+                    f"{body['task_type']}: {resp.text[:200]}"
+                )
+        except httpx.HTTPError as e:
+            failed += 1
+            log.warning(f"  /trajectory/save exception for {body['task_type']}: {e}")
+    return saved, failed
+
+
+def flag_stale_trajectories() -> list[str]:
+    """Curation flag pass (bus #995): trajectories with no save/recall activity
+    for STRATEGY_STALE_DAYS. Reads the tenant trajectory JSONLs + recall-stats
+    sidecars as plain files — deliberately NOT through TrajectoryStore, so the
+    Dreamer never opens the live sqlite-vec index from a second process
+    (Windows file-lock trap). Flag-only: review/consolidation is a judgment
+    pass that starts once flags exist; nothing is auto-deleted.
+
+    Known limit: only the default AGENTS_ROOT/<agent>/ layout is walked — an
+    agent with a custom data_dir override keeps its trajectories elsewhere and
+    is not covered by this flag pass."""
+    flags: list[str] = []
+    now = time.time()
+    cutoff = now - STRATEGY_STALE_DAYS * 86400.0
+    agents_root = AGENTS_ROOT
+    if not agents_root.is_dir():
+        return flags
+    for agent_dir in sorted(agents_root.iterdir()):
+        tdir = agent_dir / "trajectories"
+        if not tdir.is_dir():
+            continue
+        stats: dict = {}
+        stats_path = tdir / "recall_stats.json"
+        if stats_path.exists():
+            try:
+                loaded = json.loads(stats_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    stats = loaded
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning(f"  stage 0.7 [{agent_dir.name}] recall_stats.json unreadable: {e}")
+        for jsonl in sorted(tdir.glob("*.jsonl")):
+            try:
+                lines = jsonl.read_text(encoding="utf-8").splitlines()
+            except OSError as e:
+                log.warning(f"  stage 0.7 [{agent_dir.name}] {jsonl.name} unreadable: {e}")
+                continue
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # torn line — TrajectoryStore's read path owns that warning
+                created = float(rec.get("created_at") or 0)
+                rid = rec.get("id") or ""
+                last_recalled = float((stats.get(rid) or {}).get("last_recalled") or 0)
+                last_activity = max(created, last_recalled)
+                if last_activity and last_activity < cutoff:
+                    recall_count = int((stats.get(rid) or {}).get("recall_count") or 0)
+                    flags.append(
+                        f"{agent_dir.name}/{rec.get('task_type', '?')} "
+                        f"\"{str(rec.get('task_description') or '')[:80]}\" — "
+                        f"inactive {round((now - last_activity) / 86400.0)}d, "
+                        f"recalls={recall_count}, rating={rec.get('rating', '?')}, "
+                        f"source={rec.get('source', 'agent')}"
+                    )
+    return flags
 
 
 def notify_contradictions(contradictions: list[dict], dream_date: str) -> None:
@@ -1155,6 +1480,41 @@ def main():
                 contradictions.extend(conflicts)
     elif DREAM_SKIP_FACTS:
         log.info("Stage 0.5 skipped (DREAM_SKIP_FACTS set)")
+
+    # Stage 0.7 — trajectory strategy distillation (v4.7, Trajectory Phase 2).
+    # Unlike Stage 0.5 this DOES run on --dry-run: printing the distilled items
+    # without posting them is exactly the human quality gate the rollout plan
+    # requires (bus #996). Live posting only when the env gate is set AND not
+    # a dry run.
+    if MNEMO_DREAM_STRATEGIES:
+        log.info("Stage 0.7: distilling task strategies from session streams...")
+        streams = _session_streams(all_memories)
+        if not streams:
+            log.info("  stage 0.7: no session activity streams in window")
+        total_saved = total_failed = 0
+        for agent_id in sorted(streams):
+            narrative = _narrative_context(all_memories, agent_id)
+            items = distill_strategies_for_agent(agent_id, streams[agent_id], narrative)
+            if not items:
+                continue
+            if args.dry_run:
+                print(f"\n--- Stage 0.7 dry-run: {len(items)} strategy item(s) for {agent_id} ---")
+                print(json.dumps(items, indent=2, ensure_ascii=False))
+            else:
+                saved, failed_n = post_strategies(items)
+                total_saved += saved
+                total_failed += failed_n
+        if not args.dry_run and (total_saved or total_failed):
+            log.info(f"Stage 0.7: saved {total_saved} strategy item(s), {total_failed} failed")
+        stale_flags = flag_stale_trajectories()
+        if stale_flags:
+            log.info(
+                "Stage 0.7 curation flags (no activity in "
+                f"{STRATEGY_STALE_DAYS:.0f}d — review, never auto-delete):\n  "
+                + "\n  ".join(stale_flags)
+            )
+    else:
+        log.info("Stage 0.7 skipped (MNEMO_DREAM_STRATEGIES not set)")
 
     # Synthesize
     log.info(f"Sending to {DREAM_MODEL} for synthesis...")

@@ -201,3 +201,75 @@ def test_task_types_lists_files(tmp_path: Path):
     _save(store, 0, task_type="bus_debug")
     _save(store, 1, task_type="shopify_fix")
     assert store.task_types() == ["bus_debug", "shopify_fix"]
+
+
+# ── v4.7: provenance fields ──
+
+def test_save_defaults_are_hand_saved_provenance(tmp_path: Path):
+    store = TrajectoryStore(tmp_path / "traj")
+    rec = _save(store, 0)
+    assert rec["source"] == "agent"
+    assert rec["derived_from"] is None
+    assert rec["evidence_source"] is None
+
+
+def test_save_dreamer_provenance_lands_on_disk(tmp_path: Path):
+    store = TrajectoryStore(tmp_path / "traj")
+    store.save(
+        agent_id="cc", task_type="live-store-migration", task_description="d",
+        steps=[{"action": "a"}], outcome="o", rating=4, embedding=_vec_along(0),
+        derived_from="failure", source="dreamer",
+        evidence_source="dream:2026-07-02 cc-jsonl-8086924f",
+    )
+    on_disk = json.loads(
+        (tmp_path / "traj" / "live-store-migration.jsonl").read_text().strip()
+    )
+    assert on_disk["derived_from"] == "failure"
+    assert on_disk["source"] == "dreamer"
+    assert on_disk["evidence_source"] == "dream:2026-07-02 cc-jsonl-8086924f"
+
+
+# ── v4.7: recall reinforcement stats ──
+
+def test_recall_bumps_stats_sidecar(tmp_path: Path):
+    store = TrajectoryStore(tmp_path / "traj")
+    rec = _save(store, 0)
+    _save(store, 5)  # far axis — not returned by the axis-0 query
+    store.recall(_vec_along(0), max_results=1)
+    stats = json.loads((tmp_path / "traj" / "recall_stats.json").read_text())
+    assert stats[rec["id"]]["recall_count"] == 1
+    assert stats[rec["id"]]["last_recalled"] > 0
+    assert len(stats) == 1  # the un-returned trajectory got no bump
+    store.recall(_vec_along(0), max_results=1)
+    stats = json.loads((tmp_path / "traj" / "recall_stats.json").read_text())
+    assert stats[rec["id"]]["recall_count"] == 2
+
+
+def test_recall_empty_result_writes_no_stats(tmp_path: Path):
+    store = TrajectoryStore(tmp_path / "traj")
+    assert store.recall(_vec_along(0)) == []
+    assert not (tmp_path / "traj" / "recall_stats.json").exists()
+
+
+def test_corrupt_stats_sidecar_never_breaks_recall(tmp_path: Path):
+    store = TrajectoryStore(tmp_path / "traj")
+    rec = _save(store, 0)
+    (tmp_path / "traj" / "recall_stats.json").write_text("{not json")
+    hits = store.recall(_vec_along(0), max_results=1)
+    assert hits and hits[0]["id"] == rec["id"]
+    # stats were reset, then bumped for this recall
+    stats = json.loads((tmp_path / "traj" / "recall_stats.json").read_text())
+    assert stats[rec["id"]]["recall_count"] == 1
+
+
+def test_wrong_shape_stats_sidecar_never_breaks_recall(tmp_path: Path):
+    """Valid JSON, wrong shape — scalar entries and junk counts must be
+    coerced, never raised (a raise here would discard built recall results)."""
+    store = TrajectoryStore(tmp_path / "traj")
+    rec = _save(store, 0)
+    (tmp_path / "traj" / "recall_stats.json").write_text(
+        json.dumps({rec["id"]: 5, "other": {"recall_count": "x"}}))
+    hits = store.recall(_vec_along(0), max_results=1)
+    assert hits and hits[0]["id"] == rec["id"]
+    stats = json.loads((tmp_path / "traj" / "recall_stats.json").read_text())
+    assert stats[rec["id"]]["recall_count"] == 1  # scalar entry coerced, then bumped
