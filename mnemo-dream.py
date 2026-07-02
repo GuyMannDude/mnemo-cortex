@@ -137,7 +137,9 @@ MNEMO_DREAM_STRATEGIES = os.getenv("MNEMO_DREAM_STRATEGIES", "").lower() in ("1"
 # split tasks mid-stream into useless fragments). Oversize sessions keep the
 # newest entries, announced loudly, same recency-first rule as synthesis.
 STRATEGY_SESSION_MAX_CHARS = int(os.getenv("MNEMO_DREAM_STRATEGY_SESSION_MAX_CHARS", "400000"))
-STRATEGY_MAX_TOKENS = int(os.getenv("MNEMO_DREAM_STRATEGY_MAX_TOKENS", "8192"))
+# 16384 not 8192: Stage 0.5 already learned dense output overruns 8192 and
+# truncates mid-array (v4.2.3); strategy items with step lists are denser still.
+STRATEGY_MAX_TOKENS = int(os.getenv("MNEMO_DREAM_STRATEGY_MAX_TOKENS", "16384"))
 # Sessions with fewer sync batches than this are slivers with no trajectory to
 # judge; skipped with a log line (never silently).
 STRATEGY_MIN_BATCHES = int(os.getenv("MNEMO_DREAM_STRATEGY_MIN_BATCHES", "3"))
@@ -724,9 +726,14 @@ def _parse_fact_array(cleaned: str) -> tuple[list, bool]:
 
     Returns (facts, salvaged): salvaged=False on a clean parse, True when we fell
     back to object-by-object recovery (so the caller can log it).
+
+    strict=False throughout: LLMs emit raw newlines/tabs INSIDE string values
+    (multi-line lesson text, quoted shell snippets), which strict json rejects
+    ("Invalid control character") — the 2026-07-02 Stage 0.7 first-live-run
+    failure, where the defect was in the FIRST object so salvage got nothing.
     """
     try:
-        data = json.loads(cleaned)
+        data = json.loads(cleaned, strict=False)
         if isinstance(data, list):
             return data, False
         # A bare object instead of an array — wrap it so one fact isn't lost.
@@ -742,7 +749,7 @@ def _parse_fact_array(cleaned: str) -> tuple[list, bool]:
     # stop at the first decode failure (the truncation point), keeping all complete
     # objects before it.
     salvaged: list = []
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(strict=False)
     n = len(cleaned)
     search = 0
     while True:
@@ -1112,7 +1119,7 @@ def distill_strategies_for_agent(agent_id: str, agent_streams: dict[str, list[di
         if salvaged and not parsed:
             log.warning(
                 f"  stage 0.7 [{agent_id}] session {sid} JSON parse failed, nothing "
-                f"salvageable; first 200 chars: {cleaned[:200]}"
+                f"salvageable; head: {cleaned[:200]!r} … tail: {cleaned[-200:]!r}"
             )
             continue
         if salvaged:

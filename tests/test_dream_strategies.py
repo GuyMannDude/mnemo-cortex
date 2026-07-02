@@ -211,3 +211,22 @@ def test_strategies_gate_defaults_off(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod.MNEMO_DREAM_STRATEGIES is False
+
+
+# ── _parse_fact_array: control chars inside strings (2026-07-02 live failure) ──
+
+def test_parse_survives_raw_newlines_inside_strings():
+    """LLMs emit raw newlines/tabs inside JSON string values (multi-line lesson
+    text, quoted shell snippets). Strict json rejects the whole array — the
+    first live Stage 0.7 run lost 2 of 3 sessions to exactly this. strict=False
+    must accept it on the clean-parse path AND the salvage path."""
+    raw = '[\n  {"task_type": "bash-quoting-collision", "note": "line one\nline two\ttabbed"}\n]'
+    items, salvaged = dream._parse_fact_array(raw)
+    assert len(items) == 1
+    assert items[0]["note"] == "line one\nline two\ttabbed"
+    # salvage path: same content but truncated after the first complete object
+    truncated = '[\n  {"task_type": "x", "note": "a\nb"},\n  {"task_type": "y", "note": "unfinished'
+    items, salvaged = dream._parse_fact_array(truncated)
+    assert salvaged is True
+    assert len(items) == 1
+    assert items[0]["note"] == "a\nb"
