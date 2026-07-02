@@ -20,8 +20,17 @@ trajectory through the PRIMARY embedder only (aborts loudly if it goes down — 
 would write mixed-space vectors, the exact corruption being removed), then an L1/L2 cache wipe
 (they hold old-space document embeddings; L3 re-embeds live and self-heals). Idempotent and
 resumable. Run offline (server stopped): old and new vectors have no consistent-recall path while
-they coexist. Post-migration follow-up: re-measure the decompressed band and retune
-`gap_threshold` (0.02 was tuned for the compressed band).
+they coexist.
+
+**Post-migration measurement (2026-07-01, deployed to IGOR-2, all 32 tenants / 8,452 memories
+re-embedded, zero failures).** 8-probe battery vs the pre-migration baseline: on-topic content
+lifted off the noise floor in ABSOLUTE terms (flat on-topic pools 0.55–0.57 and standout tops
+0.61–0.62, vs noise unchanged at ~0.50–0.52), but gap SHAPES were stable (whiff ~0.01, rich pools
+~0.02, standouts 0.04–0.05). The spec's guess that gaps would widen to 0.05–0.10 did not hold —
+raising `gap_threshold` would fire expansion on healthy recalls. **`gap_threshold` stays 0.02**,
+confirmed by measurement. Side effect worth knowing: absolute relevance is meaningful again
+(whiff tops ≤0.52 vs on-topic ≥0.55), so an absolute floor is viable in the future if ever wanted
+— not built, per the locked keep-it-simple design.
 
 ## v4.5.3 (2026-07-01) — Query-expansion `gap_threshold` retuned for IGOR-2's nomic embedder (0.03 → 0.02)
 
