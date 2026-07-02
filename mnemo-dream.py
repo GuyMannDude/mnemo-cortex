@@ -926,23 +926,25 @@ Input: one session in chronological order — activity batches carrying turn sni
 
 Step 1 — SEGMENT the session into tasks. A task boundary is a context switch: new topic, new file, new problem. A trajectory is the story of ONE task from start to finish: what was attempted, what failed, what worked, the final approach. Never treat a session as one task if it clearly switches contexts.
 
-Step 2 — JUDGE each task and DISTILL. Emit a strategy item ONLY when the task carries a transferable, reusable lesson — a proven recipe (from a success) or a pitfall plus its recovery (from a failure). Failure lessons are often the most valuable: "X breaks when Y; do Z instead."
+Step 2 — JUDGE each task ruthlessly. A strategy item is justified ONLY when a future agent facing the same task class would act DIFFERENTLY for having read it. Hunt failures first: errors, retries, dead ends, and recoveries in the stream are where the transferable lessons live ("X breaks when Y; do Z instead"). A clean success earns an item only when the recipe is genuinely non-obvious.
 
-Output ONLY a JSON array (an empty array is valid AND COMMON — most sessions yield zero items):
+NEVER emit items for: routine rituals (session startup/wrap-up, standard commits, memory writebacks), ordinary documentation or config edits, one-off trivia, or any task whose only lesson is "it worked when done carefully."
+
+Output ONLY a JSON array. ZERO items is the NORMAL result for most sessions; more than 3 items from one session is almost always over-extraction.
 [{
   "task_type": "kebab-case-task-class",
   "task_description": "one line, phrased as the situation a future agent would search for",
   "steps": [{"action": "what to do", "tool_used": "tool/command or null", "result_summary": "what it produces"}],
-  "outcome": "final result plus the distilled lesson in one or two sentences",
+  "outcome": "the distilled lesson, phrased as advice: 'When Y, do X because Z'",
   "rating": 1-5,
   "derived_from": "success" or "failure",
   "evidence": "short quote from the stream that grounds this lesson"
 }]
 
 Rules:
-1. CONSERVATIVE: if in doubt, emit nothing. Routine work, one-off trivia, and lessons not evidenced in the stream yield nothing.
+1. "outcome" MUST be advice to a future agent — "When Y, do X because Z". Achievement reports ("Successfully did X") are banned.
 2. steps is the distilled recipe (3-8 steps), NOT a replay of every tool call.
-3. rating measures transferability: 5 = would clearly change how this task class is done next time; 1 = marginal.
+3. rating rubric: 5 = would clearly change how this task class is done (rare); 4 = strong recipe with a non-obvious step; 3 = useful but partly situational (the normal ceiling); below 3 = don't emit it at all.
 4. Never invent steps or outcomes not evidenced in the input.
 5. Output only the JSON array. No preamble, no markdown fences."""
 
