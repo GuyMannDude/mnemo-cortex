@@ -41,6 +41,7 @@ CLASSIFIABLE_CATEGORIES: list[tuple[str, str]] = [
     ("identity", "who an agent/person/persona is — name, role, self-description"),
     ("relationship", "a customer, partner, vendor, collaborator, or person we work with"),
     ("decision", "a choice made or ruled out, with rationale"),
+    ("idea", "a creative insight, cross-domain connection, inspiration, aesthetic observation, or what-if — an idea seed, not yet a decision or task"),
     ("session_log", "raw conversation or tool-call log with no distilled fact"),
 ]
 
@@ -98,10 +99,20 @@ def _parse_category(raw: str) -> str | None:
     if text in _VALID_TARGETS:
         return text
     found: list[str] = []
-    for token in re.findall(r"[a-z_]+", text):
+    tokens = re.findall(r"[a-z_]+", text)
+    for token in tokens:
         if token in _VALID_TARGETS and token not in found:
             found.append(token)
-    return found[0] if len(found) == 1 else None
+    if len(found) != 1:
+        return None
+    if found[0] == "idea" and len(tokens) > 1:
+        # "idea" is the one category name that is ordinary chat vocabulary
+        # ("i have no idea", "one idea would be..."). A mention inside a
+        # chatty reply is noise, not an answer — accept it only as the sole
+        # token ("idea", "**idea**"); otherwise fall back to the regex
+        # suggester like any unparseable reply.
+        return None
+    return found[0]
 
 
 async def classify_category(

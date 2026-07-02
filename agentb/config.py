@@ -143,6 +143,27 @@ class AnalysisConfig:
 
 
 @dataclass
+class MuseConfig:
+    # The Muse (v4.8, creative harness): the Analyst's sibling lens — reads the
+    # same Tier-2 session logs through a creative lens and emits `idea`
+    # memories (connections, what-ifs, inspirations the user voiced). Own
+    # muse_processed marker, so both lenses read each log exactly once,
+    # independently. Default OFF pending Guy's-Gate review of dry-run output
+    # (mnemo-cortex muse --agent <id>). See analyst.py.
+    enabled: bool = False
+    interval_cycles: int = 24         # maintenance cycles between passes (~2-hourly)
+    max_memories_per_cycle: int = 30  # session logs read per pass per tenant
+    max_batch_chars: int = 24000      # LLM input budget per pass (riffs are long)
+    per_memory_chars: int = 4000      # truncation per source log — MUST be big
+                                      # enough to carry the role-aware capture
+                                      # budgets (user turns 2000 chars); at the
+                                      # Analyst's 1200 the riff body would be
+                                      # cut before the creative lens ever reads it
+    max_notes_per_batch: int = 6      # ideas are rarer than facts; cap lower
+    dedup_similarity: float = 0.90    # cosine vs nearest existing memory
+
+
+@dataclass
 class ExpansionConfig:
     # The Thesaurus Loop (v4.2): query expansion on a WHIFF. The standard recall
     # runs first; only when it comes back empty or weak do we fan the query into
@@ -206,6 +227,7 @@ class AgentBConfig:
     classification: ClassificationConfig = field(default_factory=ClassificationConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    muse: MuseConfig = field(default_factory=MuseConfig)
     expansion: ExpansionConfig = field(default_factory=ExpansionConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     data_dir: str = ""
@@ -310,6 +332,10 @@ def _parse_config(raw: dict) -> AgentBConfig:
         an = raw["analysis"]
         cfg.analysis = AnalysisConfig(
             **{k: an[k] for k in an if hasattr(AnalysisConfig, k)})
+    if "muse" in raw and raw["muse"]:
+        mu = raw["muse"]
+        cfg.muse = MuseConfig(
+            **{k: mu[k] for k in mu if hasattr(MuseConfig, k)})
     if "expansion" in raw and raw["expansion"]:
         ex = raw["expansion"]
         ex_kwargs = {k: ex[k] for k in ex if hasattr(ExpansionConfig, k)}

@@ -62,7 +62,29 @@ if (
 # Batching policy
 MIN_TURNS_PER_BATCH = 6
 MAX_TURNS_PER_BATCH = 20
-SUMMARY_MAX_CHARS = 4000
+SUMMARY_MAX_CHARS = 12000
+
+# Role-aware snippet budgets (v4.8 creative harness). The old flat 300 chars
+# per turn treated conversation as noise and tool calls as signal — inverted
+# for creative users: a 10-minute riff was amputated to a series of turn-heads
+# while "[tool: Bash]" survived intact. Conversation IS the signal; tool
+# mechanics stay terse.
+TURN_BUDGET = {
+    "user": 2000,       # the user's riff is the most valuable text in the stream
+    "assistant": 1200,  # narrated reasoning (worth keeping whole paragraphs of)
+}
+TOOL_ECHO_BUDGET = 300  # turns that are purely [tool: X]/[tool_result] lines
+
+
+def _turn_budget(role: str, content: str) -> int:
+    """Chars of a turn worth keeping: conversation gets room, tool echoes don't."""
+    has_conversation = any(
+        line.strip() and not line.strip().startswith("[tool")
+        for line in content.splitlines()
+    )
+    if not has_conversation:
+        return TOOL_ECHO_BUDGET
+    return TURN_BUDGET.get(role, TOOL_ECHO_BUDGET)
 
 
 def get_latest_session_jsonl() -> Path | None:
@@ -154,7 +176,8 @@ def build_summary(messages: list, session_id: str) -> tuple[str, list]:
     for m in messages[-MAX_TURNS_PER_BATCH:]:
         role = m["role"]
         content = m["content"]
-        snippet = content[:300] + ("…" if len(content) > 300 else "")
+        budget = _turn_budget(role, content)
+        snippet = content[:budget] + ("…" if len(content) > budget else "")
         line = f"- [{role}] {snippet}"
         if used_chars + len(line) > SUMMARY_MAX_CHARS:
             parts.append(f"... ({len(messages) - len(parts) + 4} more turns truncated)")

@@ -450,7 +450,7 @@ process.stdin.on("end", () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.12.2",
+  version: "2.13.0",
 });
 
 // ── Developer Dump (v2.9.0, Mnemo v4 Phase 1) ──────────────────
@@ -497,7 +497,7 @@ server.registerTool(
     category: z
       .enum([
         "topology", "current_state", "doctrine", "incident",
-        "identity", "relationship", "decision", "session_log", "unknown",
+        "identity", "relationship", "decision", "idea", "session_log", "unknown",
       ])
       .optional()
       .describe("Restrict to a single category."),
@@ -517,10 +517,18 @@ server.registerTool(
       .min(1)
       .optional()
       .describe("Hard upper bound on record age in days."),
+    mode: z
+      .enum(["focus", "explore"])
+      .optional()
+      .describe(
+        "Recall lens. 'focus' (default): best match wins. 'explore': the serendipity lens — " +
+        "what does this remind the store of; prefers the adjacent similarity band, ignores recency, " +
+        "favors rarely-recalled memories. Use for brainstorming and idea recall."
+      ),
   },
     annotations: { "title": 'Recall Memories', "readOnlyHint": true, "idempotentHint": true, "openWorldHint": true },
   },
-  async ({ query, max_results, source, category, exclude_categories, exclude_stale, max_age_days }) => {
+  async ({ query, max_results, source, category, exclude_categories, exclude_stale, max_age_days, mode }) => {
     try {
       await ensureHealth();
       const requestBody = {
@@ -533,6 +541,7 @@ server.registerTool(
       if (exclude_categories !== undefined) requestBody.exclude_categories = exclude_categories;
       if (exclude_stale !== undefined) requestBody.exclude_stale = exclude_stale;
       if (max_age_days !== undefined) requestBody.max_age_days = max_age_days;
+      if (mode !== undefined) requestBody.mode = mode;
       const data = await mnemoRequest("POST", "/context", requestBody);
 
       const chunks = data.chunks || [];
@@ -592,7 +601,7 @@ server.registerTool(
     category: z
       .enum([
         "topology", "current_state", "doctrine", "incident",
-        "identity", "relationship", "decision", "session_log", "unknown",
+        "identity", "relationship", "decision", "idea", "session_log", "unknown",
       ])
       .optional()
       .describe("Restrict to a single category."),
@@ -695,7 +704,7 @@ server.registerTool(
     category: z
       .enum([
         "topology", "current_state", "doctrine", "incident",
-        "identity", "relationship", "decision", "session_log", "unknown",
+        "identity", "relationship", "decision", "idea", "session_log", "unknown",
       ])
       .optional()
       .describe(

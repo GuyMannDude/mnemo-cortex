@@ -32,14 +32,18 @@ from typing import Optional
 from agentb.config import RankingConfig
 
 # Category priors. Perpetual categories (never decay) are also the ones whose
-# *content* earns permanence: doctrine, incident, decision, identity. The
+# *content* earns permanence: doctrine, incident, decision, identity, idea. The
 # floor is session_log — when a caller explicitly opts INTO seeing logs they
-# still rank below distilled knowledge at equal similarity.
+# still rank below distilled knowledge at equal similarity. `idea` sits just
+# below identity: a captured creative connection can't be re-derived from the
+# environment the way topology can, but it never outranks the rules and
+# postmortems that keep the system safe.
 CATEGORY_IMPORTANCE: dict[Optional[str], float] = {
     "doctrine": 1.0,
     "incident": 0.95,
     "decision": 0.95,
     "identity": 0.90,
+    "idea": 0.85,
     "relationship": 0.80,
     "topology": 0.75,
     "current_state": 0.75,
@@ -75,4 +79,54 @@ def composite_score(
         + cfg.w_recency * recency
         + cfg.w_importance * importance
         + cfg.w_access * access
+    )
+
+
+# ── Explore mode (v4.8, the serendipity lens) ──────────────────────────────
+# Focus recall answers "what matches best right now"; explore answers "what
+# does this remind the store of". Three deliberate inversions of focus logic:
+#   adjacency — prefer the band just BELOW the top hit (near, not identical);
+#   no recency — a three-year-old connection is exactly as interesting;
+#   novelty  — rarely-recalled memories rise (the half-forgotten one is the
+#              serendipitous one). Explore results still bump access counts,
+#              so repeated exploring naturally rotates through the idea space.
+#
+# The band constants are RELATIVE to the pool's top similarity, never absolute
+# scores — absolute thresholds sat inside the embedder's compressed noise band
+# once before (v4.3.0 relevance_floor, fired 0×) and the S110 re-embed moved
+# the whole band. Relative geometry survives an embedder change.
+EXPLORE_OFFSET = 0.03   # target = top_sim - offset: "one step sideways"
+EXPLORE_SCALE = 0.05    # how fast adjacency falls off around the target
+EXPLORE_FLOOR = 0.08    # sim below top_sim - floor is the noise band: hard zero
+W_EXPLORE_ADJACENCY = 0.55
+W_EXPLORE_IMPORTANCE = 0.30
+W_EXPLORE_NOVELTY = 0.15
+
+
+def explore_score(
+    *,
+    similarity: float,
+    top_similarity: float,
+    category: Optional[str],
+    access_count: int,
+) -> float:
+    sim = max(0.0, min(1.0, similarity))
+    top = max(sim, min(1.0, top_similarity))
+
+    if sim < top - EXPLORE_FLOOR:
+        return 0.0  # noise band — serendipity is adjacency, not randomness
+
+    target = top - EXPLORE_OFFSET
+    adjacency = max(0.0, 1.0 - abs(sim - target) / EXPLORE_SCALE)
+
+    importance = CATEGORY_IMPORTANCE.get(category, 0.50)
+
+    # Inverse of the focus access signal, same log-scaled saturation.
+    access = min(1.0, math.log2(1 + max(0, access_count)) / math.log2(1 + 6))
+    novelty = 1.0 - access
+
+    return (
+        W_EXPLORE_ADJACENCY * adjacency
+        + W_EXPLORE_IMPORTANCE * importance
+        + W_EXPLORE_NOVELTY * novelty
     )

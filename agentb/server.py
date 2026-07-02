@@ -46,8 +46,8 @@ from agentb.provenance import (
 from agentb.classify import classify_category, reclassify_memory_dir, is_routine_log
 from agentb.redact import redact_text, redact_obj
 from agentb.capture_gate import CaptureGate
-from agentb.ranking import composite_score
-from agentb.analyst import analyze_tenant
+from agentb.ranking import composite_score, explore_score
+from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
@@ -98,6 +98,17 @@ class ContextRequest(BaseModel):
     agent_id: Optional[str] = Field(None, description="Agent ID for tenant isolation")
     persona: Optional[str] = Field(None, description="Persona mode: default, strict, creative")
     max_results: int = Field(5, ge=1, le=20)
+    mode: str = Field(
+        "focus",
+        pattern="^(focus|explore)$",
+        description=(
+            "Recall lens. 'focus' (default): best match wins — similarity + "
+            "recency + importance + access. 'explore' (the serendipity lens): "
+            "what does this remind the store of — prefers the adjacent "
+            "similarity band, ignores recency, favors rarely-recalled "
+            "memories. Use explore for brainstorming and idea recall."
+        ),
+    )
     # v3 provenance + decay filters (all optional)
     source: Optional[str] = Field(
         None,
@@ -111,7 +122,7 @@ class ContextRequest(BaseModel):
         None,
         description=(
             "Filter to chunks whose category matches: topology|current_state|"
-            "doctrine|incident|identity|relationship|decision|session_log|unknown."
+            "doctrine|incident|identity|relationship|decision|idea|session_log|unknown."
         ),
     )
     exclude_categories: Optional[list[str]] = Field(
@@ -208,7 +219,7 @@ class WritebackRequest(BaseModel):
         None,
         description=(
             "Category that drives decay: topology|current_state|doctrine|incident|"
-            "identity|relationship|decision|session_log|unknown. If omitted, "
+            "identity|relationship|decision|idea|session_log|unknown. If omitted, "
             "the regex auto-suggester runs against summary + key_facts."
         ),
     )
@@ -582,7 +593,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.7.1",
+        version="4.8.0",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -635,7 +646,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.7.1",
+            version="4.8.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -694,8 +705,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 stale_warning=c.stale_warning,
             )
 
-        # Over-fetch so post-filter trims don't leave us short.
-        overfetch = max(req.max_results * 3, req.max_results + 5)
+        # Over-fetch so post-filter trims don't leave us short. Explore mode
+        # fetches wider: its candidates live below the top hit, so a narrow
+        # pool would leave the adjacent band empty.
+        pool_factor = 5 if req.mode == "explore" else 3
+        overfetch = max(req.max_results * pool_factor, req.max_results + 5)
 
         cache_hits = {"HOT": 0, "L1": 0, "VEC": 0, "L2": 0, "L3": 0, "MEM0": 0}
 
@@ -899,8 +913,28 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     top_relevance(all_chunks), len(all_chunks),
                 )
 
-        # Composite re-rank over the pooled candidates, then a single trim.
-        if config.ranking.enabled:
+        # Re-rank the pooled candidates, then a single trim. Explore mode uses
+        # its own self-contained scoring (module constants, no RankingConfig)
+        # and therefore works even with composite ranking disabled — a recall
+        # mode that silently no-ops would be a silent degradation.
+        if req.mode == "explore":
+            # Serendipity lens: adjacency to the pool's top hit, no recency,
+            # novelty over familiarity. Zero-scored chunks are the noise band
+            # and must not pad the results.
+            access = vec_store.access_counts([c.memory_id for c in all_chunks if c.memory_id])
+            top_sim = max((c.relevance for c in all_chunks), default=0.0)
+            scored = [
+                (explore_score(
+                    similarity=c.relevance,
+                    top_similarity=top_sim,
+                    category=c.category,
+                    access_count=access.get(c.memory_id, 0) if c.memory_id else 0,
+                ), c)
+                for c in all_chunks
+            ]
+            all_chunks = [c for s, c in sorted(
+                scored, key=lambda sc: sc[0], reverse=True) if s > 0.0]
+        elif config.ranking.enabled:
             now = time.time()
 
             def _age(c: ContextChunk) -> Optional[float]:
@@ -1459,6 +1493,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 and cycle % config.analysis.interval_cycles
                 == config.analysis.interval_cycles // 2
             )
+            # v4.8 Muse: the Analyst's creative sibling lens. Offset by one
+            # extra cycle so it never lands on a reclassify (multiples of 12)
+            # or Analyst (6 + 12k) cycle — three LLM batch jobs, three lanes.
+            do_muse = (
+                config.muse.enabled
+                and cycle % config.muse.interval_cycles
+                == config.muse.interval_cycles // 2 + 1
+            )
 
             for tenant_key, tenant in tenants._tenants.items():
                 sessions = tenant["sessions"]
@@ -1598,6 +1640,24 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             )
                     except Exception as e:
                         log.warning(f"Analyst pass error for '{tenant_key}': {e}")
+
+                # v4.8 Muse pass — creative idea-seed extraction (gate:
+                # config.muse.enabled, default OFF pending Guy's-Gate).
+                if do_muse:
+                    try:
+                        mstats = await muse_tenant(
+                            tenant_key, tenant["memory_dir"], tenant["vec"],
+                            reasoner, embedder, config=config.muse,
+                        )
+                        if mstats["scanned"]:
+                            log.info(
+                                f"Muse '{tenant_key}': read {mstats['scanned']} logs → "
+                                f"{mstats['notes_saved']} idea(s) saved "
+                                f"({mstats['notes_deduped']} already known, "
+                                f"{mstats['failed']} failed)"
+                            )
+                    except Exception as e:
+                        log.warning(f"Muse pass error for '{tenant_key}': {e}")
 
     # ── Passport Lane (Phase 1) ──
     # Five MCP-facing routes under /passport/*. Self-contained: no shared state

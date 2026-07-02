@@ -26,6 +26,18 @@ digging out of.
 Every source log is marked analyst_processed (even when nothing was worth
 extracting) so each is read exactly once. Tier 2 stays intact — the Analyst
 distills, it never deletes.
+
+THE MUSE (v4.8, creative harness) is the Analyst's sibling lens over the same
+Tier-2 archive. Same machinery — batching, high-confidence gate, dedup,
+deterministic ids, read-once marking (its own muse_processed flag, so both
+lenses read every log exactly once, independently) — but the OPPOSITE
+temperament: where the Analyst is forbidden to bridge two statements into a
+third, bridging two statements into a third is exactly what the Muse is for.
+It surfaces the creative material a business note-taker discards — idea seeds,
+cross-domain connections, what-ifs, inspirations — as first-class `idea`
+memories. One prompt cannot be both ruthless and dreamy (the S111 judge-tuning
+lesson); two lenses with two prompts can. The Muse NOTICES, it never INVENTS:
+every note must point at material actually voiced in the log.
 """
 from __future__ import annotations
 
@@ -70,6 +82,30 @@ Output ONLY a JSON array, no preamble:
 [{"category": "...", "summary": "...", "key_facts": ["..."], "confidence": "high"}]"""
 
 
+# The Muse may only emit `idea` — it has one job.
+MUSE_ALLOWED_CATEGORIES = {"idea"}
+
+MUSE_SYSTEM_PROMPT = """You are the muse-reader for an AI agent's work sessions. You read raw session logs and surface the CREATIVE material a business note-taker would discard: idea seeds, cross-domain connections, what-ifs, inspirations, aesthetic observations.
+
+What qualifies as an idea seed:
+- A connection voiced between two domains ("X reminds me of Y", "X is like Y", "X could work the way Y does")
+- A what-if or "wouldn't it be" possibility someone raised and did not pursue
+- An inspiration or aesthetic observation (visual, musical, spatial, narrative) stated in the log
+- A reframing that visibly opened up the conversation, even mid-riff
+
+Rules:
+1. NOTICE, never INVENT. The idea must be present in the log — voiced by the user or the agent. You name it and make it self-contained; you never add connections of your own.
+2. The riff is the signal. Speculative language ("what if", "imagine", "might be cool", "reminds me of") marks candidates, not noise — the opposite of how a fact extractor reads it.
+3. Skip: task work, decisions already made, status chatter, tool output, and small talk with no idea inside. A plan that was executed is a task, not an idea.
+4. Each note must be SELF-CONTAINED and name BOTH sides of any connection — a reader with zero session context must be able to pick the thread back up.
+5. "summary": ONE sentence naming the idea and where it points next. "key_facts": 2-5 searchable anchors (the domains bridged, the metaphor, the names involved).
+6. "confidence": "high" only when the idea is unmistakably present in the log; otherwise "low". Low-confidence notes are discarded.
+7. An empty list is valid AND COMMON. Most work sessions contain no idea seeds — zero is the correct answer, not a failure. More than 3 notes from one batch is almost always over-extraction.
+
+Output ONLY a JSON array, no preamble:
+[{"category": "idea", "summary": "...", "key_facts": ["..."], "confidence": "high"}]"""
+
+
 def _strip_fences(raw: str) -> str:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
@@ -79,10 +115,12 @@ def _strip_fences(raw: str) -> str:
     return cleaned.strip()
 
 
-def _parse_notes(raw: str, max_notes: int) -> list[dict]:
+def _parse_notes(raw: str, max_notes: int, allowed: set[str] = ALLOWED_CATEGORIES) -> list[dict]:
     """Validate the LLM reply down to well-formed, high-confidence notes."""
     try:
-        data = json.loads(_strip_fences(raw))
+        # strict=False: raw LLM output may carry literal newlines inside JSON
+        # strings (the S111.5 lesson — any parser fed LLM output needs this).
+        data = json.loads(_strip_fences(raw), strict=False)
     except json.JSONDecodeError as e:
         log.warning(f"Analyst JSON parse failed: {e}; head: {raw[:120]!r}")
         return []
@@ -96,7 +134,7 @@ def _parse_notes(raw: str, max_notes: int) -> list[dict]:
             continue
         category = str(item.get("category", "")).strip()
         summary = str(item.get("summary", "")).strip()
-        if category not in ALLOWED_CATEGORIES or not summary or len(summary) > 1000:
+        if category not in allowed or not summary or len(summary) > 1000:
             continue
         key_facts = [str(f).strip()[:300] for f in (item.get("key_facts") or [])
                      if str(f).strip()][:5]
@@ -106,8 +144,13 @@ def _parse_notes(raw: str, max_notes: int) -> list[dict]:
     return notes
 
 
-def _gather_candidates(memory_dir: Path, limit: int) -> list[tuple[Path, dict]]:
-    """Oldest-first unprocessed session_log memories (each is read once, ever)."""
+def _gather_candidates(
+    memory_dir: Path, limit: int, marker: str = "analyst_processed"
+) -> list[tuple[Path, dict]]:
+    """Oldest-first unprocessed session_log memories (each is read once, ever).
+
+    `marker` scopes the read-once bookkeeping per lens: the Analyst and the
+    Muse each read every log exactly once, independently."""
     candidates = []
     for path in memory_dir.glob("*.json"):
         try:
@@ -116,7 +159,7 @@ def _gather_candidates(memory_dir: Path, limit: int) -> list[tuple[Path, dict]]:
             continue
         if entry.get("category") != "session_log":
             continue
-        if entry.get("analyst_processed"):
+        if entry.get(marker):
             continue
         candidates.append((path, entry))
     candidates.sort(key=lambda pe: pe[1].get("created_at") or 0)
@@ -132,15 +175,67 @@ async def analyze_tenant(
     *,
     config,
 ) -> dict:
-    """One analysis pass over a tenant. Returns stats:
-    {scanned, batches, notes_extracted, notes_deduped, notes_saved, failed}.
+    """One Analyst pass over a tenant (conservative fact lens). Returns stats:
+    {scanned, batches, notes_extracted, notes_deduped, notes_saved, failed}."""
+    return await _lens_pass(
+        agent_id, memory_dir, vec_store, reasoner, embedder,
+        config=config, lens="analyst", system_prompt=ANALYST_SYSTEM_PROMPT,
+        allowed=ALLOWED_CATEGORIES, marker="analyst_processed",
+    )
+
+
+async def muse_tenant(
+    agent_id: str,
+    memory_dir: Path,
+    vec_store,
+    reasoner,
+    embedder,
+    *,
+    config,
+    dry_run: bool = False,
+) -> dict:
+    """One Muse pass over a tenant (creative idea lens). Emits `idea` memories.
+
+    dry_run=True is the Guy's-Gate instrument: gather → LLM → parse → return
+    the notes in stats["notes"] WITHOUT embedding, dedup, persisting, or
+    marking sources processed. No vec/embedder access at all, so it is safe to
+    run from a second process against a live store (the S111 sqlite lock trap).
+    """
+    return await _lens_pass(
+        agent_id, memory_dir, vec_store, reasoner, embedder,
+        config=config, lens="muse", system_prompt=MUSE_SYSTEM_PROMPT,
+        allowed=MUSE_ALLOWED_CATEGORIES, marker="muse_processed",
+        dry_run=dry_run,
+    )
+
+
+async def _lens_pass(
+    agent_id: str,
+    memory_dir: Path,
+    vec_store,
+    reasoner,
+    embedder,
+    *,
+    config,
+    lens: str,
+    system_prompt: str,
+    allowed: set[str],
+    marker: str,
+    dry_run: bool = False,
+) -> dict:
+    """One extraction pass over a tenant's unprocessed session logs, through
+    one lens (analyst = conservative facts, muse = idea seeds). Returns stats:
+    {scanned, batches, notes_extracted, notes_deduped, notes_saved, failed}
+    (+ "notes" when dry_run).
 
     All LLM/embedding calls run with use_breaker=False — this is background
     batch work and must not touch the live breakers (batch-vs-live isolation).
     """
-    stats = {"scanned": 0, "batches": 0, "notes_extracted": 0,
-             "notes_deduped": 0, "notes_saved": 0, "failed": 0}
-    candidates = _gather_candidates(memory_dir, config.max_memories_per_cycle)
+    label = lens.capitalize()
+    stats: dict = {"scanned": 0, "batches": 0, "notes_extracted": 0,
+                   "notes_deduped": 0, "notes_saved": 0, "failed": 0}
+    candidates = _gather_candidates(memory_dir, config.max_memories_per_cycle,
+                                    marker=marker)
     if not candidates:
         return stats
 
@@ -168,16 +263,28 @@ async def analyze_tenant(
 
     try:
         raw = await reasoner.generate(
-            "\n\n".join(lines), system=ANALYST_SYSTEM_PROMPT,
+            "\n\n".join(lines), system=system_prompt,
             max_tokens=1500, use_breaker=False,
         )
-        notes = _parse_notes(raw, config.max_notes_per_batch)
+        notes = _parse_notes(raw, config.max_notes_per_batch, allowed=allowed)
     except Exception as e:
-        log.warning(f"Analyst LLM pass failed for '{agent_id}': {e}")
+        log.warning(f"{label} LLM pass failed for '{agent_id}': {e}")
         stats["failed"] = len(batch)
         return stats  # sources NOT marked processed — retried next cycle
 
     stats["notes_extracted"] = len(notes)
+
+    if dry_run:
+        # Guy's-Gate instrument: show what the lens WOULD save. No embedding,
+        # no dedup gate (that needs the live vec index), no persistence, and
+        # sources stay unmarked so the real pass reads them again.
+        stats["notes"] = notes
+        log.info(
+            f"{label} DRY RUN '{agent_id}': read {stats['scanned']} logs → "
+            f"{len(notes)} note(s) extracted (nothing saved, nothing marked)"
+        )
+        return stats
+
     now = time.time()
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -191,7 +298,7 @@ async def analyze_tenant(
         try:
             embedding = await embedder.embed(full_text, use_breaker=False, task_type="document")
         except Exception as e:
-            log.warning(f"Analyst embed failed for '{agent_id}': {e}")
+            log.warning(f"{label} embed failed for '{agent_id}': {e}")
             stats["failed"] += 1
             continue
 
@@ -205,16 +312,16 @@ async def analyze_tenant(
                     stats["notes_deduped"] += 1
                     continue
         except Exception as e:
-            log.warning(f"Analyst dedup check failed (saving anyway): {e}")
+            log.warning(f"{label} dedup check failed (saving anyway): {e}")
 
         # Deterministic id: re-running over the same sources + text can't
         # duplicate a note.
         memory_id = hashlib.sha256(
-            f"analyst:{agent_id}:{summary}".encode()
+            f"{lens}:{agent_id}:{summary}".encode()
         ).hexdigest()[:16]
         entry = {
             "id": memory_id,
-            "session_id": f"analyst-{agent_id}-{date_str}",
+            "session_id": f"{lens}-{agent_id}-{date_str}",
             "agent_id": agent_id,
             "summary": summary,
             "key_facts": key_facts,
@@ -224,8 +331,8 @@ async def analyze_tenant(
             "created_at": now,
             "source": "inferred",
             "category": note["category"],
-            "additional_tags": ["analyst"],
-            "classified_by": "analyst",
+            "additional_tags": [lens],
+            "classified_by": lens,
             "derived_from": source_ids,
             "schema_version": 3,
         }
@@ -238,9 +345,10 @@ async def analyze_tenant(
                 created_at=now,
             )
             stats["notes_saved"] += 1
-            log.info(f"📝 Analyst note [{note['category']}] for '{agent_id}': {summary[:100]}")
+            emoji = "🎨" if lens == "muse" else "📝"
+            log.info(f"{emoji} {label} note [{note['category']}] for '{agent_id}': {summary[:100]}")
         except Exception as e:
-            log.error(f"Analyst persist failed for '{agent_id}': {e}")
+            log.error(f"{label} persist failed for '{agent_id}': {e}")
             stats["failed"] += 1
 
     # Any per-note failure (embed/persist) leaves the WHOLE batch unmarked so
@@ -249,7 +357,7 @@ async def analyze_tenant(
     # deterministic memory_ids + the dedup gate absorb the notes that DID save.
     if stats["failed"]:
         log.warning(
-            f"Analyst '{agent_id}': {stats['failed']} note(s) failed to persist — "
+            f"{label} '{agent_id}': {stats['failed']} note(s) failed to persist — "
             f"batch left unmarked for retry next cycle"
         )
         return stats
@@ -258,9 +366,9 @@ async def analyze_tenant(
     # worth keeping" is an answer; re-reading the same logs nightly is not.
     for path, entry in batch:
         try:
-            entry["analyst_processed"] = True
+            entry[marker] = True
             path.write_text(json.dumps(entry, indent=2, default=str))
         except Exception as e:
-            log.warning(f"Failed to mark {path} analyst_processed: {e}")
+            log.warning(f"Failed to mark {path} {marker}: {e}")
 
     return stats

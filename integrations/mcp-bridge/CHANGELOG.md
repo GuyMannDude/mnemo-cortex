@@ -12,6 +12,21 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.13.0 — 2026-07-02 — Creative harness: `idea` category + recall mode=explore
+
+**Problem:** The creative-harness audit (bus #1003) found the bridge's category
+enums had no home for creative content — an idea seed could only be filed as
+`decision` or fall into hidden `session_log` — and recall had exactly one lens:
+best-match-plus-recency, which buries the half-forgotten connection that
+creative recall lives on.
+
+**Fix:** (1) `idea` added to the category enum on `mnemo_recall`, `mnemo_search`,
+and `mnemo_save` (server v4.8.0 counterpart: perpetual decay, 0.85 ranking
+prior, classifier + regex support). (2) New optional `mode` param on
+`mnemo_recall`: `focus` (default, unchanged) or `explore` — the serendipity
+lens: prefers the similarity band adjacent to the top hit, ignores recency,
+favors rarely-recalled memories. Use `mode=explore` when brainstorming.
+
 ## 2.12.0 — 2026-06-25 — Trajectory tools: mnemo_save_trajectory + mnemo_recall_trajectory
 
 **Problem:** The bridge exposed memory save/recall but not the new v4.5 trajectory-learning

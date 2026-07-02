@@ -71,7 +71,7 @@ from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="4.6.0", prog_name="mnemo-cortex")
+@click.version_option(version="4.8.0", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
@@ -1337,6 +1337,58 @@ def migrate_vec_backfill_cmd(agents, all_agents):
 
     console.print(f"[bold]Vec category backfill[/] → {', '.join(agent_ids)}")
     migrate_vec_backfill(agent_ids, config=config)
+
+
+@main.command("muse")
+@click.option("--agent", "-a", "agents", multiple=True, required=True, help="Agent id (repeatable).")
+@click.option("--limit", default=30, help="Session logs to read per agent (default 30).")
+def muse_cmd(agents, limit):
+    """Audition the Muse (ALWAYS a dry run): print the idea seeds it would extract.
+
+    \b
+    Reads each agent's unprocessed session logs through the creative lens and
+    prints the notes WITHOUT saving anything or marking sources processed.
+    Live extraction runs inside the server maintenance loop once muse.enabled
+    is set in agentb.yaml — this command is the review instrument for making
+    that call. Safe against a live server: no vec-index or embedder access.
+    """
+    import asyncio
+    from dataclasses import replace
+
+    from agentb.analyst import muse_tenant
+    from agentb.config import load_config, get_agent_data_dir
+    from agentb.providers import create_resilient_reasoning
+
+    config = load_config()
+    muse_cfg = replace(config.muse, max_memories_per_cycle=limit)
+    reasoner = create_resilient_reasoning(config.reasoning)  # own instance — never
+                                                             # touches the live breaker
+
+    async def _run():
+        for agent_id in agents:
+            memory_dir = get_agent_data_dir(config, agent_id) / "memory"
+            if not memory_dir.is_dir():
+                console.print(f"[yellow]No memory dir for '{agent_id}' — skipped.[/]")
+                continue
+            stats = await muse_tenant(
+                agent_id, memory_dir, None, reasoner, None,
+                config=muse_cfg, dry_run=True,
+            )
+            notes = stats.get("notes", [])
+            console.print(
+                f"\n[bold]🎨 Muse audition — {agent_id}[/] "
+                f"(read {stats['scanned']} log(s) → {len(notes)} idea seed(s))"
+            )
+            for n in notes:
+                console.print(f"  [cyan]•[/] {n['summary']}")
+                if n["key_facts"]:
+                    console.print(f"    [dim]{', '.join(n['key_facts'])}[/]")
+            if not notes and stats["scanned"]:
+                console.print("  [dim](no idea seeds in this batch — zero is a valid answer)[/]")
+            if not stats["scanned"]:
+                console.print("  [dim](no unprocessed session logs to read)[/]")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

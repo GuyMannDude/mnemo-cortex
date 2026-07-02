@@ -25,13 +25,16 @@ VALID_CATEGORIES = {
     "identity",
     "relationship",
     "decision",
+    "idea",
     "session_log",
     "unknown",
 }
 
 # Decay thresholds (days). Override per-deployment via env. Perpetual
-# categories (doctrine, incident, identity, decision) are absent on purpose
-# and never return a stale_warning.
+# categories (doctrine, incident, identity, decision, idea) are absent on
+# purpose and never return a stale_warning. `idea` is perpetual by a different
+# logic than doctrine: an idea seed ages INTO relevance (the half-forgotten
+# connection is the valuable one), so time-based staleness is meaningless.
 DECAY_THRESHOLDS = {
     "topology": {
         "warn": int(os.getenv("MNEMO_DECAY_TOPOLOGY_WARN_DAYS", "30")),
@@ -67,6 +70,21 @@ PROVENANCE_PATTERNS: list[tuple[str, re.Pattern]] = [
         re.compile(
             r"\b(port|host|running on|hostname|systemd|service|process|"
             r"gateway|listening on|\d+\.\d+\.\d+\.\d+|:[0-9]{4,5}\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # Ideation phrasing is highly diagnostic and creative content otherwise
+        # has no path out of "unknown". Placed after topology (operational facts
+        # win) but before doctrine/decision so a voiced what-if isn't swallowed
+        # by its incidental "rule"/"chose" vocabulary. Deliberately excludes
+        # generic tech verbs ("connects to" etc.) — every phrase here is one a
+        # human riffs with, not one a status report uses.
+        "idea",
+        re.compile(
+            r"\b(reminds me of|what if|imagine if|wouldn'?t it be|"
+            r"inspired by|inspiration|brainstorm(?:ing|ed)?|riff(?:ing|ed)? on|"
+            r"idea seed|seed of an idea|aesthetic|mashup)\b",
             re.IGNORECASE,
         ),
     ),
@@ -135,7 +153,7 @@ def compute_stale_warning(
 ) -> Optional[dict]:
     """Return a structured stale_warning dict if the record is past its
     category's warn threshold, else None. Perpetual categories (doctrine,
-    incident, identity, decision) never return a warning."""
+    incident, identity, decision, idea) never return a warning."""
     if not category or category not in DECAY_THRESHOLDS:
         return None
     if not created_at:

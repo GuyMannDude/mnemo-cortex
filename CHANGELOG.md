@@ -1,5 +1,55 @@
 # Changelog
 
+## v4.8.0 (2026-07-02) — The Creative Harness: `idea` category, the Muse, riff-scale capture, recall mode=explore
+
+**Problem.** The creative-harness audit (bus #1002→#1003) found every distillation layer was
+task-shaped by design: the Stage 0.7 judge only admits task recipes, the Stage 0.5 fact extractor
+explicitly skips speculative language ("might/considering/exploring" — the native grammar of
+ideation), the category enum had no home for creative content (so idea seeds fell into
+`session_log`: hidden from recall by default, importance floor 0.20), the CC sync bridge
+truncated every conversation turn to 300 chars while surfacing only tool calls as key facts, and
+recall had exactly one lens — best-match-plus-recency, which buries the half-forgotten
+connection creative recall lives on. The vector geometry and ranking were innocent: an idea that
+existed as a first-class memory recalled fine. The riff never lost the ranking race — it was
+never minted as a memory. Four changes, all tuning-layer:
+
+**1. Tier-1 `idea` category (the unlock).** "A creative insight, cross-domain connection,
+inspiration, aesthetic observation, or what-if — an idea seed, not yet a decision or task."
+Perpetual (no decay — an idea ages INTO relevance; the half-forgotten connection is the valuable
+one), ranking prior 0.85 (above operational facts, below doctrine/incident/decision), regex
+auto-suggester triggers on ideation phrasing ("reminds me of", "what if", "riffing on"...), LLM
+classifier target, bridge enums (bridge 2.13.0). Guard: `idea` is ordinary chat vocabulary, so
+the classifier's chatty-reply parser only accepts it as a sole-token answer — "i have no idea"
+must not classify anything.
+
+**2. The Muse (creative distiller).** Originally specced as Dreamer Stage 0.8; built instead as
+the Analyst's sibling lens in `analyst.py` — discovery during build: the Analyst already had the
+batching, dedup gate, deterministic ids, redaction, breaker isolation, and read-once bookkeeping
+the Muse needs, AND it reads ALL `session_log` including the chat-first agents' captureCall
+streams that Stage 0.7 structurally cannot see. Same machinery, opposite temperament: where the
+Analyst is forbidden to bridge two statements into a third, bridging statements is exactly what
+the Muse is for. It NOTICES, never INVENTS (every note must point at material voiced in the
+log), emits only `idea` notes with `classified_by="muse"`, keeps its own `muse_processed` marker
+(both lenses read each log exactly once, independently). Gate: `muse.enabled` (default OFF)
+pending review of `mnemo-cortex muse --agent <id>` — an always-dry-run audition command that
+never touches the vec index (safe beside a live server).
+
+**3. Riff-scale capture (mnemo-cc-sync).** The flat 300-char turn snippet treated conversation
+as noise and tool calls as signal — inverted for creative users. Now role-aware: user turns keep
+2000 chars (the riff is the most valuable text in the stream), assistant conversation turns
+1200, pure tool echoes stay at 300. Batch budget 4000→12000. `MuseConfig.per_memory_chars=4000`
+so the wider capture actually reaches the creative lens (the Analyst's 1200 would have cut the
+riff body before the Muse ever read it).
+
+**4. Recall `mode=explore` (the serendipity lens).** Focus answers "what matches best";
+explore answers "what does this remind the store of": prefers the similarity band adjacent to
+the pool's top hit (relative geometry — absolute thresholds died once already in v4.3.0),
+ignores recency entirely, and favors rarely-recalled memories (novelty = inverted access).
+Explore results still bump access counts, so repeated exploring naturally rotates through the
+idea space. Noise band (sim < top−0.08) is hard-zeroed — serendipity is adjacency, not
+randomness. Works even with composite ranking disabled (a mode that silently no-ops would be a
+silent degradation). Exposed via `mode` on `/context` and `mnemo_recall` (bridge 2.13.0).
+
 ## v4.7.1 (2026-07-02) — Stage 0.7 first-live-run fix: strict=False JSON parse + bigger output budget
 
 **Problem.** The first live Stage 0.7 run lost 2 of 3 sessions to "JSON parse failed, nothing
