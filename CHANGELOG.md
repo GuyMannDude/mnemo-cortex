@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.9.1 (2026-07-04) — Muse judge round 3: dedup + doctrine-echo rules
+
+**Problem.** Muse audition round 2 (precision 2/4) failed in exactly two ways: the same underlying
+idea emitted twice in one batch (reworded, not new), and an existing project doctrine echoed back
+dressed as "a valuable heuristic" — an application of a known principle presented as creation.
+Both slipped the v4.8.0 prompt: no in-batch dedup rule existed, and the observations-aren't-ideas
+rule didn't name the echo disguise.
+
+**Fix.** Prompt-only (`MUSE_SYSTEM_PROMPT`): rule 3 extended to kill doctrine ECHOES regardless of
+dressing; new rule 10 — one note per underlying idea, strongest survives, a rewording is not a
+second idea. No code paths touched.
+
 ## v4.9.0 (2026-07-03) — Scoped tokens: per-tenant, per-endpoint auth
 
 **Problem.** The server had exactly one credential: `server.auth_token`, an all-or-nothing master

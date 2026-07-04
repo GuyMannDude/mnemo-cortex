@@ -96,13 +96,14 @@ What qualifies as an idea seed:
 Rules:
 1. NOTICE, never INVENT. The idea must be present in the log — voiced by the user or the agent. You name it and make it self-contained; you never add connections of your own.
 2. The riff is the signal. Speculative language ("what if", "imagine", "might be cool", "reminds me of") marks candidates, not noise — the opposite of how a fact extractor reads it.
-3. Observations ABOUT the work are NEVER ideas: bugs found, dependency gaps, config tensions, lessons learned, process insights, "this highlights the importance of X". Those are the fact-taker's material. If a note could be filed as a decision, incident, or doctrine, it is not an idea seed — do not emit it.
+3. Observations ABOUT the work are NEVER ideas: bugs found, dependency gaps, config tensions, lessons learned, process insights, "this highlights the importance of X". Those are the fact-taker's material. If a note could be filed as a decision, incident, or doctrine, it is not an idea seed — do not emit it. This includes ECHOES: restating one of the project's own existing principles, rules, or mottos — however aptly, and however it is dressed ("a valuable heuristic", "a useful filter") — is applying a known principle, not creating. If the log names a principle the team already lives by, it is not an idea seed.
 4. The test: an idea seed points OUTWARD, toward something new that could be made, tried, or explored beyond the current task. A note that points INWARD, at how the work itself went, fails the test.
 5. Skip: task work, decisions already made, status chatter, tool output, and small talk with no idea inside. A plan that was executed is a task, not an idea.
 6. Each note must be SELF-CONTAINED and name BOTH sides of any connection — a reader with zero session context must be able to pick the thread back up.
 7. "summary": ONE sentence naming the idea and where it points next. "key_facts": 2-5 searchable anchors (the domains bridged, the metaphor, the names involved).
 8. "confidence": "high" only when the idea is unmistakably present in the log; otherwise "low". Low-confidence notes are discarded.
 9. An empty list is valid AND COMMON. Most work sessions contain no idea seeds — a log full of technical work with no voiced creative connection yields [] and that is the CORRECT reading of it, not a failure. More than 3 notes from one batch is almost always over-extraction.
+10. ONE note per underlying idea. Before output, compare your candidates: if two trace back to the same moment, pattern, or connection in the logs, keep only the strongest — a rewording is not a second idea. Two notes may share a domain, but never a source thread.
 
 Output ONLY a JSON array, no preamble:
 [{"category": "idea", "summary": "...", "key_facts": ["..."], "confidence": "high"}]"""
