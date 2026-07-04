@@ -199,12 +199,35 @@ class ExpansionConfig:
     api_base: str = ""
 
 
+# Endpoints a scoped token may be granted. Deliberately a closed set: these are
+# exactly the handlers that call _enforce_scope() on the request body's agent_id.
+# Granting any other endpoint would hand out access with NO tenant pin, so the
+# config loader rejects it at startup rather than trusting a future reviewer to
+# notice.
+SCOPABLE_ENDPOINTS = frozenset({
+    "/context", "/writeback", "/trajectory/save", "/trajectory/recall",
+})
+
+
+@dataclass
+class ScopedToken:
+    """A bearer token pinned to one agent tenant and a subset of endpoints.
+
+    The master server.auth_token keeps full access; scoped tokens exist so a
+    single less-trusted caller (a gateway, a shared automation) can never reach
+    beyond its own tenant even if its token leaks."""
+    token: str
+    agent_id: str
+    endpoints: list
+
+
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 50001
     cors_origins: list = field(default_factory=lambda: ["*"])
     auth_token: str = ""
+    scoped_tokens: list = field(default_factory=list)
     # Reject request bodies larger than this (DoS guard). Generous default —
     # no legitimate memory write approaches it; it only stops abusive payloads
     # from being embedded/indexed/written to disk. 0 disables the check.
@@ -240,6 +263,36 @@ def _resolve_env(value) -> str:
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
         return os.environ.get(value[2:-1], "")
     return str(value) if value is not None else ""
+
+
+def _parse_scoped_tokens(entries) -> list:
+    """Validate server.scoped_tokens at load time. Every rejection here is a
+    request the auth middleware would otherwise mis-handle, so fail LOUD on
+    startup instead of quietly at request time."""
+    tokens: list[ScopedToken] = []
+    for i, e in enumerate(entries or []):
+        if not isinstance(e, dict):
+            raise ValueError(f"server.scoped_tokens[{i}]: expected a mapping")
+        token = _resolve_env(e.get("token", ""))
+        agent_id = str(e.get("agent_id") or "").strip()
+        endpoints = e.get("endpoints") or []
+        if not token:
+            # An empty token would "match" requests with no auth header at all.
+            raise ValueError(
+                f"server.scoped_tokens[{i}]: token is empty (unset env var?)")
+        if not agent_id:
+            raise ValueError(f"server.scoped_tokens[{i}]: agent_id is required")
+        if not isinstance(endpoints, list) or not endpoints:
+            raise ValueError(
+                f"server.scoped_tokens[{i}]: endpoints must be a non-empty list")
+        bad = sorted(set(endpoints) - SCOPABLE_ENDPOINTS)
+        if bad:
+            raise ValueError(
+                f"server.scoped_tokens[{i}]: endpoint(s) {bad} cannot be scoped "
+                f"— only {sorted(SCOPABLE_ENDPOINTS)} enforce the agent pin")
+        tokens.append(ScopedToken(token=token, agent_id=agent_id,
+                                  endpoints=list(endpoints)))
+    return tokens
 
 
 def _build_provider(data: dict) -> ProviderConfig:
@@ -350,6 +403,7 @@ def _parse_config(raw: dict) -> AgentBConfig:
             port=s.get("port", 50001),
             cors_origins=s.get("cors_origins", ["*"]),
             auth_token=_resolve_env(s.get("auth_token", "")),
+            scoped_tokens=_parse_scoped_tokens(s.get("scoped_tokens", [])),
             # was silently ignored from YAML before v4.1 — the dataclass
             # default always won
             max_body_bytes=s.get("max_body_bytes", ServerConfig.max_body_bytes),

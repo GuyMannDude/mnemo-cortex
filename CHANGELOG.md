@@ -1,5 +1,36 @@
 # Changelog
 
+## v4.9.0 (2026-07-03) — Scoped tokens: per-tenant, per-endpoint auth
+
+**Problem.** The server had exactly one credential: `server.auth_token`, an all-or-nothing master
+key to all 23 endpoints and every agent tenant. Any less-trusted caller — a gateway, a shared
+automation, a script on another machine — had to hold the master key, so a single leak meant the
+whole fleet's memory. (Designing a public remote-MCP gateway made this concrete: the gateway would
+have held god-mode over every tenant. That build was stood down, but the missing auth tier is real
+regardless.)
+
+**Fix.** New optional `server.scoped_tokens` list — each entry pins a bearer token to one
+`agent_id` and an endpoint allowlist:
+
+```yaml
+server:
+  auth_token: "${MNEMO_AUTH_TOKEN}"      # master — full access, unchanged
+  scoped_tokens:
+    - token: "${MNEMO_TOKEN_HELPER}"
+      agent_id: helper
+      endpoints: ["/context", "/writeback"]
+```
+
+A scoped request must hit an allowlisted endpoint (else 403) **and** carry the pinned `agent_id`
+in its body (else 403 — a missing `agent_id` also fails, since it would land in the `default`
+tenant). Only endpoints that enforce the pin can be allowlisted (`/context`, `/writeback`,
+`/trajectory/save`, `/trajectory/recall`); the config loader rejects anything else at startup, so
+an unpinned endpoint can never be granted by accident. Empty/unresolved tokens are rejected at
+load (an empty token would match requests with no auth header). All token comparisons — including
+the pre-existing master check — now use constant-time `hmac.compare_digest`. No config change =
+byte-identical behavior: the master token works exactly as before, and servers with no auth
+configured stay open.
+
 ## v4.8.1 (2026-07-02) — macOS support pass: passport portability fix, green suite on fresh installs, launchd + install guide
 
 **Problem.** Three things stood between a fresh `git clone` on a Mac and a working, verifiable

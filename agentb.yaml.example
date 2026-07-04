@@ -92,7 +92,17 @@ server:
   host: 0.0.0.0
   port: 50001
   cors_origins: ["*"]
-  # auth_token: my-secret-token   # require X-API-KEY header
+  # auth_token: my-secret-token   # require X-API-KEY header (master — full access)
+  # Scoped tokens (v4.9): pin a token to ONE agent tenant + an endpoint
+  # allowlist, so a less-trusted caller never holds the master key. Only
+  # /context, /writeback, /trajectory/save, /trajectory/recall can be scoped.
+  # Paths match EXACTLY (fail-closed, checked before routing): a scoped call
+  # to "/writeback/" (trailing slash) gets 403, not a redirect — use the
+  # exact path.
+  # scoped_tokens:
+  #   - token: "${MNEMO_TOKEN_HELPER}"
+  #     agent_id: helper
+  #     endpoints: ["/context", "/writeback"]
 
 # ── Persona Modes ──
 # Built-in: default, strict, creative. Custom personas overlay these:

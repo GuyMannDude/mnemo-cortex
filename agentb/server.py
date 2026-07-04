@@ -18,6 +18,7 @@ import re
 import json
 import time
 import hashlib
+import hmac
 import logging
 import asyncio
 import statistics
@@ -593,7 +594,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.8.1",
+        version="4.9.0",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -619,16 +620,40 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             return await call_next(request)
 
     # ── Auth ──
-    if config.server.auth_token:
+    # Two tiers (v4.9): the master auth_token keeps full access; scoped tokens
+    # (server.scoped_tokens) are pinned to one agent tenant + an endpoint
+    # allowlist. The middleware decides WHO the token is; the scoped endpoints
+    # enforce the tenant pin on the request body via _enforce_scope() — the
+    # config loader guarantees only pin-enforcing endpoints can be allowlisted.
+    def _token_eq(a: str, b: str) -> bool:
+        return hmac.compare_digest(a.encode(), b.encode())
+
+    if config.server.auth_token or config.server.scoped_tokens:
         @app.middleware("http")
         async def check_auth(request: Request, call_next):
             if request.url.path == "/health":
                 return await call_next(request)
             token = (request.headers.get("X-API-KEY") or
                      request.headers.get("Authorization", "").replace("Bearer ", ""))
-            if token != config.server.auth_token:
-                return Response("Unauthorized", status_code=401)
-            return await call_next(request)
+            if config.server.auth_token and _token_eq(token, config.server.auth_token):
+                return await call_next(request)
+            for st in config.server.scoped_tokens:
+                if _token_eq(token, st.token):
+                    if request.url.path not in st.endpoints:
+                        return Response(
+                            f"Forbidden: token for agent '{st.agent_id}' is not "
+                            f"scoped to {request.url.path}", status_code=403)
+                    request.state.scoped_agent_id = st.agent_id
+                    return await call_next(request)
+            return Response("Unauthorized", status_code=401)
+
+    def _enforce_scope(request: Request, agent_id: Optional[str]) -> None:
+        """403 unless the request's agent_id matches the token's pin. A missing
+        agent_id also fails — it would otherwise land in the 'default' tenant."""
+        pinned = getattr(request.state, "scoped_agent_id", None)
+        if pinned is not None and agent_id != pinned:
+            raise HTTPException(
+                403, f"Token is scoped to agent '{pinned}'")
 
     # ── Health ──
     @app.get("/health", response_model=HealthResponse)
@@ -646,7 +671,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.8.1",
+            version="4.9.0",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -658,7 +683,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Context ──
     @app.post("/context", response_model=ContextResponse)
-    async def context(req: ContextRequest):
+    async def context(req: ContextRequest, request: Request):
+        _enforce_scope(request, req.agent_id)
         start = time.time()
         persona = get_persona(config, req.persona, req.agent_id)
         tenant = tenants.get(req.agent_id)
@@ -1031,7 +1057,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Writeback ──
     @app.post("/writeback", response_model=WritebackResponse)
-    async def writeback(req: WritebackRequest):
+    async def writeback(req: WritebackRequest, request: Request):
+        _enforce_scope(request, req.agent_id)
         # Check read-only
         if req.agent_id and req.agent_id in config.agents:
             if config.agents[req.agent_id].read_only:
@@ -1183,8 +1210,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Trajectory Learning (v4.5) ──
     @app.post("/trajectory/save", response_model=TrajectorySaveResponse)
-    async def trajectory_save(req: TrajectorySaveRequest):
+    async def trajectory_save(req: TrajectorySaveRequest, request: Request):
         """Capture a proven task recipe AFTER the agent judges it succeeded."""
+        _enforce_scope(request, req.agent_id)
         if req.agent_id and req.agent_id in config.agents:
             if config.agents[req.agent_id].read_only:
                 raise HTTPException(403, f"Agent '{req.agent_id}' is read-only")
@@ -1236,8 +1264,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         )
 
     @app.post("/trajectory/recall", response_model=TrajectoryRecallResponse)
-    async def trajectory_recall(req: TrajectoryRecallRequest):
+    async def trajectory_recall(req: TrajectoryRecallRequest, request: Request):
         """Recall proven task recipes BEFORE a similar task."""
+        _enforce_scope(request, req.agent_id)
         tenant = tenants.get(req.agent_id)
         traj: TrajectoryStore = tenant["trajectories"]
 
