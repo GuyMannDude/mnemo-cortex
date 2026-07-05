@@ -7,6 +7,8 @@
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
 
+**🌐 Home: [projectsparks.ai](https://projectsparks.ai)** — the story, the docs, and how the project is funded (donations + art sales at [Rocky's Gallery](https://rockysgallery.com)).
+
 > [!TIP]
 > **AI agents — start here.**
 >
