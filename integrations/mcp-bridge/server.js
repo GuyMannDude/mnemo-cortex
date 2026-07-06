@@ -4,7 +4,7 @@ import { z } from "zod";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { DumpWriter } from "./dump.js";
 
 // ── Configuration ──────────────────────────────────────────────
@@ -46,6 +46,9 @@ const BRAIN_DIR =
 const WIKI_DIR = process.env.WIKI_DIR || join(process.env.HOME || ".", "wiki");
 const DREAM_DIR =
   process.env.DREAM_DIR || join(process.env.HOME || ".", ".agentb/dreams");
+
+// Days before the boot block starts nagging about an un-updated lane file.
+const LANE_STALE_DAYS = 7;
 
 const SHARE_MODES = ["separate", "always", "never"];
 const shareMode = SHARE_MODES.includes(process.env.MNEMO_SHARE)
@@ -450,7 +453,7 @@ process.stdin.on("end", () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.14.0",
+  version: "2.15.0",
 });
 
 // ── Developer Dump (v2.9.0, Mnemo v4 Phase 1) ──────────────────
@@ -1048,6 +1051,33 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
       );
     }
 
+    // v2.15.0: lane-staleness nag. The Lane Protocol's "update your own
+    // lane file" step lived only in tool descriptions and was skipped by
+    // every agent except cc (opie.md found 6+ weeks stale, 2026-07-05).
+    // The boot block now measures compliance and says it to the agent's
+    // face, every boot, until the lane gets a commit.
+    if (laneLoaded && insideWorkTree) {
+      try {
+        const ct = execFileSync("git", ["log", "-1", "--format=%ct", "--", laneLoaded], {
+          cwd: BRAIN_DIR,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        const ageDays = ct ? (Date.now() / 1000 - Number(ct)) / 86400 : null;
+        if (ageDays !== null && ageDays > LANE_STALE_DAYS) {
+          parts.unshift(
+            `# ⚠️ YOUR LANE FILE IS STALE\n\n` +
+            `${laneLoaded} was last committed ${Math.round(ageDays)} days ago. ` +
+            `The other agents coordinate off your lane — right now they are reading ` +
+            `${Math.round(ageDays)}-day-old reality. Before this session ends: update it ` +
+            `(write_brain_file — date bump + what changed since) and call session_end to commit.`
+          );
+        }
+      } catch {
+        // a failed git log is never worth breaking a boot
+      }
+    }
+
     // CLAUDE.md is the cross-agent operating doc — Lane Protocol
     // applied to this brain. Loaded BEFORE active/people/doctrines so
     // its session ritual frames everything else.
@@ -1417,6 +1447,36 @@ server.registerTool(
       }
     } catch (err) {
       results.push(`Brain commit: FAILED (${err.message})`);
+    }
+
+    // v2.15.0: advisory line when this session (bridge lifetime) never
+    // touched the agent's own lane file — the Lane Protocol step agents
+    // kept skipping. Runs AFTER the commit so a lane updated moments ago
+    // counts. Under-nags on long-lived bridge processes by design.
+    try {
+      let lane = null;
+      for (const c of [`${AGENT_ID}.md`, `${AGENT_ID}-session.md`]) {
+        if (existsSync(join(BRAIN_DIR, c))) { lane = c; break; }
+      }
+      const startEpoch = sessionStartTime
+        ? new Date(sessionStartTime).getTime() / 1000
+        : null;
+      if (lane && startEpoch) {
+        const ct = execFileSync("git", ["log", "-1", "--format=%ct", "--", lane], {
+          cwd: BRAIN_DIR,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        if (ct && Number(ct) < startEpoch) {
+          const ageDays = Math.round((Date.now() / 1000 - Number(ct)) / 86400);
+          results.push(
+            `⚠️ ${lane} was NOT updated this session (last commit ${ageDays} days ago). ` +
+            `Per the Lane Protocol: write_brain_file("${lane}", ...) with a date bump + what changed, then call session_end again.`
+          );
+        }
+      }
+    } catch {
+      // advisory only — never block a session end
     }
 
     const elapsed = sessionStartTime

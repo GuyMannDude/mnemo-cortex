@@ -12,6 +12,23 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.15.0 — 2026-07-05 — Lane-staleness nag: the boot block measures Lane Protocol compliance
+
+**Problem:** The Lane Protocol's "update your own lane file every session" step lived
+only in tool descriptions and the boot-block ritual text — passive instructions no
+agent re-reads. Compliance audit (Guy, 2026-07-05): only cc's lane was current;
+opie.md hadn't had a real update since 2026-05-08 (~6 weeks), rocky.md ~3.5 weeks,
+dave-session.md ~2.5 weeks, cody-session.md never since onboarding. Every agent was
+coordinating off the others' stale reality, silently.
+
+**Fix:** Two active signals, both from git truth (`git log -1 --format=%ct -- <lane>`):
+(1) `agent_startup` prepends a `⚠️ YOUR LANE FILE IS STALE` banner — with the age in
+days — whenever the lane's last commit is older than 7 days; it fires every boot until
+the lane gets a commit. (2) `session_end` appends an advisory when the lane's last
+commit predates this bridge process's start (i.e., the session that is ending never
+touched it), telling the agent exactly what to call. Both checks are try/caught —
+a failed git probe never breaks a boot or a session end.
+
 ## 2.14.0 — 2026-07-05 — Dream brief fetched from the Cortex, not local disk
 
 **Problem:** `agent_startup` read the dream brief from `DREAM_DIR` on the
