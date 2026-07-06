@@ -44,7 +44,7 @@ def make_client(tmp_path):
         cfg = AgentBConfig(
             reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="x")),
             embedding=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="nomic-embed-text")),
-            cache=CacheConfig(), server=ServerConfig(port=50099),
+            cache=CacheConfig(), server=ServerConfig(host="127.0.0.1", port=50099),
             data_dir=str(tmp_path),
             classification=ClassificationConfig(enabled=False),
             personas=dict(DEFAULT_PERSONAS),

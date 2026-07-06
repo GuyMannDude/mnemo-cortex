@@ -70,7 +70,7 @@ def client(tmp_path):
     cfg = AgentBConfig(
         reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="x")),
         embedding=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="nomic-embed-text")),
-        cache=CacheConfig(), server=ServerConfig(port=50098),
+        cache=CacheConfig(), server=ServerConfig(host="127.0.0.1", port=50098),
         data_dir=str(tmp_path),
         classification=ClassificationConfig(enabled=False),
         # ranking DISABLED on purpose: explore must still work (no silent no-op)

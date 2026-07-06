@@ -305,7 +305,7 @@ def _make_client(tmp_path, embedder):
     cfg = AgentBConfig(
         reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="x")),
         embedding=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="nomic")),
-        cache=CacheConfig(), server=ServerConfig(port=50097),
+        cache=CacheConfig(), server=ServerConfig(host="127.0.0.1", port=50097),
         data_dir=str(tmp_path),
         classification=ClassificationConfig(enabled=False),
         expansion=ExpansionConfig(),  # default-ON

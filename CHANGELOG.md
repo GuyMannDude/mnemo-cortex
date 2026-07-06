@@ -1,5 +1,30 @@
 # Changelog
 
+## v4.9.5 (2026-07-06) — SECURITY: tenant path traversal closed + fail-closed auth (clean-room review C1/C2)
+
+**Problem.** The clean-room Fable review of v4.9.4 confirmed two criticals. (C1) `get_agent_data_dir`
+joined a request-supplied `agent_id` straight into the tenant path — and `pathlib` discards the
+left operand when the right is absolute, so `agent_id="/etc/cron.d/x"` resolved to `/etc/cron.d/x`
+and `"../../../tmp/pwn"` escaped the data root; `/writeback` would then create dirs and write
+attacker-controlled JSON anywhere the process can write. (C2) The auth middleware only mounts
+`if auth_token or scoped_tokens` — both default empty — while `host` defaults to `0.0.0.0`, so a
+stock deployment binds all interfaces with **no auth on any endpoint**. (The live IGOR-2 box was
+unaffected — it has a token set, verified `POST /writeback` -> 401 — but a fresh beta or PyPI
+install would be wide open.)
+
+**Fix.** (C1) New `validate_agent_id()` in `config.py` — `agent_id` must match `[A-Za-z0-9_-]{1,64}`.
+Enforced in `get_agent_data_dir` (deep guard, raises `ValueError`) and at the `TenantManager.get`
+boundary (maps to HTTP 400), so every tenant endpoint rejects traversal/absolute IDs before any
+path is built. (C2) Fail-closed: `assert_safe_auth_posture()` runs in the FastAPI **lifespan startup
+handler** — so it fires on every serving path (`uvicorn agentb.server:app` / the systemd unit /
+gunicorn, and `python -m agentb.server`), not just `__main__` — and refuses to start when a
+non-loopback host has no auth and no explicit `server.allow_unauthenticated: true` opt-in.
+`create_app` also logs a loud SECURITY warning at import, and `__main__` asserts before bind for a
+clean CLI error. New `server.allow_unauthenticated` config field (documented in `agentb.yaml.example`)
+for deliberate open deploys behind an external gatekeeper. 30 new regression tests in
+`test_security_c1_c2.py` (incl. one that asserts app startup itself refuses an open posture); suite
+410 green.
+
 ## v4.9.4 (2026-07-06) — Stage 0.7 judge learns aesthetic techniques (Opie #1087 rule-5 ruling)
 
 **Problem.** A proven aesthetic technique reused across art sessions (melody-contour steering,

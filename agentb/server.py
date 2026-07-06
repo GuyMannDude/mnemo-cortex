@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from agentb.config import (
     load_config, AgentBConfig, get_agent_data_dir, get_persona, PersonaConfig,
+    validate_agent_id,
     ExpansionConfig,
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding
@@ -322,6 +323,11 @@ class TenantManager:
 
     def get(self, agent_id: Optional[str] = None) -> dict:
         """Get or create isolated cache/memory/sessions for an agent."""
+        if agent_id is not None:
+            try:
+                validate_agent_id(agent_id)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
         key = agent_id or "default"
         if key in self._tenants:
             return self._tenants[key]
@@ -549,11 +555,47 @@ async def expand_query(prompt: str, cfg: ExpansionConfig, api_key: str, api_base
     return variants
 
 
+def _is_loopback_host(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1", "")
+
+
+def auth_posture_is_open(config: AgentBConfig) -> bool:
+    """True if this config would expose endpoints on a non-loopback interface
+    with no auth configured and no explicit opt-in. The dangerous case."""
+    has_auth = bool(config.server.auth_token or config.server.scoped_tokens)
+    if has_auth or config.server.allow_unauthenticated:
+        return False
+    return not _is_loopback_host(config.server.host)
+
+
+def assert_safe_auth_posture(config: AgentBConfig) -> None:
+    """Fail closed at the bind path: refuse to serve a non-loopback interface
+    with no auth. Raises RuntimeError with remediation steps."""
+    if auth_posture_is_open(config):
+        raise RuntimeError(
+            f"Refusing to start: host={config.server.host!r} exposes every "
+            f"endpoint (including /writeback and /capture/pause) with NO auth "
+            f"configured. Fix one of:\n"
+            f"  • set server.auth_token (or server.scoped_tokens)\n"
+            f"  • set server.host: 127.0.0.1  (loopback only)\n"
+            f"  • set server.allow_unauthenticated: true  (deliberate open deploy "
+            f"behind an external gatekeeper)"
+        )
+
+
 def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     if config is None:
         config = load_config()
 
     log.setLevel(getattr(logging, config.log_level.upper(), logging.INFO))
+
+    if auth_posture_is_open(config):
+        log.warning(
+            "SECURITY: serving host=%s with no auth configured — every endpoint "
+            "is world-writable. Set server.auth_token, bind 127.0.0.1, or set "
+            "server.allow_unauthenticated: true to silence this.",
+            config.server.host,
+        )
 
     reasoner = create_resilient_reasoning(config.reasoning)
     embedder = create_resilient_embedding(config.embedding)
@@ -581,6 +623,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Fail closed on EVERY serving path — this runs under uvicorn/gunicorn
+        # (e.g. `uvicorn agentb.server:app`, the systemd unit) as well as
+        # `python -m agentb.server`. Refuses to serve a non-loopback bind with
+        # no auth unless server.allow_unauthenticated is set.
+        assert_safe_auth_posture(config)
         log.info(f"⚡ Mnemo Cortex v4.5.0 — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
@@ -594,7 +641,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.9.4",
+        version="4.9.5",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -671,7 +718,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.9.4",
+            version="4.9.5",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -1758,6 +1805,7 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     cfg = load_config()
+    assert_safe_auth_posture(cfg)
     port = int(os.environ["MNEMO_PORT"]) if os.environ.get("MNEMO_PORT") else cfg.server.port
     uvicorn.run("agentb.server:app", host=cfg.server.host, port=port,
                 reload=False, log_level=cfg.log_level)

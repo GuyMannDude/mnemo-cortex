@@ -92,6 +92,11 @@ server:
   host: 0.0.0.0
   port: 50001
   cors_origins: ["*"]
+  # FAIL-CLOSED: with a non-loopback host (e.g. 0.0.0.0) the server REFUSES to
+  # start unless auth is configured. Fix by one of: set auth_token below, bind
+  # host: 127.0.0.1 (loopback only), or set allow_unauthenticated: true for a
+  # deliberately open deploy behind an external gatekeeper (private net / proxy).
+  # allow_unauthenticated: false
   # auth_token: my-secret-token   # require X-API-KEY header (master — full access)
   # Scoped tokens (v4.9): pin a token to ONE agent tenant + an endpoint
   # allowlist, so a less-trusted caller never holds the master key. Only

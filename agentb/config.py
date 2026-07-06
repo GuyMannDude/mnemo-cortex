@@ -4,10 +4,30 @@ Multi-tenant isolation, provider fallback chains, persona modes.
 """
 
 import os
+import re
 import yaml
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+# agent_id is interpolated into on-disk tenant paths, so it must be a bare
+# token — no path separators, no '..', no absolute prefixes. Without this a
+# request-supplied agent_id like "../../etc/cron.d/x" or "/etc/cron.d/x"
+# escapes the data root (pathlib discards the left operand on an absolute
+# right operand). See get_agent_data_dir.
+_AGENT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def validate_agent_id(agent_id: str) -> str:
+    """Return agent_id unchanged if it is a safe tenant token, else raise
+    ValueError. Callers building HTTP responses should map this to a 400."""
+    if not isinstance(agent_id, str) or not _AGENT_ID_RE.fullmatch(agent_id):
+        raise ValueError(
+            f"Invalid agent_id: must match [A-Za-z0-9_-] (1-64 chars), "
+            f"got {agent_id!r}"
+        )
+    return agent_id
 
 
 DEFAULT_CONFIG_PATHS = [
@@ -228,6 +248,10 @@ class ServerConfig:
     cors_origins: list = field(default_factory=lambda: ["*"])
     auth_token: str = ""
     scoped_tokens: list = field(default_factory=list)
+    # Fail-closed guard: refuse to bind a non-loopback interface with no auth
+    # configured. Set true ONLY for a deliberately open deployment behind an
+    # external gatekeeper (private network / reverse proxy that adds auth).
+    allow_unauthenticated: bool = False
     # Reject request bodies larger than this (DoS guard). Generous default —
     # no legitimate memory write approaches it; it only stops abusive payloads
     # from being embedded/indexed/written to disk. 0 disables the check.
@@ -404,6 +428,8 @@ def _parse_config(raw: dict) -> AgentBConfig:
             cors_origins=s.get("cors_origins", ["*"]),
             auth_token=_resolve_env(s.get("auth_token", "")),
             scoped_tokens=_parse_scoped_tokens(s.get("scoped_tokens", [])),
+            allow_unauthenticated=s.get(
+                "allow_unauthenticated", ServerConfig.allow_unauthenticated),
             # was silently ignored from YAML before v4.1 — the dataclass
             # default always won
             max_body_bytes=s.get("max_body_bytes", ServerConfig.max_body_bytes),
@@ -450,6 +476,8 @@ def _apply_defaults(cfg: AgentBConfig) -> AgentBConfig:
 
 
 def get_agent_data_dir(cfg: AgentBConfig, agent_id: Optional[str] = None) -> Path:
+    if agent_id is not None:
+        validate_agent_id(agent_id)
     if agent_id and agent_id in cfg.agents:
         agent_cfg = cfg.agents[agent_id]
         if agent_cfg.data_dir:
