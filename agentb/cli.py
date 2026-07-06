@@ -71,7 +71,7 @@ from agentb.health import health
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="4.9.9", prog_name="mnemo-cortex")
+@click.version_option(version="4.9.10", prog_name="mnemo-cortex")
 def main(ctx):
     """⚡ Mnemo Cortex — Drop-in memory superhero for AI agents."""
     if ctx.invoked_subcommand is None:
@@ -1282,16 +1282,27 @@ def migrate_reindex_cmd(agents, all_agents, dry_run, no_backup, include_trajecto
     through the PRIMARY embedder only (aborts loudly if it goes down), then
     wipes the L1/L2 caches so no old-space vector survives. Idempotent.
     """
-    from agentb.config import load_config
+    from agentb.config import load_config, validate_agent_id
     from agentb.migrate import migrate_reindex, ReindexAbort
 
     config = load_config()
 
     if all_agents:
         base = Path(config.data_dir or DATA_DIR) / "agents"
-        agent_ids = sorted(
+        found = sorted(
             d.name for d in base.glob("*") if (d / "memory").is_dir()
         ) if base.exists() else []
+        # Archived tenant snapshots (e.g. "rocky.archived-20260516") live in
+        # the same dir but are not valid agent_ids — they're cold copies, not
+        # served tenants, and validate_agent_id (C1) would abort the whole
+        # run on the first one. Skip them, loudly.
+        agent_ids = []
+        for name in found:
+            try:
+                validate_agent_id(name)
+                agent_ids.append(name)
+            except ValueError:
+                console.print(f"[yellow]Skipping non-tenant dir:[/] {name}")
     else:
         agent_ids = list(agents)
 

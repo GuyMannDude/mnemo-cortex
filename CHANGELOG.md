@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.9.10 (2026-07-06) — `migrate reindex --all` no longer dies on archived tenant snapshots
+
+**Problem.** The `--all` discovery globs every `<data_dir>/agents/*` dir with a `memory/` subdir —
+including archived tenant snapshots like `rocky.archived-20260516`. Those names contain a dot,
+which `validate_agent_id` (the v4.9.5 C1 guard) rejects, so the whole reindex run crashed on a
+ValueError before touching a single live tenant. Found running the post-H5 cleanup reindex on the
+live store.
+
+**Fix.** Discovery filters candidates through `validate_agent_id` and prints a loud
+`Skipping non-tenant dir:` line for each rejected name — archived snapshots are cold copies, not
+served tenants, and were never meant to be reindexed. Explicit `--agent` behavior unchanged.
+
 ## v4.9.9 (2026-07-06) — EMBEDDING INTEGRITY: empty-vector brick + foreign-space store fallback (clean-room review H4/H5)
 
 **Problem.** (H4) Ollama and Google embedding providers turned a malformed-but-200 response into an
