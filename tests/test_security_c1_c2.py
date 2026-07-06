@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from agentb.config import (
     AgentBConfig, CacheConfig, ClassificationConfig, ProviderConfig,
     ResilientProviderConfig, ServerConfig, DEFAULT_PERSONAS, validate_agent_id,
+    validate_session_id,
 )
 from agentb.server import auth_posture_is_open, assert_safe_auth_posture
 
@@ -117,6 +118,43 @@ def test_valid_agent_id_still_works(client):
     body = {"agent_id": "cc", "summary": "ok", "key_facts": ["x"], "session_id": "s1"}
     r = client.post("/writeback", json=body, headers=_auth(MASTER))
     assert r.status_code == 200
+
+
+# ── C1-sibling: session_id traversal in get_session_transcript ──
+
+@pytest.mark.parametrize("good", ["2026-07-06_121245_a1b2c3", "cc-2026-07-06-12-42-40",
+                                  "s1", "scoped-test-1", "A" * 128])
+def test_validate_session_id_accepts_real_ids(good):
+    assert validate_session_id(good) == good
+
+
+@pytest.mark.parametrize("bad", [
+    "../../../etc/passwd", "/etc/passwd", "a/b", "a.b", "", "A" * 129, "x\ny",
+])
+def test_validate_session_id_rejects_unsafe(bad):
+    with pytest.raises(ValueError):
+        validate_session_id(bad)
+
+
+def test_get_session_transcript_blocks_traversal(tmp_path):
+    """The SessionManager read path must not read arbitrary *.jsonl off disk."""
+    from agentb.sessions import SessionManager, SessionConfig
+    # Plant a file one level above the tenant's session dirs.
+    (tmp_path / "sessions").mkdir()
+    secret = tmp_path / "secret.jsonl"
+    secret.write_text('{"_type":"exchange","prompt":"leak"}\n')
+    sm = SessionManager(tmp_path / "sessions", SessionConfig())
+    with pytest.raises(ValueError):
+        sm.get_session_transcript("../../secret")
+    # A real ingest→retrieve round-trip still works.
+    r = sm.ingest("hi", "there")
+    assert sm.get_session_transcript(r["session_id"])
+
+
+def test_transcript_endpoint_rejects_bad_session_id(client):
+    # Dot is invalid and URL-safe, so it reaches the handler and maps to 400.
+    r = client.get("/sessions/a.b/transcript", headers=_auth(MASTER))
+    assert r.status_code == 400
 
 
 # ── C2: fail-closed auth posture ──

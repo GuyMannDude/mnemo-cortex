@@ -1,5 +1,20 @@
 # Changelog
 
+## v4.9.6 (2026-07-06) — SECURITY: close session_id path traversal (clean-room review, C1 sibling)
+
+**Problem.** The v4.9.5 review flagged a second traversal in the same class as C1 but a different
+function family: `SessionManager.get_session_transcript` (behind `GET /sessions/{session_id}/transcript`)
+interpolated a request-supplied `session_id` straight into `hot_dir / f"{session_id}.jsonl"` (and the
+warm/cold `.gz` variants). `../../secret` or an absolute id escaped the session dir, turning the
+endpoint into an arbitrary-`*.jsonl`/`*.jsonl.gz` file-read primitive. (The v4.9.5 C1 fix only covered
+the `agent_id`/`get_agent_data_dir` family, so this stayed open.)
+
+**Fix.** New `validate_session_id()` in `config.py` (`[A-Za-z0-9_-]{1,128}` — generated ids look like
+`2026-07-06_121245_a1b2c3`), enforced deep in `get_session_transcript` (raises `ValueError`) and
+mapped to HTTP 400 at the transcript endpoint. `_start_session` uses server-generated ids and
+`/writeback`'s `session_id` only feeds a hash (never a path), so no other sink needed guarding. 14 new
+regression tests (incl. a real ingest→retrieve round-trip proving valid ids still work); suite 424 green.
+
 ## v4.9.5 (2026-07-06) — SECURITY: tenant path traversal closed + fail-closed auth (clean-room review C1/C2)
 
 **Problem.** The clean-room Fable review of v4.9.4 confirmed two criticals. (C1) `get_agent_data_dir`

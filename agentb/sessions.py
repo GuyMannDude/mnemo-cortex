@@ -19,6 +19,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from dataclasses import dataclass, field
 
+from agentb.config import validate_session_id
+
 log = logging.getLogger("agentb.sessions")
 
 
@@ -237,6 +239,9 @@ class SessionManager:
 
     def get_session_transcript(self, session_id: str) -> list[dict]:
         """Get full transcript of a session."""
+        # session_id is interpolated into a path below — reject traversal /
+        # absolute ids so this can't read arbitrary *.jsonl off disk.
+        validate_session_id(session_id)
         # Check hot
         hot_file = self.hot_dir / f"{session_id}.jsonl"
         if hot_file.exists():

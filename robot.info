@@ -13,7 +13,7 @@
   "tagline": "Cognitive coprocessor with active memory for AI agents — local-first, decay-aware, cross-agent dreaming.",
   "summary": "Cognitive coprocessor with active memory that gives AI agents persistent recall across sessions. Local SQLite + FTS5 working memory plus a structured Facts table (entity/attribute/value triples with a three-state confidence ladder) for the lookups semantic search gets wrong. Every memory record carries provenance (source + category) and decays on a category-aware schedule — topology facts age fast, doctrine stays perpetual, and recall returns a structured stale_warning when a fact is past its threshold so the agent verifies before acting. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.",
   "backstory": "Guy Hutchins started exploring AI memory with ChatGPT 3.5 using basic text files. When OpenClaw launched and needed better memory, he gave Opie (Claude) a simple prompt: \"If you were a ClawdBot and your user wanted you to have the best memory you could build yourself, what would it look like?\" Opie was on extended thinking and just built it — no clarifying questions, no spec, just shipped a working memory system. Guy gave the same prompt to AL (ChatGPT), who built his own version independently. AL saw Opie's and said it was more in depth. Opie saw AL's and said it had ideas worth blending. The two versions merged. When it came time to name it, the first two suggestions were \"Mnemo\" and \"Cortex.\" Guy picked both. Mnemo Cortex.",
-  "version": "4.9.5",
+  "version": "4.9.6",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/mnemo-cortex",
   "source": "https://github.com/GuyMannDude/mnemo-cortex",
@@ -43,7 +43,8 @@
     "idea category + recall mode=explore (v4.8.0) — creative seeds get their own decay class and a serendipity recall lens; the Muse (analyst sibling, gated off by default) auditions idea extraction from live session streams.",
     "GET /dream/latest (v4.9.3) — the nightly dream brief served from the Cortex host, so agents on any machine boot with the shared overnight synthesis.",
     "Aesthetic-technique distillation (v4.9.4) — the Stage 0.7 judge recognizes creative choices as distillable strategies under the cross-cutting art-technique task class; recall_trajectory(task_type=art-technique) briefs any art session.",
-    "Tenant-path hardening + fail-closed auth (v4.9.5) — agent_id is validated at every path boundary (no traversal/absolute escapes), and the server refuses to bind a non-loopback interface with no auth configured unless explicitly opted in."
+    "Tenant-path hardening + fail-closed auth (v4.9.5) — agent_id is validated at every path boundary (no traversal/absolute escapes), and the server refuses to bind a non-loopback interface with no auth configured unless explicitly opted in.",
+    "session_id path hardening (v4.9.6) — the transcript read path validates session_id the same way as agent_id, so a request cannot read arbitrary *.jsonl files off disk via traversal/absolute ids."
   ],
 
   "exposes": {

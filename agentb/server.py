@@ -641,7 +641,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mnemo Cortex",
         description="Drop-in memory superhero for AI agents",
-        version="4.9.5",
+        version="4.9.6",
         lifespan=lifespan,
     )
     app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
@@ -718,7 +718,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return HealthResponse(
             status="ok" if (r_ok and e_ok) else ("degraded" if (r_ok or e_ok) else "down"),
-            version="4.9.5",
+            version="4.9.6",
             timestamp=datetime.now(timezone.utc).isoformat(),
             reasoning={**reasoner.status, "healthy": r_ok},
             embedding={**embedder.status, "healthy": e_ok},
@@ -1473,7 +1473,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         """Get full transcript of a specific session."""
         tenant = tenants.get(agent_id)
         sessions = tenant["sessions"]
-        entries = sessions.get_session_transcript(session_id)
+        try:
+            entries = sessions.get_session_transcript(session_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         if not entries:
             raise HTTPException(404, "Session not found")
         exchanges = [e for e in entries if e.get("_type") == "exchange"]

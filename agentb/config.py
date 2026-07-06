@@ -30,6 +30,23 @@ def validate_agent_id(agent_id: str) -> str:
     return agent_id
 
 
+# session_id is interpolated into session transcript paths the same way
+# agent_id is (SessionManager.get_session_transcript). Generated ids look like
+# "2026-07-06_121245_a1b2c3"; a bit more headroom than agent_id for long ids.
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def validate_session_id(session_id: str) -> str:
+    """Return session_id unchanged if it is a safe path token, else raise
+    ValueError. Callers building HTTP responses should map this to a 400."""
+    if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
+        raise ValueError(
+            f"Invalid session_id: must match [A-Za-z0-9_-] (1-128 chars), "
+            f"got {session_id!r}"
+        )
+    return session_id
+
+
 DEFAULT_CONFIG_PATHS = [
     Path("agentb.yaml"),
     Path("agentb.yml"),
