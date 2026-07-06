@@ -47,8 +47,10 @@ const WIKI_DIR = process.env.WIKI_DIR || join(process.env.HOME || ".", "wiki");
 const DREAM_DIR =
   process.env.DREAM_DIR || join(process.env.HOME || ".", ".agentb/dreams");
 
-// Days before the boot block starts nagging about an un-updated lane file.
-const LANE_STALE_DAYS = 7;
+// Lane freshness is reported on EVERY boot (Guy, 2026-07-05: "every agent
+// every time — I notice when the last session is missing"). Older than this
+// many days escalates the always-on freshness line to a warning banner.
+const LANE_BEHIND_DAYS = 1;
 
 const SHARE_MODES = ["separate", "always", "never"];
 const shareMode = SHARE_MODES.includes(process.env.MNEMO_SHARE)
@@ -453,7 +455,7 @@ process.stdin.on("end", () => {
 
 const server = new McpServer({
   name: "mnemo-cortex",
-  version: "2.15.0",
+  version: "2.15.1",
 });
 
 // ── Developer Dump (v2.9.0, Mnemo v4 Phase 1) ──────────────────
@@ -1051,11 +1053,12 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
       );
     }
 
-    // v2.15.0: lane-staleness nag. The Lane Protocol's "update your own
-    // lane file" step lived only in tool descriptions and was skipped by
-    // every agent except cc (opie.md found 6+ weeks stale, 2026-07-05).
-    // The boot block now measures compliance and says it to the agent's
-    // face, every boot, until the lane gets a commit.
+    // v2.15.x: lane-freshness report, EVERY boot (Guy, 2026-07-05). The
+    // Lane Protocol's "update your own lane file" step lived only in tool
+    // descriptions and was skipped by every agent except cc (opie.md found
+    // 43 days stale). The boot block now leads with the lane's git age —
+    // a gentle line when current, a warning banner once the last session
+    // is missing from it.
     if (laneLoaded && insideWorkTree) {
       try {
         const ct = execFileSync("git", ["log", "-1", "--format=%ct", "--", laneLoaded], {
@@ -1063,15 +1066,26 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
         }).trim();
-        const ageDays = ct ? (Date.now() / 1000 - Number(ct)) / 86400 : null;
-        if (ageDays !== null && ageDays > LANE_STALE_DAYS) {
-          parts.unshift(
-            `# ⚠️ YOUR LANE FILE IS STALE\n\n` +
-            `${laneLoaded} was last committed ${Math.round(ageDays)} days ago. ` +
-            `The other agents coordinate off your lane — right now they are reading ` +
-            `${Math.round(ageDays)}-day-old reality. Before this session ends: update it ` +
-            `(write_brain_file — date bump + what changed since) and call session_end to commit.`
-          );
+        if (ct) {
+          const ageDays = (Date.now() / 1000 - Number(ct)) / 86400;
+          const when = new Date(Number(ct) * 1000).toISOString().slice(0, 10);
+          const rounded = Math.round(ageDays);
+          if (ageDays > LANE_BEHIND_DAYS) {
+            parts.unshift(
+              `# ⚠️ YOUR LANE FILE IS BEHIND\n\n` +
+              `${laneLoaded} last commit: ${when} (${rounded} day${rounded === 1 ? "" : "s"} ago). ` +
+              `The sessions since then are MISSING from your lane, and the other agents are ` +
+              `coordinating off that old reality. Before this session ends: update it ` +
+              `(write_brain_file — date bump + what changed since) and call session_end to commit.`
+            );
+          } else {
+            parts.unshift(
+              `# LANE FRESHNESS\n\n` +
+              `${laneLoaded} last commit: ${when} — current. Keep the streak: update your ` +
+              `lane at the end of THIS session too (write_brain_file + session_end). ` +
+              `Every agent, every session.`
+            );
+          }
         }
       } catch {
         // a failed git log is never worth breaking a boot

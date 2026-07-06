@@ -12,6 +12,18 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.15.1 — 2026-07-05 — Lane freshness on EVERY boot, not just past a threshold
+
+**Problem:** 2.15.0 only spoke up after 7 silent days. Guy, same evening: "Every agent
+every time is more like what I want. I notice when the last session is missing." A
+7-day gate means a lane can quietly drop 6 days of sessions before anyone is told.
+
+**Fix:** The boot block now leads with lane freshness unconditionally: a one-line
+`LANE FRESHNESS` note (last-commit date + keep-the-streak reminder) when the lane is
+current, escalating to the `⚠️ YOUR LANE FILE IS BEHIND` banner once the last commit
+is older than 1 day — i.e., the moment a session is missing. The session_end advisory
+is unchanged (it already fired every time).
+
 ## 2.15.0 — 2026-07-05 — Lane-staleness nag: the boot block measures Lane Protocol compliance
 
 **Problem:** The Lane Protocol's "update your own lane file every session" step lived
