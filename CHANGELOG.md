@@ -24,9 +24,13 @@ recency stay absolute. New regression test encodes the review's worked example (
 vs 0.625). (3) `l2_max_entries` (default 2000, oldest-first eviction mirroring L1, 0 disables)
 + atomic tmp+`os.replace` save. (4) `_sqlite_snapshot` uses the SQLite online backup API for
 `vec_index.sqlite` and the trajectory vec index. (5) Both writers re-read the file immediately
-before writing and patch only the fields they own. (6) Generic-assignment alternation gains
-`token|secret|private_key|passphrase`; new `url-credential` pattern redacts only the password
-and stays idempotent. Tests 534 → 551.
+before writing and patch only the fields they own. (6) New case-sensitive `env-credential`
+pattern for bare UPPERCASE names (`DISCORD_TOKEN=`, `SECRET:`, `PRIVATE_KEY=`, `PASSPHRASE`) —
+deliberately NOT lowercase: review showed bare `token|secret` in the case-insensitive
+alternation redacts ordinary code (`token = self.access_token`), corrupting captured code
+memories. New `url-credential` pattern redacts only the password and stays idempotent. Review
+also hardened the Analyst marker path: a failed re-read now skips the mark (retry next cycle)
+instead of writing the stale copy back. Tests 534 → 555.
 
 **Problem.** Four server-side M-group findings, all variations of "the guard exists but is
 half-wired." (M1) The body-size cap only read the Content-Length header — a chunked request

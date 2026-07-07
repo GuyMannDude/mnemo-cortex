@@ -191,3 +191,19 @@ def test_redact_still_ignores_placeholders():
     clean, counts = redact_text("DISCORD_TOKEN=${DISCORD_TOKEN}")
     assert not counts
     assert clean == "DISCORD_TOKEN=${DISCORD_TOKEN}"
+
+
+@pytest.mark.parametrize("code", [
+    "token = generate_secure_token()",
+    "token = self.access_token",
+    "secret = config.database.password_field",
+    "csrf_token = request.session.get_token",
+])
+def test_redact_leaves_ordinary_code_alone(code):
+    """Bare lowercase token/secret assignments are ordinary code (captured
+    sessions are full of them) — only UPPERCASE env-style names are treated
+    as bare credentials (review catch: redacting these corrupted legitimate
+    code memories)."""
+    clean, counts = redact_text(code)
+    assert not counts, f"false positive: {code!r} -> {clean!r}"
+    assert clean == code

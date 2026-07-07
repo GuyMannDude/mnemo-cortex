@@ -374,12 +374,18 @@ async def _lens_pass(
             # latency, and writing that stale copy back would clobber anything
             # a concurrent writer changed in between (a reclassify pass, the
             # other lens's marker). Patch only the field this lens owns.
+            # A failed re-read skips the mark rather than writing the stale
+            # copy (which would also resurrect a file deleted mid-flight);
+            # the unmarked log simply retries next cycle — the dedup gate
+            # absorbs any notes that already saved.
             try:
-                entry = json.loads(path.read_text())
-            except Exception:
-                pass  # unreadable/vanished mid-flight — mark the copy we have
-            entry[marker] = True
-            path.write_text(json.dumps(entry, indent=2, default=str))
+                fresh = json.loads(path.read_text())
+            except Exception as e:
+                log.warning(f"Re-read before {marker} mark failed for {path} "
+                            f"— left unmarked for retry: {e}")
+                continue
+            fresh[marker] = True
+            path.write_text(json.dumps(fresh, indent=2, default=str))
         except Exception as e:
             log.warning(f"Failed to mark {path} {marker}: {e}")
 

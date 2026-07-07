@@ -70,17 +70,25 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     # ── Generic assignment forms (lower confidence — require a long opaque
     #    value right after a credential-ish name to keep false positives low).
-    #    The name may be prefixed (MNEMO_AUTH_TOKEN, SHOPIFY_API_KEY, …).
-    #    Bare `token`/`secret` cover the common forms the old alternation
-    #    missed (DISCORD_TOKEN=…, SECRET: …) — the 16-char opaque-value
-    #    requirement plus the allowlist keep prose out, and the module
-    #    doctrine is fail toward redaction anyway. ──
+    #    The name may be prefixed (MNEMO_AUTH_TOKEN, SHOPIFY_API_KEY, …). ──
     ("generic-assignment", re.compile(
         r"""(?ix)\b
         [a-z0-9_-]*
-        (api[_-]?key|api[_-]?secret|token|secret|secret[_-]?key|
-         private[_-]?key|client[_-]?secret|webhook[_-]?secret|
-         password|passwd|passphrase)
+        (api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|
+         secret[_-]?key|client[_-]?secret|webhook[_-]?secret|password|passwd)
+        \s*[=:]\s*["']?
+        (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
+        """)),
+    # Bare credential names the alternation above misses (DISCORD_TOKEN=…,
+    # SECRET: …, PRIVATE_KEY=…, MY_PASSPHRASE=…). Case-SENSITIVE uppercase on
+    # purpose: lowercase `token = self.access_token` is ordinary code —
+    # captured sessions are full of it — and redacting the right-hand side
+    # would corrupt legitimate code memories (review catch). Uppercase names
+    # are the env-var convention where real secrets actually live.
+    ("env-credential", re.compile(
+        r"""(?x)\b
+        [A-Z0-9_]*
+        (TOKEN|SECRET|PRIVATE[_-]?KEY|PASSPHRASE)
         \s*[=:]\s*["']?
         (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
         """)),
