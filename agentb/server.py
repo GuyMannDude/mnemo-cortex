@@ -7,6 +7,7 @@ Five endpoints. Any LLM. Total recall.
   /health      → System status + provider failover state + session stats
   /context     → Persona-aware L1/L2/L3 + hot session search
   /preflight   → Persona-aware PASS / ENRICH / WARN / BLOCK
+                 (UNAVAILABLE when validation itself failed — caller decides)
   /ingest      → Live wire: capture every prompt/response as it happens
   /writeback   → Curated session archiving (still works, complementary)
 
@@ -375,6 +376,101 @@ class TenantManager:
 
 
 # ─────────────────────────────────────────────
+#  Body-size guard (DoS)
+# ─────────────────────────────────────────────
+
+class _BodyTooLarge(HTTPException):
+    """Raised mid-stream by BodySizeLimitMiddleware once the byte count
+    crosses the cap. An HTTPException subclass on purpose: FastAPI's body
+    reader wraps any other exception into a generic 400, but re-raises
+    HTTPExceptions untouched — this way the client sees the real 413."""
+
+    def __init__(self, max_bytes: int):
+        super().__init__(413, f"Request body too large (limit {max_bytes} bytes)")
+
+
+class BodySizeLimitMiddleware:
+    """Enforce the request-body cap even when Content-Length is absent.
+
+    The old header-only check was bypassable with chunked transfer encoding:
+    no Content-Length header → no check → an arbitrarily large body reached
+    the JSON parser, the embedder, and disk. Pure ASGI so the count happens
+    as the body streams: the honest-header fast path still rejects before
+    reading anything, and a chunked body is cut off at the first chunk that
+    crosses the cap.
+    """
+
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    await self._reject(send, 400, b"Invalid Content-Length")
+                    return
+                if declared > self.max_bytes:
+                    await self._reject(send, 413, self._limit_msg())
+                    return
+
+        received = 0
+        response_started = False
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge(self.max_bytes)
+            return message
+
+        async def tracking_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except _BodyTooLarge:
+            # If the app already started responding there is nothing safe to
+            # send; either way the body stops being read here.
+            if not response_started:
+                await self._reject(send, 413, self._limit_msg())
+
+    def _limit_msg(self) -> bytes:
+        return f"Request body too large (limit {self.max_bytes} bytes)".encode()
+
+    @staticmethod
+    async def _reject(send, status: int, body: bytes):
+        await send({
+            "type": "http.response.start", "status": status,
+            "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                        (b"content-length", str(len(body)).encode())],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+def _log_maintenance_exit(task: "asyncio.Task") -> None:
+    """Done-callback for the maintenance task: a silent death here used to
+    stop archival/dreamer/Analyst/Muse until the next restart with no trace."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error(f"Maintenance loop DIED: {exc!r} — background archival, "
+                  f"dreamer, Analyst and Muse passes are stopped until restart")
+
+
+# ─────────────────────────────────────────────
 #  Preflight System Prompts
 # ─────────────────────────────────────────────
 
@@ -636,8 +732,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         log.info(f"  Agents:    {list(config.agents.keys()) or ['default']}")
         log.info(f"  Personas:  {list(config.personas.keys())}")
         log.info(f"  Live Wire: /ingest endpoint active — every exchange captured")
-        asyncio.create_task(maintenance_loop())
+        # Keep a reference (a bare create_task can be garbage-collected) and
+        # log loudly if the loop ever exits — background archival, the
+        # dreamer-reclassify, Analyst, and Muse passes all die with it.
+        maintenance_task = asyncio.create_task(maintenance_loop())
+        maintenance_task.add_done_callback(_log_maintenance_exit)
         yield
+        maintenance_task.cancel()
 
     app = FastAPI(
         title="Mnemo Cortex",
@@ -650,22 +751,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Body-size guard (DoS) ──
     # Reject oversized payloads before they get embedded, indexed, or written
-    # to disk. Cheap header check — well-behaved clients send Content-Length.
-    max_body = config.server.max_body_bytes
-    if max_body > 0:
-        @app.middleware("http")
-        async def limit_body_size(request: Request, call_next):
-            cl = request.headers.get("content-length")
-            if cl is not None:
-                try:
-                    if int(cl) > max_body:
-                        return Response(
-                            f"Request body too large (limit {max_body} bytes)",
-                            status_code=413,
-                        )
-                except ValueError:
-                    return Response("Invalid Content-Length", status_code=400)
-            return await call_next(request)
+    # to disk. Enforced while the body streams — a header-only check was
+    # bypassable by omitting Content-Length (chunked transfer encoding).
+    if config.server.max_body_bytes > 0:
+        app.add_middleware(BodySizeLimitMiddleware,
+                           max_bytes=config.server.max_body_bytes)
 
     # ── Auth ──
     # Two tiers (v4.9): the master auth_token keeps full access; scoped tokens
@@ -1075,19 +1165,30 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Preflight ──
     @app.post("/preflight", response_model=PreflightResponse)
-    async def preflight(req: PreflightRequest):
+    async def preflight(req: PreflightRequest, request: Request):
+        _enforce_scope(request, req.agent_id)
         start = time.time()
         persona = get_persona(config, req.persona, req.agent_id)
         tenant = tenants.get(req.agent_id)
         l1, l2 = tenant["l1"], tenant["l2"]
 
+        # Same redaction choke point as /writeback + /ingest: the prompt and
+        # draft go verbatim to the (possibly remote) reasoner, and this was
+        # the one tenant payload that skipped redact_text.
+        prompt, p_counts = redact_text(req.prompt)
+        draft, d_counts = redact_text(req.draft_response)
+        total_red = sum(p_counts.values()) + sum(d_counts.values())
+        if total_red:
+            log.warning(f"🔒 Redacted {total_red} secret(s) in preflight payload "
+                        f"before reasoning ({ {**p_counts, **d_counts} })")
+
         system_prompt = build_preflight_system_prompt(persona)
 
-        user_prompt = f"USER'S PROMPT:\n{req.prompt}\n\nAGENT'S DRAFT RESPONSE:\n{req.draft_response}\n\nReview and provide your preflight verdict as JSON."
+        user_prompt = f"USER'S PROMPT:\n{prompt}\n\nAGENT'S DRAFT RESPONSE:\n{draft}\n\nReview and provide your preflight verdict as JSON."
 
         # Cross-reference memory
         try:
-            query_embedding = await embedder.embed(req.prompt, task_type="query")
+            query_embedding = await embedder.embed(prompt, task_type="query")
             l1_hits = l1.search(query_embedding, top_k=2, persona=persona)
             l2_hits = l2.search(query_embedding, top_k=2, persona=persona)
             context_chunks = l1_hits + l2_hits
@@ -1106,7 +1207,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             latency = (time.time() - start) * 1000
 
             return PreflightResponse(
-                verdict=result.get("verdict", "PASS").upper(),
+                # A well-formed reasoner reply always carries a verdict; one
+                # without it is malformed, and malformed must not rubber-stamp.
+                verdict=result.get("verdict", "UNAVAILABLE").upper(),
                 confidence=float(result.get("confidence", 0.5)),
                 reason=result.get("reason", ""),
                 enrichment=result.get("enrichment"),
@@ -1117,9 +1220,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         except Exception as e:
             latency = (time.time() - start) * 1000
             log.warning(f"Preflight error: {e}")
+            # Fail CLOSED-ish: a reasoner outage or garbage JSON used to
+            # return PASS — a validation gate that rubber-stamps exactly when
+            # it can't validate. UNAVAILABLE tells the caller no validation
+            # happened; the caller decides whether to proceed.
             return PreflightResponse(
-                verdict="PASS", confidence=0.2,
-                reason=f"AgentB couldn't validate — defaulting to PASS ({str(e)[:80]})",
+                verdict="UNAVAILABLE", confidence=0.0,
+                reason=f"AgentB couldn't validate — no verdict available ({str(e)[:80]})",
                 latency_ms=round(latency, 1),
                 persona=persona.name,
                 provider_used=reasoner.active_label,
@@ -1613,187 +1720,206 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         return {"contradictions": facts.contradictions(since=since, limit=limit)}
 
     # ── Background: precache + session archival ──
+    async def maintenance_cycle(cycle: int):
+        # v4 dreamer: reclassify stragglers ~hourly (every 12th 5-min cycle),
+        # not every cycle — this is a safety net behind Track 1 + the migration.
+        do_reclassify = config.classification.enabled and cycle % 12 == 0
+        # v4.1 Analyst: distill Tier-2 session logs into Tier-1 notes.
+        # Offset half a period from the reclassify pass so the two LLM
+        # batch jobs never land on the same cycle.
+        do_analyze = (
+            config.analysis.enabled
+            and cycle % config.analysis.interval_cycles
+            == config.analysis.interval_cycles // 2
+        )
+        # v4.8 Muse: the Analyst's creative sibling lens. Offset by one
+        # extra cycle so it never lands on a reclassify (multiples of 12)
+        # or Analyst (6 + 12k) cycle — three LLM batch jobs, three lanes.
+        do_muse = (
+            config.muse.enabled
+            and cycle % config.muse.interval_cycles
+            == config.muse.interval_cycles // 2 + 1
+        )
+
+        # Snapshot: a tenant created by a live request mid-cycle (this loop
+        # awaits constantly) would otherwise raise "dict changed size during
+        # iteration" — and that RuntimeError used to kill the whole loop.
+        # A brand-new tenant is picked up on the next cycle.
+        for tenant_key, tenant in list(tenants._tenants.items()):
+            sessions = tenant["sessions"]
+            memory_dir = tenant["memory_dir"]
+
+            # Precache L1 bundles. use_breaker=False: this is background
+            # batch work — it must not trip or be blocked by the breaker
+            # that guards live /context (batch-vs-live isolation doctrine).
+            try:
+                l1 = tenant["l1"]
+                recent = sorted(memory_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:10]
+                for mem_file in recent:
+                    mem = json.loads(mem_file.read_text())
+                    content = mem.get("summary", "")
+                    if not content:
+                        continue
+                    bid = hashlib.sha256(content.encode()).hexdigest()[:12]
+                    if bid in {b.get("id") for b in l1.bundles}:
+                        continue
+                    embedding = await embedder.embed(content, use_breaker=False, task_type="document")
+                    mem_id = mem.get("id", mem_file.stem)
+                    await l1.add(content, f"precache:{mem_id}", embedding,
+                                 memory_id=mem_id, category=mem.get("category"))
+            except Exception as e:
+                log.warning(f"Precache error for '{tenant_key}': {e}")
+
+            # Archive expired hot sessions → warm, summarizing each with
+            # the reasoner so warm sessions carry a real summary instead of
+            # the empty string the unwired hook used to leave behind.
+            # use_breaker=False: background batch work.
+            async def _summarize_session(transcript: str) -> str:
+                return await reasoner.generate(
+                    transcript[-8000:],
+                    system=("Summarize this agent session in 2-4 dense sentences: "
+                            "what was worked on, decided, and shipped. No fluff."),
+                    max_tokens=300, use_breaker=False,
+                )
+            try:
+                archived = await sessions.archive_hot_sessions(_summarize_session)
+                if archived:
+                    log.info(f"Archived {len(archived)} hot sessions for '{tenant_key}'")
+                # Each archived summary becomes a Tier-2 session_log memory
+                # in VEC — without this a session leaving the HOT tier
+                # would vanish from recall entirely (its old home was the
+                # retired L2 write path). The Analyst distills these like
+                # any other session log on its next pass.
+                for arch in archived:
+                    if not arch.get("summary"):
+                        continue
+                    try:
+                        # v4.1 (review fix): the reasoner-generated warm summary is the
+                        # one LLM-derived write that didn't pass the redaction
+                        # choke point /writeback + /ingest use. Run it through
+                        # the same module so a summary can't reintroduce a
+                        # secret (defense-in-depth: the source already came
+                        # through redacted ingest, but the LLM output is new).
+                        summary, _sum_red = redact_text(arch["summary"])
+                        if sum(_sum_red.values()):
+                            log.warning(
+                                f"🔒 Redacted {sum(_sum_red.values())} secret(s) in "
+                                f"warm summary for '{tenant_key}': {dict(_sum_red)}")
+                        mid = hashlib.sha256(
+                            f"archived:{arch['session_id']}".encode()
+                        ).hexdigest()[:16]
+                        entry = {
+                            "id": mid,
+                            "session_id": arch["session_id"],
+                            "agent_id": tenant_key,
+                            "summary": summary,
+                            "key_facts": arch.get("key_facts", []),
+                            "projects_referenced": [],
+                            "decisions_made": [],
+                            "timestamp": arch.get("archived_at", ""),
+                            "created_at": time.time(),
+                            "source": "tool",
+                            "category": "session_log",
+                            "additional_tags": ["archived-session"],
+                            "schema_version": 3,
+                        }
+                        (memory_dir / f"{mid}.json").write_text(
+                            json.dumps(entry, indent=2, default=str))
+                        emb = await embedder.embed(summary, use_breaker=False, task_type="document")
+                        tenant["vec"].upsert(
+                            mid, summary, emb,
+                            source_file=(memory_dir / f"{mid}.json").as_posix(),
+                            created_at=time.time(),
+                            category="session_log",  # #468: matches the entry's category
+                        )
+                    except Exception as e:
+                        log.warning(f"Archived-session indexing failed for '{tenant_key}': {e}")
+            except Exception as e:
+                log.warning(f"Session archival error for '{tenant_key}': {e}")
+
+            # Move expired warm → cold
+            try:
+                moved = sessions.archive_warm_to_cold()
+                if moved:
+                    log.info(f"Cold-archived {len(moved)} sessions for '{tenant_key}'")
+            except Exception as e:
+                log.warning(f"Cold archival error for '{tenant_key}': {e}")
+
+            # v4 dreamer: reclassify uncategorized / regex-fallback stragglers.
+            # use_breaker=False so this batch can't trip the live reasoning
+            # breaker (batch-vs-live isolation); capped per cycle.
+            if do_reclassify:
+                try:
+                    _vec = tenant["vec"]
+                    rstats = await reclassify_memory_dir(
+                        tenant["memory_dir"], reasoner,
+                        limit=config.classification.dreamer_max_per_cycle,
+                        max_input_chars=config.classification.max_input_chars,
+                        use_breaker=False,
+                        # #468: keep vec_sources.category in step with the JSON
+                        on_reclassified=_vec.update_category,
+                    )
+                    if rstats["reclassified"]:
+                        log.info(
+                            f"Dreamer reclassified {rstats['reclassified']} memories "
+                            f"for '{tenant_key}' ({rstats['by_category']})"
+                        )
+                except Exception as e:
+                    log.warning(f"Reclassification pass error for '{tenant_key}': {e}")
+
+            # v4.1 Analyst pass — the smart-session-analysis layer.
+            if do_analyze:
+                try:
+                    astats = await analyze_tenant(
+                        tenant_key, tenant["memory_dir"], tenant["vec"],
+                        reasoner, embedder, config=config.analysis,
+                    )
+                    if astats["scanned"]:
+                        log.info(
+                            f"Analyst '{tenant_key}': read {astats['scanned']} logs → "
+                            f"{astats['notes_saved']} notes saved "
+                            f"({astats['notes_deduped']} already known, "
+                            f"{astats['failed']} failed)"
+                        )
+                except Exception as e:
+                    log.warning(f"Analyst pass error for '{tenant_key}': {e}")
+
+            # v4.8 Muse pass — creative idea-seed extraction (gate:
+            # config.muse.enabled, default OFF pending Guy's-Gate).
+            if do_muse:
+                try:
+                    mstats = await muse_tenant(
+                        tenant_key, tenant["memory_dir"], tenant["vec"],
+                        reasoner, embedder, config=config.muse,
+                    )
+                    if mstats["scanned"]:
+                        log.info(
+                            f"Muse '{tenant_key}': read {mstats['scanned']} logs → "
+                            f"{mstats['notes_saved']} idea(s) saved "
+                            f"({mstats['notes_deduped']} already known, "
+                            f"{mstats['failed']} failed)"
+                        )
+                except Exception as e:
+                    log.warning(f"Muse pass error for '{tenant_key}': {e}")
+
     async def maintenance_loop():
         cycle = 0
         while True:
             await asyncio.sleep(300)  # every 5 minutes
             cycle += 1
-            # v4 dreamer: reclassify stragglers ~hourly (every 12th 5-min cycle),
-            # not every cycle — this is a safety net behind Track 1 + the migration.
-            do_reclassify = config.classification.enabled and cycle % 12 == 0
-            # v4.1 Analyst: distill Tier-2 session logs into Tier-1 notes.
-            # Offset half a period from the reclassify pass so the two LLM
-            # batch jobs never land on the same cycle.
-            do_analyze = (
-                config.analysis.enabled
-                and cycle % config.analysis.interval_cycles
-                == config.analysis.interval_cycles // 2
-            )
-            # v4.8 Muse: the Analyst's creative sibling lens. Offset by one
-            # extra cycle so it never lands on a reclassify (multiples of 12)
-            # or Analyst (6 + 12k) cycle — three LLM batch jobs, three lanes.
-            do_muse = (
-                config.muse.enabled
-                and cycle % config.muse.interval_cycles
-                == config.muse.interval_cycles // 2 + 1
-            )
+            try:
+                await maintenance_cycle(cycle)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # One bad cycle (a torn memory JSON, a provider blowup mid-
+                # batch) must not end background maintenance forever.
+                log.error(f"Maintenance cycle {cycle} failed: {e!r}")
 
-            for tenant_key, tenant in tenants._tenants.items():
-                sessions = tenant["sessions"]
-                memory_dir = tenant["memory_dir"]
-
-                # Precache L1 bundles. use_breaker=False: this is background
-                # batch work — it must not trip or be blocked by the breaker
-                # that guards live /context (batch-vs-live isolation doctrine).
-                try:
-                    l1 = tenant["l1"]
-                    recent = sorted(memory_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:10]
-                    for mem_file in recent:
-                        mem = json.loads(mem_file.read_text())
-                        content = mem.get("summary", "")
-                        if not content:
-                            continue
-                        bid = hashlib.sha256(content.encode()).hexdigest()[:12]
-                        if bid in {b.get("id") for b in l1.bundles}:
-                            continue
-                        embedding = await embedder.embed(content, use_breaker=False, task_type="document")
-                        mem_id = mem.get("id", mem_file.stem)
-                        await l1.add(content, f"precache:{mem_id}", embedding,
-                                     memory_id=mem_id, category=mem.get("category"))
-                except Exception as e:
-                    log.warning(f"Precache error for '{tenant_key}': {e}")
-
-                # Archive expired hot sessions → warm, summarizing each with
-                # the reasoner so warm sessions carry a real summary instead of
-                # the empty string the unwired hook used to leave behind.
-                # use_breaker=False: background batch work.
-                async def _summarize_session(transcript: str) -> str:
-                    return await reasoner.generate(
-                        transcript[-8000:],
-                        system=("Summarize this agent session in 2-4 dense sentences: "
-                                "what was worked on, decided, and shipped. No fluff."),
-                        max_tokens=300, use_breaker=False,
-                    )
-                try:
-                    archived = await sessions.archive_hot_sessions(_summarize_session)
-                    if archived:
-                        log.info(f"Archived {len(archived)} hot sessions for '{tenant_key}'")
-                    # Each archived summary becomes a Tier-2 session_log memory
-                    # in VEC — without this a session leaving the HOT tier
-                    # would vanish from recall entirely (its old home was the
-                    # retired L2 write path). The Analyst distills these like
-                    # any other session log on its next pass.
-                    for arch in archived:
-                        if not arch.get("summary"):
-                            continue
-                        try:
-                            # v4.1 (review fix): the reasoner-generated warm summary is the
-                            # one LLM-derived write that didn't pass the redaction
-                            # choke point /writeback + /ingest use. Run it through
-                            # the same module so a summary can't reintroduce a
-                            # secret (defense-in-depth: the source already came
-                            # through redacted ingest, but the LLM output is new).
-                            summary, _sum_red = redact_text(arch["summary"])
-                            if sum(_sum_red.values()):
-                                log.warning(
-                                    f"🔒 Redacted {sum(_sum_red.values())} secret(s) in "
-                                    f"warm summary for '{tenant_key}': {dict(_sum_red)}")
-                            mid = hashlib.sha256(
-                                f"archived:{arch['session_id']}".encode()
-                            ).hexdigest()[:16]
-                            entry = {
-                                "id": mid,
-                                "session_id": arch["session_id"],
-                                "agent_id": tenant_key,
-                                "summary": summary,
-                                "key_facts": arch.get("key_facts", []),
-                                "projects_referenced": [],
-                                "decisions_made": [],
-                                "timestamp": arch.get("archived_at", ""),
-                                "created_at": time.time(),
-                                "source": "tool",
-                                "category": "session_log",
-                                "additional_tags": ["archived-session"],
-                                "schema_version": 3,
-                            }
-                            (memory_dir / f"{mid}.json").write_text(
-                                json.dumps(entry, indent=2, default=str))
-                            emb = await embedder.embed(summary, use_breaker=False, task_type="document")
-                            tenant["vec"].upsert(
-                                mid, summary, emb,
-                                source_file=(memory_dir / f"{mid}.json").as_posix(),
-                                created_at=time.time(),
-                                category="session_log",  # #468: matches the entry's category
-                            )
-                        except Exception as e:
-                            log.warning(f"Archived-session indexing failed for '{tenant_key}': {e}")
-                except Exception as e:
-                    log.warning(f"Session archival error for '{tenant_key}': {e}")
-
-                # Move expired warm → cold
-                try:
-                    moved = sessions.archive_warm_to_cold()
-                    if moved:
-                        log.info(f"Cold-archived {len(moved)} sessions for '{tenant_key}'")
-                except Exception as e:
-                    log.warning(f"Cold archival error for '{tenant_key}': {e}")
-
-                # v4 dreamer: reclassify uncategorized / regex-fallback stragglers.
-                # use_breaker=False so this batch can't trip the live reasoning
-                # breaker (batch-vs-live isolation); capped per cycle.
-                if do_reclassify:
-                    try:
-                        _vec = tenant["vec"]
-                        rstats = await reclassify_memory_dir(
-                            tenant["memory_dir"], reasoner,
-                            limit=config.classification.dreamer_max_per_cycle,
-                            max_input_chars=config.classification.max_input_chars,
-                            use_breaker=False,
-                            # #468: keep vec_sources.category in step with the JSON
-                            on_reclassified=_vec.update_category,
-                        )
-                        if rstats["reclassified"]:
-                            log.info(
-                                f"Dreamer reclassified {rstats['reclassified']} memories "
-                                f"for '{tenant_key}' ({rstats['by_category']})"
-                            )
-                    except Exception as e:
-                        log.warning(f"Reclassification pass error for '{tenant_key}': {e}")
-
-                # v4.1 Analyst pass — the smart-session-analysis layer.
-                if do_analyze:
-                    try:
-                        astats = await analyze_tenant(
-                            tenant_key, tenant["memory_dir"], tenant["vec"],
-                            reasoner, embedder, config=config.analysis,
-                        )
-                        if astats["scanned"]:
-                            log.info(
-                                f"Analyst '{tenant_key}': read {astats['scanned']} logs → "
-                                f"{astats['notes_saved']} notes saved "
-                                f"({astats['notes_deduped']} already known, "
-                                f"{astats['failed']} failed)"
-                            )
-                    except Exception as e:
-                        log.warning(f"Analyst pass error for '{tenant_key}': {e}")
-
-                # v4.8 Muse pass — creative idea-seed extraction (gate:
-                # config.muse.enabled, default OFF pending Guy's-Gate).
-                if do_muse:
-                    try:
-                        mstats = await muse_tenant(
-                            tenant_key, tenant["memory_dir"], tenant["vec"],
-                            reasoner, embedder, config=config.muse,
-                        )
-                        if mstats["scanned"]:
-                            log.info(
-                                f"Muse '{tenant_key}': read {mstats['scanned']} logs → "
-                                f"{mstats['notes_saved']} idea(s) saved "
-                                f"({mstats['notes_deduped']} already known, "
-                                f"{mstats['failed']} failed)"
-                            )
-                    except Exception as e:
-                        log.warning(f"Muse pass error for '{tenant_key}': {e}")
+    # Exposed for tests: run a single cycle deterministically against the
+    # app's real tenant manager without waiting on the 5-minute timer.
+    app.state.maintenance_cycle = maintenance_cycle
+    app.state.tenants = tenants
 
     # ── Passport Lane (Phase 1) ──
     # Five MCP-facing routes under /passport/*. Self-contained: no shared state

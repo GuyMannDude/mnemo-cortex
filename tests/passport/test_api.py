@@ -134,6 +134,17 @@ def test_observe_rejects_oversize_claim(passport_client):
     assert r.status_code == 422
 
 
+def test_observe_rejects_oversize_evidence_list(passport_client):
+    # M-group (clean-room review): evidence drives O(rows × detectors) regex
+    # work on a network endpoint — the list needs a ceiling.
+    rows = [{"turn_ref": f"turn-{i}", "excerpt": f"evidence row {i}"}
+            for i in range(65)]
+    r = passport_client.post("/passport/observe", json=_observe_payload(
+        evidence=rows,
+    ))
+    assert r.status_code == 422
+
+
 # ─── /pending ────────────────────────────────────────────────────────────────
 
 def test_pending_lists_observed_item(passport_client):

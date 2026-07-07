@@ -35,7 +35,7 @@ router = APIRouter(prefix="/passport", tags=["passport"])
 class EvidenceIn(BaseModel):
     evidence_id: Optional[str] = None
     session_id: Optional[str] = None
-    turn_ref: str
+    turn_ref: str = Field(max_length=400)
     excerpt: str = Field(max_length=400)
     # Phase 1.5 — per-row provenance. Clients should supply when known; the
     # API falls back to observation-level source_platform resolution otherwise.
@@ -70,7 +70,10 @@ class ObserveRequest(BaseModel):
     proposed_target_section: str = "stable_core.communication"
     source_platform: str
     source_session_id: str
-    evidence: list[EvidenceIn] = Field(min_length=2)
+    # max_length: every evidence row drives O(detectors) regex work on a
+    # network endpoint — unbounded lists are a CPU-amplification vector.
+    # 64 rows is far above any honest observation.
+    evidence: list[EvidenceIn] = Field(min_length=2, max_length=64)
 
 
 class ObserveResponse(BaseModel):

@@ -1,5 +1,33 @@
 # Changelog
 
+## v4.9.12 (2026-07-07) — Server hardening: streamed body cap, immortal maintenance loop, preflight fail-closed (clean-room review M-group, part 1)
+
+**Problem.** Four server-side M-group findings, all variations of "the guard exists but is
+half-wired." (M1) The body-size cap only read the Content-Length header — a chunked request
+(no header) skipped the check entirely, so an arbitrarily large body still reached the JSON
+parser, the embedder, and disk. (M2) `maintenance_loop` iterated the live tenant dict while
+awaiting inside the loop; a tenant created by a request mid-cycle raised "dict changed size
+during iteration" OUTSIDE any try, killing archival + dreamer + Analyst + Muse silently until
+the next restart (and the bare `create_task` result wasn't even kept — the task could be GC'd).
+(M4) `/preflight` returned `verdict=PASS` whenever validation itself blew up (reasoner outage,
+garbage JSON) — a gate that rubber-stamps exactly when it can't see. (M5) `/preflight` was also
+the one tenant payload that skipped both `redact_text` (prompt + draft went verbatim to the
+possibly-remote reasoner) and `_enforce_scope` (no scoped-token tenant pin). Plus the passport
+`/observe` evidence list had `min_length=2` but no max — unbounded O(rows × detectors) regex
+work on a network endpoint.
+
+**Fix.** (M1) `BodySizeLimitMiddleware` — pure ASGI, counts bytes as the body streams and
+raises a 413 `HTTPException` at the first chunk crossing the cap (header fast-path kept).
+(M2) cycles iterate a snapshot (`list(...)`), each cycle runs inside try/except so one bad
+cycle can't end maintenance, the task reference is kept with a done-callback that logs loudly
+if the loop ever dies, and it's cancelled cleanly on shutdown. The cycle body is exposed as
+`app.state.maintenance_cycle` so tests can run one deterministically. (M4) validation failure
+now returns `verdict=UNAVAILABLE, confidence=0.0` — the caller decides; a reply missing the
+verdict key counts as malformed, not PASS. (M5) preflight runs prompt + draft through the same
+redaction choke point as `/writeback`/`/ingest`, enforces the scoped-token pin, and
+`/preflight` joins `SCOPABLE_ENDPOINTS`. Passport evidence capped at 64 rows, `turn_ref` at
+400 chars. Tests 522 → 534.
+
 ## v4.9.11 (2026-07-06) — Passport Lane test coverage + version single-source (clean-room review H10/H11)
 
 **Problem.** (H10) The Passport Lane — 14 modules, ~2,300 lines whose entire job is stopping

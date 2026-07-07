@@ -243,6 +243,7 @@ class ExpansionConfig:
 # notice.
 SCOPABLE_ENDPOINTS = frozenset({
     "/context", "/writeback", "/trajectory/save", "/trajectory/recall",
+    "/preflight",
 })
 
 
