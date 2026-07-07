@@ -1,5 +1,24 @@
 # Changelog
 
+## v4.9.14 (2026-07-07) — Async offload: blocking disk I/O off the event loop (clean-room review M-group, part 3)
+
+**Problem.** Four hot paths did blocking disk I/O directly on the asyncio event loop, stalling
+every concurrent request (including `/health`) while they ran. (1) `l3_scan`'s candidate walk —
+O(store) stat calls + file reads + prefilter — stalled the loop for seconds on a 6.2k-file
+store. (2) `/writeback`'s memory-JSON dump/write blocked the loop and its plain `write_text`
+left a torn-read window for on-loop readers (precache, analyst). (3) `GET /dream/latest`'s
+directory walk + file read blocked on a slow or large dreams dir. (4) `L2Index._save` re-dumped
+the whole index (each entry a ~6 KB embedding) on the loop on every add.
+
+**Fix.** (1) `l3_scan`'s disk walk runs in `asyncio.to_thread`; only the embed loop stays on
+the loop. (2) `/writeback` writes via a new `_atomic_write_text` (tmp + `os.replace`) inside
+`to_thread`. (3) `/dream/latest` reads in `to_thread`. (4) `L2Index._save` snapshots the
+entries list on the loop under an `asyncio.Lock` (a later save always carries newer state) and
+serializes+writes in a worker thread; eviction reassigns the list instead of sorting in place
+so an in-flight snapshot can't be reordered under the writer. Deliberately NOT offloaded:
+VecStore operations (single main-thread sqlite connection) and `/ingest` (out of scope).
+New regression test: 8 concurrent L2 adds all land on disk with no torn file.
+
 ## v4.9.13 (2026-07-07) — Storage integrity: facts write-lock, ranking normalization, L2 cap + atomic save, WAL-safe backups, RMW re-reads, broader redaction (clean-room review M-group, part 2)
 
 **Problem.** Six storage-layer M-group findings. (1) `facts_store.save()`/`demote()` did a
