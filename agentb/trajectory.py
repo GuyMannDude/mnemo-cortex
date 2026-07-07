@@ -305,7 +305,7 @@ class TrajectoryStore:
             include_category=task_type,
         )
         now = time.time()
-        scored: list[tuple[float, float, dict]] = []
+        candidates: list[tuple[float, float, float, dict]] = []
         for h in hits:
             rec = records.get(h.memory_id)
             if rec is None:
@@ -317,8 +317,23 @@ class TrajectoryStore:
             sim = _similarity(h.distance)
             rating_norm = min(5, max(0, int(rec.get("rating", 0)))) / 5.0
             recency = _recency_factor(rec.get("created_at"), now)
+            candidates.append((sim, rating_norm, recency, rec))
+
+        # Normalize similarity across the candidate pool before weighting.
+        # 1/(1+distance) compresses everything into a narrow band (an on-topic
+        # hit lands ~0.67, an off-topic one ~0.63), so despite SIM_WEIGHT being
+        # the largest weight a 5-star off-topic recipe could outrank an
+        # on-topic 3-star — violating the ranking invariant documented above.
+        # Min-max spreading over the pool restores similarity's dominance;
+        # rating/recency stay absolute (already 0..1 by construction).
+        sims = [c[0] for c in candidates]
+        lo, hi = (min(sims), max(sims)) if sims else (0.0, 0.0)
+        span = hi - lo
+        scored: list[tuple[float, float, dict]] = []
+        for sim, rating_norm, recency, rec in candidates:
+            sim_norm = (sim - lo) / span if span > 0 else 1.0
             composite = (
-                SIM_WEIGHT * sim
+                SIM_WEIGHT * sim_norm
                 + RATING_WEIGHT * rating_norm
                 + RECENCY_WEIGHT * recency
             )

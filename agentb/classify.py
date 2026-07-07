@@ -225,6 +225,17 @@ async def reclassify_memory_dir(
         if dry_run:
             continue
 
+        # Re-read before writing: seconds of LLM latency sit between the read
+        # at the top of this loop and this write — writing the stale copy back
+        # would clobber anything a concurrent writer changed in between (the
+        # Analyst/Muse processed markers, a manual edit). Patch only the
+        # fields this pass owns.
+        try:
+            entry = json.loads(path.read_text())
+        except Exception as e:
+            stats["failed"] += 1
+            log.warning(f"Re-read before reclassify write failed for {path}: {e}")
+            continue
         entry["category"] = new_cat
         entry["classified_by"] = method
         if method == "regex":

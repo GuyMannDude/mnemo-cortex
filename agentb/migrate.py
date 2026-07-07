@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 
@@ -35,6 +36,24 @@ from agentb.classify import reclassify_memory_dir
 console = Console()
 
 
+def _sqlite_snapshot(src: Path, dst: Path) -> None:
+    """Consistent single-file snapshot of a possibly-live WAL database.
+
+    shutil.copy2 on a WAL DB misses uncheckpointed pages in the -wal sidecar
+    and can capture a torn mid-write state — the "safe to run live" promise
+    needs the SQLite online backup API, which takes a read-consistent copy.
+    """
+    src_conn = sqlite3.connect(str(src))
+    try:
+        dst_conn = sqlite3.connect(str(dst))
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+    finally:
+        src_conn.close()
+
+
 def _backup(data_dir: Path) -> Path:
     """Snapshot memory/ + vec_index.sqlite + trajectories/ to a timestamped backup dir."""
     ts = time.strftime("%Y%m%d-%H%M%S")
@@ -45,10 +64,16 @@ def _backup(data_dir: Path) -> Path:
         shutil.copytree(mem, dest / "memory")
     vec = data_dir / "vec_index.sqlite"
     if vec.exists():
-        shutil.copy2(vec, dest / "vec_index.sqlite")
+        _sqlite_snapshot(vec, dest / "vec_index.sqlite")
     traj = data_dir / "trajectories"
     if traj.is_dir():
-        shutil.copytree(traj, dest / "trajectories")
+        # JSONL + markers copy as plain files; the trajectory vec index is a
+        # live WAL DB too, so it gets the same backup-API treatment.
+        shutil.copytree(traj, dest / "trajectories",
+                        ignore=shutil.ignore_patterns("*.sqlite", "*.sqlite-wal",
+                                                      "*.sqlite-shm"))
+        for db in traj.glob("*.sqlite"):
+            _sqlite_snapshot(db, dest / "trajectories" / db.name)
     return dest
 
 

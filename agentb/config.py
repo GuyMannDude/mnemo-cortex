@@ -135,6 +135,11 @@ class CacheConfig:
     # first) so L3 stays bounded. Interim until vec category-pushdown (#468) keeps
     # session_log out of VEC's top-k so L3 isn't reached at all.
     l3_max_candidates: int = 80
+    # L2 semantic index cap (oldest-first eviction, mirrors l1_max_bundles).
+    # Each entry carries a full embedding and the index is one JSON file
+    # rewritten per add + cosine-scanned per search — unbounded growth under
+    # continuous auto-capture degrades every request. 0 disables the cap.
+    l2_max_entries: int = 2000
     # #468: category-filtered VEC search over-fetches top_k * this from the kNN
     # then filters by the category column, so a session_log-dominated store still
     # returns enough on-category hits to fill the budget without the L3 disk-walk.

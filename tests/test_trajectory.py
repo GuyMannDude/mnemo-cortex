@@ -273,3 +273,36 @@ def test_wrong_shape_stats_sidecar_never_breaks_recall(tmp_path: Path):
     assert hits and hits[0]["id"] == rec["id"]
     stats = json.loads((tmp_path / "traj" / "recall_stats.json").read_text())
     assert stats[rec["id"]]["recall_count"] == 1  # scalar entry coerced, then bumped
+
+
+# ── recall: pool-normalized similarity (clean-room review M-group) ──
+
+def test_on_topic_low_star_beats_off_topic_five_star(tmp_path: Path):
+    """1/(1+distance) compresses similarity into a narrow band, so before
+    pool normalization a 5-star off-topic recipe could outrank an on-topic
+    3-star — the exact inversion the SIM_WEIGHT ordering promises against.
+    Raw sims here: on-topic ≈ 0.667 vs off-topic ≈ 0.625 — close enough that
+    the raw 0.60/0.25 weighting flipped the order pre-fix."""
+    store = TrajectoryStore(tmp_path / "traj")
+    # Distances from the query below: 0.5 (on-topic) vs 0.6 (off-topic)
+    # → raw sims 0.667 vs 0.625.
+    on_topic = store.save(
+        agent_id="cc", task_type="bus_debug",
+        task_description="on topic, decent recipe",
+        steps=[{"action": "x", "tool_used": "bash", "result_summary": "y"}],
+        outcome="z", rating=3,
+        embedding=_vec_along(0, magnitude=0.5),
+    )
+    off_topic = store.save(
+        agent_id="cc", task_type="bus_debug",
+        task_description="off topic, five stars",
+        steps=[{"action": "x", "tool_used": "bash", "result_summary": "y"}],
+        outcome="z", rating=5,
+        embedding=_vec_along(0, magnitude=0.4),
+    )
+    query = _vec_along(0, magnitude=1.0)
+    hits = store.recall(query, min_rating=3, max_results=2)
+    assert [h["id"] for h in hits][0] == on_topic["id"], (
+        "off-topic 5-star outranked on-topic 3-star — similarity "
+        "normalization regressed")
+    assert off_topic["id"] in [h["id"] for h in hits]

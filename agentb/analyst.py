@@ -370,6 +370,14 @@ async def _lens_pass(
     # worth keeping" is an answer; re-reading the same logs nightly is not.
     for path, entry in batch:
         try:
+            # Re-read before writing: `entry` was loaded before seconds of LLM
+            # latency, and writing that stale copy back would clobber anything
+            # a concurrent writer changed in between (a reclassify pass, the
+            # other lens's marker). Patch only the field this lens owns.
+            try:
+                entry = json.loads(path.read_text())
+            except Exception:
+                pass  # unreadable/vanished mid-flight — mark the copy we have
             entry[marker] = True
             path.write_text(json.dumps(entry, indent=2, default=str))
         except Exception as e:

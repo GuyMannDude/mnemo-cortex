@@ -4,6 +4,7 @@ L1/L2/L3 with persona-aware similarity thresholds.
 """
 
 import json
+import os
 import time
 import hashlib
 import logging
@@ -196,7 +197,12 @@ class L2Index:
                 log.warning(f"L2 load error: {e}")
 
     def _save(self):
-        (self.index_dir / "index.json").write_text(json.dumps(self.entries, default=str))
+        # Atomic tmp+replace (same pattern as trajectory.py): truncate-then-
+        # write here meant a crash mid-write wiped the whole L2 index.
+        index_file = self.index_dir / "index.json"
+        tmp = index_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.entries, default=str))
+        os.replace(tmp, index_file)
 
     def search(self, query_embedding: list[float], top_k: int = 5,
                persona: Optional[PersonaConfig] = None) -> list[ContextChunk]:
@@ -243,6 +249,14 @@ class L2Index:
         self.entries.append({"id": entry_id, "content": content, "source": source,
                             "embedding": embedding, "metadata": metadata or {},
                             "created_at": time.time()})
+        # Oldest-first eviction (mirrors L1): every entry carries a ~6 KB
+        # embedding and _save rewrites the whole file, so an uncapped index
+        # under continuous auto-capture grows without bound — memory, per-
+        # write disk churn, and per-search scan time all degrade linearly.
+        max_entries = self.config.l2_max_entries
+        if max_entries > 0 and len(self.entries) > max_entries:
+            self.entries.sort(key=lambda e: e.get("created_at", 0))
+            self.entries = self.entries[len(self.entries) - max_entries:]
         self._save()
         return entry_id
 

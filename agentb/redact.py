@@ -70,15 +70,24 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     # ── Generic assignment forms (lower confidence — require a long opaque
     #    value right after a credential-ish name to keep false positives low).
-    #    The name may be prefixed (MNEMO_AUTH_TOKEN, SHOPIFY_API_KEY, …). ──
+    #    The name may be prefixed (MNEMO_AUTH_TOKEN, SHOPIFY_API_KEY, …).
+    #    Bare `token`/`secret` cover the common forms the old alternation
+    #    missed (DISCORD_TOKEN=…, SECRET: …) — the 16-char opaque-value
+    #    requirement plus the allowlist keep prose out, and the module
+    #    doctrine is fail toward redaction anyway. ──
     ("generic-assignment", re.compile(
         r"""(?ix)\b
         [a-z0-9_-]*
-        (api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|
-         secret[_-]?key|client[_-]?secret|webhook[_-]?secret|password|passwd)
+        (api[_-]?key|api[_-]?secret|token|secret|secret[_-]?key|
+         private[_-]?key|client[_-]?secret|webhook[_-]?secret|
+         password|passwd|passphrase)
         \s*[=:]\s*["']?
         (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
         """)),
+    # Credentials embedded in connection URLs (postgres://user:pass@host,
+    # amqp/redis/mongodb/… — any scheme). Only the password is redacted.
+    ("url-credential", re.compile(
+        r"(?i)\b[a-z][a-z0-9+.-]{1,30}://[^\s/:@]{1,64}:(?P<val>[^\s/@]{4,})@")),
     # Authorization headers pasted from curl/log output.
     ("bearer-token", re.compile(
         r"(?i)\bBearer\s+(?P<val>[A-Za-z0-9_\-./+=]{20,})")),

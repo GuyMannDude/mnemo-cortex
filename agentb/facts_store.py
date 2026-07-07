@@ -216,6 +216,13 @@ class FactsStore:
 
         conn = self._connect()
         try:
+            # BEGIN IMMEDIATE takes the write lock up front so the
+            # read-check-write below is atomic across processes (the server,
+            # the dreamer, and the CLI all open this DB). Without it two
+            # writers could both read "no existing fact" and race the INSERT
+            # (uncaught IntegrityError → 500), or a stale high_probability
+            # value could overwrite a fact verified in between.
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT * FROM facts WHERE entity=? AND attribute=?", (e, a)
             ).fetchone()
@@ -313,6 +320,8 @@ class FactsStore:
 
         conn = self._connect()
         try:
+            # Same cross-process atomicity as save() — see the comment there.
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT * FROM facts WHERE entity=? AND attribute=?", (e, a)
             ).fetchone()
