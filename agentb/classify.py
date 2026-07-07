@@ -26,6 +26,7 @@ import logging
 import re
 from pathlib import Path
 
+from agentb.fsutil import atomic_write_text
 from agentb.provenance import suggest_category
 
 log = logging.getLogger("agentb.classify")
@@ -243,7 +244,9 @@ async def reclassify_memory_dir(
         else:
             entry.pop("needs_reclassification", None)
         try:
-            path.write_text(json.dumps(entry, indent=2, default=str))
+            # Atomic: rewrites an existing memory in place — see analyst.py;
+            # same torn-read / crash-truncation window since v4.9.14.
+            atomic_write_text(path, json.dumps(entry, indent=2, default=str))
         except Exception as e:
             stats["failed"] += 1
             log.error(f"Failed to write reclassified memory {path}: {e}")

@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentb.cache import cosine_similarity
+from agentb.fsutil import atomic_write_text
 from agentb.redact import redact_text
 
 log = logging.getLogger("agentb.analyst")
@@ -340,8 +341,11 @@ async def _lens_pass(
             "schema_version": 3,
         }
         try:
-            (memory_dir / f"{memory_id}.json").write_text(
-                json.dumps(entry, indent=2, default=str))
+            # Atomic: l3_scan walks this dir from a worker thread since
+            # v4.9.14, so a plain write_text is a torn-read window (and a
+            # crash mid-write would truncate the file).
+            atomic_write_text(memory_dir / f"{memory_id}.json",
+                              json.dumps(entry, indent=2, default=str))
             vec_store.upsert(
                 memory_id, full_text, embedding,
                 source_file=(memory_dir / f"{memory_id}.json").as_posix(),
@@ -385,7 +389,10 @@ async def _lens_pass(
                             f"— left unmarked for retry: {e}")
                 continue
             fresh[marker] = True
-            path.write_text(json.dumps(fresh, indent=2, default=str))
+            # Atomic: this rewrites an EXISTING memory in place — a plain
+            # write_text here could destroy it on a crash mid-write, and
+            # tear reads from the off-loop l3_scan walker.
+            atomic_write_text(path, json.dumps(fresh, indent=2, default=str))
         except Exception as e:
             log.warning(f"Failed to mark {path} {marker}: {e}")
 

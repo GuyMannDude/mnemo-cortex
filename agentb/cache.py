@@ -268,12 +268,25 @@ class L2Index:
         # write disk churn, and per-search scan time all degrade linearly.
         max_entries = self.config.l2_max_entries
         if max_entries > 0 and len(self.entries) > max_entries:
-            # Reassign instead of sorting in place: _save snapshots the list
-            # on the loop, and a concurrent add() must never reorder a list a
-            # snapshot was just taken from.
-            self.entries = sorted(
-                self.entries, key=lambda e: e.get("created_at", 0)
-            )[-max_entries:]
+            overflow = len(self.entries) - max_entries
+            if overflow > 1:
+                # A single add only ever overflows by 1. More means the index
+                # was loaded already over the cap — a legacy pre-v4.1 store
+                # (read-only in prod, entries exist nowhere else). Evicting
+                # here would silently destroy them on the first add() a future
+                # code path wires up, so keep them and say so loudly; cap
+                # enforcement resumes once a backfill retires the legacy index.
+                log.warning(
+                    f"L2 index holds {len(self.entries)} entries (cap "
+                    f"{max_entries}); skipping eviction of {overflow} legacy "
+                    f"entries — backfill and retire the legacy index instead")
+            else:
+                # Reassign instead of sorting in place: _save snapshots the
+                # list on the loop, and a concurrent add() must never reorder
+                # a list a snapshot was just taken from.
+                self.entries = sorted(
+                    self.entries, key=lambda e: e.get("created_at", 0)
+                )[-max_entries:]
         await self._save()
         return entry_id
 

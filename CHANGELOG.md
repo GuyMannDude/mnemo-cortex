@@ -1,5 +1,31 @@
 # Changelog
 
+## v4.9.16 (2026-07-07) — Atomic in-place memory writers (cross-version regression review, Opie #1117)
+
+**Problem.** The Fable 5 cross-version review of the v4.9.4→v4.9.15 sprint found the fixes
+sound as a whole but flagged one seam created by their interaction: v4.9.14 moved the
+l3_scan disk walk into a worker thread that reads every memory JSON, while three writers
+still rewrote those same files with plain truncate-then-write `write_text` on the event
+loop — the analyst note create (analyst.py), the analyst mark-processed rewrite of
+EXISTING memories (analyst.py), and the classify reclassify rewrite (classify.py). Before
+v4.9.14 reader and writers were cooperatively serialized on the loop; after it, a torn
+read became possible (memory silently skipped for that scan), and independently a crash
+mid-write would truncate an existing memory permanently — the exact silent-data-loss
+class the sprint closed in writeback (v4.9.14) and the L2 index (v4.9.13) but missed
+here. Dormant trap, same review: `L2Index.add`'s new `l2_max_entries` eviction, run
+against a legacy pre-v4.1 index loaded already over the cap, would mass-evict entries
+that exist nowhere else on the first add() a future code path wires up.
+
+**Fix.** `_atomic_write_text` promoted out of server.py to a shared `agentb/fsutil.py`
+(`atomic_write_text`); server imports it unchanged, and all three writer sites now use
+the same tmp+`os.replace` pattern — a reader can never see a half-written file and a
+failed write leaves the previous contents intact. L2 eviction now refuses to drop more
+than one entry per add (a single add only ever overflows by 1; more means a legacy
+over-cap index) and logs loudly instead. Six regression tests in
+tests/test_atomic_writers.py: the crash-preserves-original contract, spy-verified atomic
+routing for all three writer sites, and legacy-index mass-eviction refusal alongside
+normal single-entry eviction at the cap. Suite 562 green.
+
 ## v4.9.15 (2026-07-07) — Scripts, installers, packaging: last M-group items (clean-room review M-group, part 3b)
 
 **Problem.** Ten findings across scripts/installers/packaging. (1) The bus watcher probed

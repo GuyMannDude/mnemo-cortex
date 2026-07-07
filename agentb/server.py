@@ -42,6 +42,7 @@ from agentb.config import (
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding
 from agentb.cache import L1Cache, L2Index, l3_scan, ContextChunk, resolve_disk_truth
+from agentb.fsutil import atomic_write_text as _atomic_write_text
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.provenance import (
     VALID_SOURCES, VALID_CATEGORIES, DEFAULT_HIDDEN_CATEGORIES,
@@ -457,14 +458,6 @@ class BodySizeLimitMiddleware:
                         (b"content-length", str(len(body)).encode())],
         })
         await send({"type": "http.response.body", "body": body})
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """tmp + os.replace so a reader can never see a half-written file and a
-    crash mid-write can never destroy the previous contents."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
 
 
 def _log_maintenance_exit(task: "asyncio.Task") -> None:
