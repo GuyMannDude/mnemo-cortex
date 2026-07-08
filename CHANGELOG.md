@@ -1,5 +1,18 @@
 # Changelog
 
+## mnemo-cc-sync idle-flush implemented (2026-07-08) — integration fix, no server change (server stays v4.9.16)
+
+**Problem.** The sync's docstring promised "post when >=6 new msgs OR when the
+session JSONL is idle and there's anything pending" — but the idle half was never
+implemented (in this script or its predecessor). A conversation that went quiet on
+a 1-5 message tail held those messages forever, and a sync watchdog correctly paged
+"session active, nothing posted for 30+ min" on every quiet lull. Caught live by
+CronAlarm within an hour of the production cutover.
+
+**Fix.** `MNEMO_CC_IDLE_FLUSH_S` (default 300): a sub-batch pending tail posts once
+the session JSONL has been idle that long. Hot files still defer exactly as before;
+a failed flush still leaves the offset untouched for retry.
+
 ## mnemo-cc-sync gains auth (2026-07-08) — integration fix, no server change (server stays v4.9.16)
 
 **Problem.** `integrations/claude-code/mnemo-cc-sync.py` POSTed to `/writeback` with no

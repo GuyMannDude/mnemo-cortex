@@ -20,6 +20,8 @@ Configuration (all via env vars, all optional):
     MNEMO_AUTH_TOKEN       API token sent as X-API-KEY; falls back to
                            ~/.mnemo-auth-token (needed when the server
                            enforces auth, ignored otherwise)
+    MNEMO_CC_IDLE_FLUSH_S  Flush a sub-batch pending tail once the session
+                           JSONL has been idle this long (default: 300)
 
 Run modes:
     python3 mnemo-cc-sync.py            # batched: post when >=6 new msgs
@@ -82,6 +84,12 @@ if (
 MIN_TURNS_PER_BATCH = 6
 MAX_TURNS_PER_BATCH = 20
 SUMMARY_MAX_CHARS = 12000
+
+# A session that goes quiet with a sub-batch tail still deserves its post —
+# flush pending messages once the JSONL has been idle this long. Without
+# this, a conversation that ends on 1-5 unsynced turns holds them forever
+# (and a sync watchdog sees "session active, nothing posted" and pages).
+IDLE_FLUSH_S = float(os.environ.get("MNEMO_CC_IDLE_FLUSH_S", "300"))
 
 # Role-aware snippet budgets (v4.8 creative harness). The old flat 300 chars
 # per turn treated conversation as noise and tool calls as signal — inverted
@@ -297,7 +305,10 @@ def sync_file(jsonl: Path, entry: dict, force: bool) -> tuple[bool, bool]:
         return False, False
 
     if not force and len(messages) < MIN_TURNS_PER_BATCH:
-        return False, False  # Defer — wait for more activity; offset unchanged
+        idle_s = time.time() - jsonl.stat().st_mtime
+        if idle_s < IDLE_FLUSH_S:
+            return False, False  # Defer — wait for more activity; offset unchanged
+        # JSONL idle with a pending tail — flush it rather than hold forever.
 
     summary, key_facts = build_summary(messages, session_id)
 
