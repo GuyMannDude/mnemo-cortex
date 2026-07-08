@@ -10,13 +10,22 @@ housekeeping lines hourly — the sync correctly consumes them and advances
 a terminal sat open).
 
 **Fix.** The watchdog now checks the thing that actually means "stuck": unsynced
-backlog. It compares the newest JSONL's size against its `byte_offset` in the offset
-file and fails only when backlog bytes survive past `MNEMO_CC_FLUSH_GRACE_S`
-(default 600s = idle-flush 300s + sync-cycle margin) of file idleness, or when an
-idle file has no offset entry at all. `MNEMO_CC_STALE_S` is retired with the mtime
-heuristic. Tradeoff accepted: a sync that wedges mid-session is flagged at the next
-600s lull rather than instantly. Verified with a 7-case fixture matrix (consumed /
-stuck / accumulating / unregistered × idle / fresh, plus live state).
+backlog. It walks EVERY session file inside the sync's own active window
+(`MNEMO_CC_ACTIVE_HOURS`, matching the sync's scan cutoff) and fails only when
+backlog bytes survive past `MNEMO_CC_FLUSH_GRACE_S` (default 600s = idle-flush 300s
++ sync-cycle margin) of that file's idleness, or when an active file has no offset
+entry at all. `MNEMO_CC_STALE_S` is retired with the mtime heuristic. Tradeoff
+accepted: a sync that wedges mid-session is flagged at that file's next 600s lull
+rather than instantly. Code review caught three real bugs in the first cut, all
+fixed: failing command substitutions under `set -e` paged with no diagnostic (and
+an apostrophe in a session path broke the inline python — evaluation now lives in
+a python block fed by env, every failure path prints why); the no-entry check
+contradicted the sync's 24h active window (files older than the window are
+correctly ignored); and checking only the newest JSONL left a wedge on any other
+active file silent forever. Torn final lines (no trailing newline) are recognized
+as not-consumable rather than flagged as stuck. Verified with a 9-case fixture
+matrix including an apostrophe path, a non-newest stuck file, an outside-window
+orphan, corrupt offset JSON, and a torn tail.
 
 ## mnemo-cc-sync idle-flush implemented (2026-07-08) — integration fix, no server change (server stays v4.9.16)
 
