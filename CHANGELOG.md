@@ -1,6 +1,20 @@
 # Changelog
 
-## v4.9.16 (2026-07-07) — Atomic in-place memory writers (cross-version regression review, Opie #1117)
+## librarian.py joins the repo (2026-07-08) — standalone tool, no server change (server stays v4.9.16)
+
+**Problem.** The README (rewritten this week to feature the Librarian as the discovery
+layer that replaced WikAI) advertised a component that wasn't in the repo: the indexer
+lived only as a deployment-specific script with hardcoded roots and a private hidden-dir
+allowlist. Anyone cloning the repo read about a feature their checkout didn't contain.
+
+**Fix.** `librarian.py` published at the repo root, genericized: roots and the
+hidden-dir allowlist moved from constants to an optional `~/.librarian/config.json`
+(defaults = visible trees under `$HOME`, no hidden dirs); missing configured roots and
+unreadable config fail loud (exit 2) instead of silently indexing less — a vanished
+root would otherwise purge its files from the index as "removed". Secret exclusion
+(key/credential/env/db files never indexed, hidden-file content never read) unchanged.
+Single file, stdlib-only. Our deployment now runs this exact copy (symlink + config),
+so the repo is the single truth. FrankenClaw's `file_find` is the MCP read side.
 
 **Problem.** The Fable 5 cross-version review of the v4.9.4→v4.9.15 sprint found the fixes
 sound as a whole but flagged one seam created by their interaction: v4.9.14 moved the

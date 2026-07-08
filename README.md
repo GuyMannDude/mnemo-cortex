@@ -138,10 +138,9 @@ Cloud memory services make you choose one shared store. Mnemo lets you architect
 
 "The file about X" is a memory problem too. The Librarian is a single SQLite FTS5 index over the whole workspace — filenames, paths, and the first chunk of content (with PDF/DOCX text extraction) — so an agent can turn a fuzzy description into a real path in milliseconds. Our deployment covers ~107K files; a full rebuild takes ~17 seconds, the nightly incremental refresh ~2. Secrets (keys, `.env` files, credentials) are excluded from the index entirely.
 
-Agents query it through the `file_find` tool on the `live` branch of **[FrankenClaw](https://github.com/GuyMannDude/frankenclaw)**, our MCP tool chassis — same MCP config pattern as the Mnemo bridge, just a second `mcpServers` entry.
+The indexer ships in this repo: **[`librarian.py`](librarian.py)** — a single stdlib-only file. `python3 librarian.py index` builds the index at `~/.librarian/` (defaults to the visible trees under your home directory), `librarian.py find "the spec about X"` queries it from the shell, and an optional `~/.librarian/config.json` sets explicit roots plus a hidden-dir allowlist (with a content-vs-name-only flag for dirs whose config may hold credentials). Cron `index` nightly and it stays fresh.
 
-> [!NOTE]
-> **Deployment status:** `file_find` (the read side) is public today. The index builder itself is still a deployment-specific script we haven't packaged for release — generalizing it is on the roadmap. Until then, treat this section as a field report on the architecture, not an installable feature.
+Agents query it through the `file_find` tool on the `live` branch of **[FrankenClaw](https://github.com/GuyMannDude/frankenclaw)**, our MCP tool chassis — same MCP config pattern as the Mnemo bridge, just a second `mcpServers` entry. `file_find` only reads; the index it opens is the one `librarian.py` maintains.
 
 The Librarian replaced **WikAI**, our earlier auto-compiled wiki layer. The lesson from running WikAI in production: compiling knowledge into pages is expensive to keep fresh, while indexing everything and finding it on demand is cheap and never stale. The static wiki pages still exist and remain searchable through the bridge's `wiki_search` / `wiki_read` / `wiki_index` tools, but they're no longer recompiled nightly — [`mnemo-wiki-compile.py`](mnemo-wiki-compile.py) stays in the repo for reference. See [Inspirations](#inspirations) below.
 
