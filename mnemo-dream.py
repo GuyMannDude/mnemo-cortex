@@ -79,7 +79,7 @@ def _mnemo_auth_headers() -> dict:
     tok = os.getenv("MNEMO_AUTH_TOKEN", "").strip()
     if not tok:
         try:
-            tok = (Path.home() / ".mnemo-auth-token").read_text().strip()
+            tok = (Path.home() / ".mnemo-auth-token").read_text(encoding="utf-8").strip()
         except OSError:
             tok = ""
     return {"X-API-KEY": tok} if tok else {}
@@ -216,7 +216,7 @@ def harvest_agentb(since: datetime) -> list[dict]:
                 mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
                 if mtime < since:
                     continue
-                data = json.loads(f.read_text())
+                data = json.loads(f.read_text(encoding="utf-8"))
                 memories.append({
                     "source": "agentb",
                     "agent_id": agent_id,
@@ -309,7 +309,7 @@ def get_last_dream_time() -> datetime | None:
     latest = None
     for f in DREAMER_MEMORY_DIR.glob("*.json"):
         try:
-            data = json.loads(f.read_text())
+            data = json.loads(f.read_text(encoding="utf-8"))
             ts = data.get("timestamp")
             if ts:
                 dt = datetime.fromisoformat(ts)

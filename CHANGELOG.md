@@ -1,5 +1,21 @@
 # Changelog
 
+## mnemo-dream: UTF-8 reads in the harvesters (2026-07-09) — script fix, no server change (server stays v4.9.16)
+
+**Problem.** The dreamer died on 2026-07-09 at 3:15 AM with no brief produced
+(first missed night since the S4U task went live). `harvest_agentb` read memory
+JSONs via `read_text()` with no encoding — on Windows that defaults to cp1252,
+which cannot decode byte 0x90. The files are UTF-8; the crash trigger was simply
+the first harvested memory containing a character outside cp1252 (written
+2026-07-08 night). Latent since the harvester was written — same cp1252 trap
+already documented for `.ps1` files in the brain.
+
+**Fix.** All three unencoded reads in mnemo-dream.py now pass
+`encoding="utf-8"` (both `json.loads(f.read_text(...))` harvest sites + the
+auth-token read), matching every other read/write in the file, which already
+did it right. Verified by rerunning the scheduled task on IGOR-2: 2026-07-09
+brief produced, dreamer monitor green.
+
 ## mnemo-cc-sync watchdog: backlog check replaces mtime heuristic (2026-07-08) — integration fix, no server change (server stays v4.9.16)
 
 **Problem.** The watchdog treated a fresh JSONL mtime as "session active" and then
