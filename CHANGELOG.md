@@ -1,5 +1,23 @@
 # Changelog
 
+## integrations/codex: Codex CLI integration + AGENTS.md standing-orders template (2026-07-09) — docs, no server change (server stays v4.9.16)
+
+**Problem.** MCP config alone gives a Codex agent *tools*, not a *routine*. A fresh
+session with `agent_startup` available but no standing instructions improvises its
+boot — observed in the field: a Codex agent on a shared machine hunted the disk for
+"startup", found another agent's integration scripts, and ran them under that
+agent's identity, polluting the shared memory store. The boot/write-back ritual
+lived only in one agent's harness instructions (Claude Code's CLAUDE.md), not in
+anything the repo ships.
+
+**Fix.** New `integrations/codex/`: README (config.toml MCP block + why the
+instructions file is the load-bearing half, with a per-harness instruction-file
+map) and an `AGENTS.md` template encoding the full ritual — startup via
+`agent_startup`, session-end lane update + `mnemo_save` + `session_end` +
+brain commit/push, identity rules, and an authenticated fallback path. The goal:
+the Cortex OS ritual is baked into the install, so it works on any model, not
+just ones smart enough to invent it.
+
 ## mnemo-dream: UTF-8 reads in the harvesters (2026-07-09) — script fix, no server change (server stays v4.9.16)
 
 **Problem.** The dreamer died on 2026-07-09 at 3:15 AM with no brief produced
