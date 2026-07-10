@@ -129,7 +129,7 @@ verified gotchas. Read the one that matches your user's host.
 | Host | Integration dir | What it is in one line |
 |---|---|---|
 | **Claude Code** | [`integrations/claude-code/`](./integrations/claude-code/) | Anthropic's terminal CLI agent — runs in your user's shell, reads/writes files, executes commands. |
-| **Claude Desktop** | [`integrations/claude-desktop/`](./integrations/claude-desktop/) | Anthropic's desktop app. Drag-and-drop `.mcpb` bundle install — no clone, no Node, no JSON editing. |
+| **Claude Desktop** | [`integrations/claude-desktop/`](./integrations/claude-desktop/) | Anthropic's desktop app. Drag-and-drop `.mcpb` bundle install — no clone, no Node, no JSON editing. Step-by-step OS guides: [Windows](./docs/install-claude-desktop-windows.md) · [Linux](./docs/install-claude-desktop-linux.md). |
 | **OpenClaw** | [`integrations/mcp-bridge/`](./integrations/mcp-bridge/) | Open-source local AI agent framework (the "ClawdBot" platform). Generic MCP bridge wires Mnemo in via one config block. |
 | **LM Studio** | [`integrations/lmstudio/`](./integrations/lmstudio/) | Desktop GUI for running local LLMs (Qwen, Llama, etc.). Native MCP support since v0.3.17 — edit `mcp.json` and restart. |
 | **AnythingLLM** | [`integrations/anythingllm/`](./integrations/anythingllm/) | Desktop GUI with workspace-scoped chat. Two-step setup: MCP config + flip workspace to "Automatic mode" so memory fires without `@agent` prefix. |

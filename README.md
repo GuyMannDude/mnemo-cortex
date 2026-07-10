@@ -24,6 +24,22 @@
 >   parse the JSON object on stdout. Zero prompts, exit `0` on success.
 >   Full schema below in "Non-interactive install."
 
+## Get started
+
+**Want to know what Mnemo Cortex is?**
+Read this README, or point your agent at [robot.info](./robot.info).
+
+**Want to install it?**
+Point your agent at [robot.install.md](./robot.install.md) and let it handle the rest.
+The install guide links to everything the agent needs — server setup, per-host wiring
+(Claude Desktop on [Windows](docs/install-claude-desktop-windows.md) /
+[Linux](docs/install-claude-desktop-linux.md), OpenClaw, LM Studio, and more), and
+[CORTEX-OS.md](CORTEX-OS.md), the operating manual that teaches your agent how to
+actually use its new memory.
+
+**Want to do it yourself?**
+Follow the [Install Guide](#install-guide) below.
+
 ## It's Not Just Memory — It's Cognitive Coprocessing
 
 > Every AI agent has amnesia. Mnemo Cortex is the cure.

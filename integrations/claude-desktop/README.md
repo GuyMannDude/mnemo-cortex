@@ -6,6 +6,9 @@ Persistent memory for Claude Desktop on **Windows, macOS, and Linux**.
 
 ## Two install paths
 
+> Prefer a walkthrough? Full step-by-step guides with troubleshooting: [Windows](../../docs/install-claude-desktop-windows.md) · [Linux](../../docs/install-claude-desktop-linux.md).
+
+
 > 🦞 **Most users**: drag-and-drop a `.mcpb` bundle. No clone, no Node, no JSON editing.
 >
 > 🛠️ **Developers / multi-host operators**: edit `claude_desktop_config.json` by hand and point at a checked-out repo.
