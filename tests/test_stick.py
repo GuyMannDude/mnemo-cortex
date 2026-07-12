@@ -792,10 +792,17 @@ def test_atomic_write_text_pins_utf8_under_ascii_locale(tmp_path):
     import subprocess
     import sys
     target = tmp_path / "out.jsonl"
+    fsutil_py = Path(__file__).resolve().parent.parent / "agentb" / "fsutil.py"
+    # Load fsutil.py directly by path — importing the agentb package would
+    # drag the whole server dependency tree into a child running under a
+    # crippled locale.
     script = (
+        "import importlib.util\n"
         "from pathlib import Path\n"
-        "from agentb.fsutil import atomic_write_text\n"
-        f"atomic_write_text(Path({str(target)!r}), 'A \\u2192 B')\n"
+        f"spec = importlib.util.spec_from_file_location('fsutil', {str(fsutil_py)!r})\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(m)\n"
+        f"m.atomic_write_text(Path({str(target)!r}), 'A \\u2192 B')\n"
     )
     env = dict(
         os.environ,
@@ -803,8 +810,7 @@ def test_atomic_write_text_pins_utf8_under_ascii_locale(tmp_path):
         PYTHONCOERCECLOCALE="0", PYTHONUTF8="0",
     )
     r = subprocess.run([sys.executable, "-c", script],
-                       capture_output=True, text=True, env=env,
-                       cwd=Path(__file__).resolve().parent.parent)
+                       capture_output=True, text=True, env=env, timeout=60)
     assert r.returncode == 0, f"write crashed under ASCII locale:\n{r.stderr}"
     assert target.read_bytes() == "A → B".encode("utf-8")
 
