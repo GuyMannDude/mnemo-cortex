@@ -24,10 +24,11 @@ catches up. No cloud, no VPN, no account.
 ## Quick start
 
 ```bash
-# once, on any machine, with the stick mounted:
-mnemo-cortex stick init --encrypt /media/you/USB   # prompts for a passphrase
+# once, on any machine, with the stick mounted — YOUR choice of mode:
+mnemo-cortex stick init /media/you/USB             # plain: readable by eye
+mnemo-cortex stick init --encrypt /media/you/USB   # encrypted: passphrase
 
-# once, on the OTHER machine, with the stick in:
+# encrypted sticks only — once, on the OTHER machine, with the stick in:
 mnemo-cortex stick unlock     # same passphrase — enrolls this host
 
 # then, at each desk, whenever the stick is in:
@@ -36,6 +37,11 @@ mnemo-cortex stick sync
 # or let it happen automatically while you work:
 mnemo-cortex stick watch      # syncs on plug-in, re-syncs while present
 ```
+
+Both modes are first-class and stay supported: plain sticks are
+human-auditable and zero-dependency; encrypted sticks survive being lost.
+A plain stick can upgrade later with `stick encrypt`; sticks provisioned
+by v1.0 keep working unchanged.
 
 `stick status` shows what would travel in each direction without changing
 anything, plus when each machine last synced and whether the stick is
