@@ -39,15 +39,19 @@ def test_concurrent_first_saves_never_raise(tmp_path):
     barrier = threading.Barrier(2)
 
     def writer(value: str):
-        store = FactsStore(path)
-        barrier.wait()
-        for i in range(20):
-            try:
+        # The whole body is failure evidence — a constructor exception used
+        # to kill this thread BEFORE the barrier, leaving the sibling waiting
+        # forever and hanging the entire suite (flaky CI hang, 2026-07-12).
+        try:
+            store = FactsStore(path)
+            barrier.wait(timeout=30)
+            for i in range(20):
                 store.save(entity=f"e{i}", attribute="a", value=value,
                            confidence="high_probability",
                            evidence_source="race test")
-            except Exception as exc:  # pragma: no cover - failure evidence
-                errors.append(exc)
+        except Exception as exc:  # pragma: no cover - failure evidence
+            errors.append(exc)
+            barrier.abort()   # release the sibling: fail loudly, never hang
 
     threads = [threading.Thread(target=writer, args=(v,)) for v in ("one", "two")]
     for t in threads:

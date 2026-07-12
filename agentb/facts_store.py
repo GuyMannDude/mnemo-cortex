@@ -97,10 +97,23 @@ class FactsStore:
         # 500'd with "no such table: facts" until restart.
         conn = sqlite3.connect(str(self.path), timeout=10.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(self.SCHEMA)
-        return conn
+        # Two connections racing this block on a brand-new DB (concurrent
+        # first touch) can throw a transient "database is locked" from the
+        # WAL switch / schema DDL. Retry briefly — the loser's work is
+        # idempotent anyway (IF NOT EXISTS). Seen as the flaky CI hang in
+        # test_concurrent_first_saves_never_raise (2026-07-12).
+        for attempt in range(3):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.executescript(self.SCHEMA)
+                return conn
+            except sqlite3.OperationalError:
+                if attempt == 2:
+                    conn.close()
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        raise AssertionError("unreachable")
 
     def _init_schema(self) -> None:
         # Kept for explicit init call (and to surface schema errors at startup,
