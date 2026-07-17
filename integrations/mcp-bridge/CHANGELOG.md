@@ -12,6 +12,26 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.18.0 — 2026-07-17 — write_brain_file auto-commits and pushes
+
+**Problem:** A lane file written via `write_brain_file` was invisible to the
+rest of the fleet until `session_end` (or a human) committed it. Long sessions
+that never reach `session_end` stranded the write on local disk — one agent's
+lane rewrite sat uncommitted for two days while its own text noted the repo
+was behind. The commit was a polite convention, not a hard check.
+
+**Fix:** `write_brain_file` now stages, commits, and pushes the written file
+immediately (new `brain-git.js`). Pathspec commit — only the named file, so
+unrelated staged work is never swept up. Fail-soft: the write itself never
+errors on git trouble; the tool response appends a status line
+(`auto-committed + pushed` / `no changes` / `push FAILED (…)`) so the agent
+knows whether follow-up is needed. The push carries a 15s timeout so a
+network stall degrades to the fail-soft status instead of freezing the tool.
+`session_end`'s commit is unchanged and now acts as the backstop. Six-test
+suite (`brain-git.test.js`) against real throwaway repos: push round-trip,
+no-empty-commit, pathspec isolation, push-failure reporting, the production
+BRAIN_DIR-as-repo-subdir shape, non-repo skip.
+
 ## 2.17.0 — 2026-07-09 — Harness tool allow-list is enforced at registration
 
 **Problem:** `HARNESS_ENABLED_TOOLS` was advisory: the bridge still registered

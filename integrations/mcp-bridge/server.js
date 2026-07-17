@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { execSync, execFileSync } from "node:child_process";
 import { DumpWriter } from "./dump.js";
 import { STARTUP_BUDGETS, capSection } from "./boot-budget.js";
+import { autoCommitBrainFile } from "./brain-git.js";
 
 // ── Configuration ──────────────────────────────────────────────
 // MNEMO_URL: where your Mnemo Cortex API lives
@@ -1397,9 +1398,20 @@ server.registerTool(
         };
       }
       await writeFile(join(BRAIN_DIR, safe), content, "utf-8");
+      // Commit + push immediately so the write is visible fleet-wide even
+      // if this session never reaches session_end (stranded-lane fix).
+      const gitStatus = autoCommitBrainFile({
+        brainDir: BRAIN_DIR,
+        filename: safe,
+        agentId: AGENT_ID,
+        dateStr: localDateOnly(),
+      });
       return {
         content: [
-          { type: "text", text: `Wrote ${safe} (${content.length} bytes)` },
+          {
+            type: "text",
+            text: `Wrote ${safe} (${content.length} bytes); git: ${gitStatus}`,
+          },
         ],
       };
     } catch (err) {
