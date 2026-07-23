@@ -10,7 +10,7 @@
 **🌐 Home: [projectsparks.ai](https://projectsparks.ai)** — the story, the docs, and how the project is funded.
 
 > **The Project Sparks ecosystem** — everything is free; the whole thing runs on donations:
-> 🎨 [Free Art Gallery](https://rockysgallery.com) · 🧒 [Kids Seek-&-Find Gallery](https://rockysgallery.com/kids/) · 🎁 [Mnemo Swag](https://rockysgallery.com/swag/) · 🌐 [projectsparks.ai](https://projectsparks.ai) · ❤️ [PayPal](https://www.paypal.com/donate/?business=RHYJXYA2B877E&no_recurring=0&item_name=Support+Mnemo+Cortex+%E2%80%94+open-source+AI+memory%2C+funded+entirely+by+donations.&currency_code=USD) / [GitHub Sponsors](https://github.com/sponsors/GuyMannDude)
+> 🎨 [Free Art Gallery](https://rockysgallery.com) · 🧒 [Kids Seek-&-Find Gallery](https://rockysgallery.com/kids/) · 🎁 [Mnemo Swag](https://rockysgallery.com/swag/) · 🌐 [projectsparks.ai](https://projectsparks.ai) · ❤️ [PayPal](https://www.paypal.com/donate/?business=RHYJXYA2B877E&no_recurring=0&item_name=Support+Mnemo+Cortex+%E2%80%94+open-source+AI+memory%2C+funded+entirely+by+donations.&currency_code=USD) / [GitHub Sponsors](https://github.com/sponsors/GuyMannDude) / [Ko-fi](https://ko-fi.com/guysparks)
 
 > [!TIP]
 > **AI agents — start here.**
