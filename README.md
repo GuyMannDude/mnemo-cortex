@@ -4,6 +4,8 @@
 
 # ⚡ Mnemo Cortex — Cognitive Coprocessor with Active Memory
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FGuyMannDude%2Fmnemo-cortex.svg)](https://mcptoplist.com/server/glama%2FGuyMannDude%2Fmnemo-cortex)
+
 ![GitHub stars](https://img.shields.io/github/stars/GuyMannDude/mnemo-cortex)
 ![License](https://img.shields.io/github/license/GuyMannDude/mnemo-cortex)
 ![Latest release](https://img.shields.io/github/v/release/GuyMannDude/mnemo-cortex)
