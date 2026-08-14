@@ -779,25 +779,30 @@ Output ONLY the JSON list, no preamble, no explanation."""
 DREAMER_OUTPUT_SIGNATURES = (
     "dream-contradictions",   # contradiction fan-out subject prefix
     "dream-git-sync-drift",   # git-sync drift warning subject
-    "Mnemo Dream —",          # brief title line
-    "mnemo-dream.py",         # generator credit line in every brief
+    "mnemo dream —",          # brief title line
+    "by mnemo-dream.py_",     # generator credit line in every brief — the full
+                              # footer form, NOT the bare filename: agents name
+                              # the file constantly when doing ordinary work ON
+                              # the dreamer, and those records are exactly the
+                              # entity-attribute-value evidence stage 0.5 wants
     "verified-vs-extracted",  # contradiction vocabulary only the dreamer emits
-    "DREAM BRIEF",            # boot-block section header agents quote back
+    "dream brief",            # boot-block section header agents quote back
 )
 
 
 def _is_dreamer_derived(m: dict) -> bool:
     """True when a record's content quotes dreamer output — the self-eating
     guard. Checks summary, key_facts and decisions, the fields extraction
-    renders. Over-exclusion is the accepted failure direction: a record
-    discussing dreamer output contributes narrative, never facts, while one
-    let through manufactures tomorrow's evidence about today's output.
-    Extraction-only, like _is_auto_capture — synthesis still sees these.
+    renders; matching is casefolded (over-exclusion is the accepted failure
+    direction: a record quoting dreamer output contributes narrative, never
+    facts, while one let through manufactures tomorrow's evidence about
+    today's output). Extraction-only, like _is_auto_capture — synthesis
+    still sees these; test_dream_provenance.py pins that scoping.
     """
     parts = [m.get("summary", "")]
     parts.extend(str(f) for f in (m.get("key_facts") or []))
     parts.extend(str(d) for d in (m.get("decisions") or []))
-    text = " ".join(parts)
+    text = " ".join(parts).casefold()
     return any(sig in text for sig in DREAMER_OUTPUT_SIGNATURES)
 
 
@@ -990,7 +995,7 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     total_chars = sum(len(_render_memory(m)) for m in extraction_memories)
     log.info(
         f"  stage 0.5 [{agent_id}]: extracting facts from {len(extraction_memories)}/{len(agent_memories)} "
-        f"entries (filtered auto-capture), {total_chars:,} chars in {len(chunks)} chunk(s)"
+        f"entries (filtered auto-capture + dreamer-derived), {total_chars:,} chars in {len(chunks)} chunk(s)"
     )
 
     all_valid: list[dict] = []

@@ -9,10 +9,12 @@ exclusion (harvest skips the dreamer agent) cannot catch this because the
 record wears the processing agent's identity.
 
 These tests pin the deterministic provenance filter: the literal #2486 specimen
-must be excluded, ordinary records must survive, and the filter must be
-extraction-scoped (synthesis keeps seeing everything — that is a call-site
-property, asserted here by checking the filter is only consulted in
-extract_facts_for_agent's path via the private predicate, not in harvest).
+must be excluded, ordinary records must survive (including ones that merely
+NAME mnemo-dream.py while doing engineering work on it), and the filter must
+stay extraction-scoped — synthesis keeps seeing everything. The scoping is
+pinned structurally in test_filter_is_extraction_scoped: the predicate may be
+consulted only inside extract_facts_for_agent, so a future call added to the
+harvest or synthesis path turns the test red.
 """
 from __future__ import annotations
 
@@ -72,6 +74,15 @@ def test_signature_in_decisions_is_excluded():
 # ── ordinary evidence must survive ──
 
 
+def test_naming_the_dreamer_file_survives():
+    # Ordinary engineering work ON the dreamer names its file constantly and is
+    # exactly the entity-attribute-value evidence stage 0.5 wants. Only the
+    # brief's credit-line FORM ("by mnemo-dream.py_") marks dreamer output.
+    m = _mem("Added chunked fact extraction to mnemo-dream.py; capped sections.",
+             key_facts=["mnemo-dream.py runs nightly at 03:15 on IGOR-2"])
+    assert not dream._is_dreamer_derived(m)
+
+
 def test_ordinary_record_survives():
     m = _mem("Rotated the CronAlarm webhook; new pair proven live before revocation.",
              key_facts=["IGOR-2 is the Mnemo Cortex host"],
@@ -93,7 +104,7 @@ def test_extraction_input_drops_derived_records(monkeypatch):
     """extract_facts_for_agent must never send a dreamer-derived record to the
     LLM. Asserted by capturing what the section builder receives — if the
     filter is deleted, the specimen record reaches the builder and this fails."""
-    specimen = _mem("Processed bus message #2401: dream-contradictions for Opie's role.")
+    specimen = _mem("Processed Disco Bus message #2401: dream-contradictions for Opie's role.")
     ordinary = _mem("April's HoffmanBedding order shipped; nightstands approved.")
     seen: list[dict] = []
 
@@ -107,3 +118,20 @@ def test_extraction_input_drops_derived_records(monkeypatch):
 
     assert ordinary in seen
     assert specimen not in seen
+
+
+def test_filter_is_extraction_scoped():
+    """The predicate may be consulted ONLY inside extract_facts_for_agent.
+    Synthesis and harvest must keep seeing dreamer-derived records — the brief
+    narrating "Rocky processed the contradiction ping" is harmless; the same
+    record as fact EVIDENCE is the loop. A call added anywhere else is the
+    likeliest regression, so pin it structurally."""
+    src = _DREAM_PATH.read_text(encoding="utf-8")
+    uses = [ln for ln in src.splitlines()
+            if "_is_dreamer_derived(" in ln and not ln.strip().startswith(("def ", "#"))]
+    # Exactly the two call sites inside extract_facts_for_agent (the derived
+    # list-build and the exclusion comprehension).
+    assert len(uses) == 2, f"unexpected _is_dreamer_derived call sites: {uses}"
+    body = src.split("def extract_facts_for_agent", 1)[1].split("\ndef ", 1)[0]
+    for ln in uses:
+        assert ln.strip() in body, f"call site outside extract_facts_for_agent: {ln.strip()}"
