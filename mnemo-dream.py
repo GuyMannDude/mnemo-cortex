@@ -762,6 +762,45 @@ Format: [{"entity": "...", "attribute": "...", "value": "...", "evidence_source"
 Output ONLY the JSON list, no preamble, no explanation."""
 
 
+# Dreamer-output signatures. A record whose text quotes any of these is
+# evidence the dreamer itself manufactured — its fan-out ping subjects, its
+# brief headers, its notification vocabulary — re-entering through OTHER
+# agents' lanes when they process the mail. Lane-level exclusion (harvest
+# skips the dreamer agent) cannot catch these because they wear the
+# processing agent's provenance. The 2026-08-14 loop specimen (Opie #2486):
+# Rocky's record "Processed bus message #2401: dream-contradictions for
+# Opie's role" yielded an extracted role value of "dream-contradictions" —
+# a fragment of the dreamer's own subject line, flagged as contradicting the
+# verified fact it descends from. That compounds: every dream about a topic
+# manufactures fresh evidence for tomorrow's dream about the same topic.
+# Deterministic containment check, applied BEFORE any semantic filtering
+# (endorsed fix order, #2486): provenance exclusion here; the narrative-tier
+# rule (#2406) is a separate, later mechanism and NOT this filter's job.
+DREAMER_OUTPUT_SIGNATURES = (
+    "dream-contradictions",   # contradiction fan-out subject prefix
+    "dream-git-sync-drift",   # git-sync drift warning subject
+    "Mnemo Dream —",          # brief title line
+    "mnemo-dream.py",         # generator credit line in every brief
+    "verified-vs-extracted",  # contradiction vocabulary only the dreamer emits
+    "DREAM BRIEF",            # boot-block section header agents quote back
+)
+
+
+def _is_dreamer_derived(m: dict) -> bool:
+    """True when a record's content quotes dreamer output — the self-eating
+    guard. Checks summary, key_facts and decisions, the fields extraction
+    renders. Over-exclusion is the accepted failure direction: a record
+    discussing dreamer output contributes narrative, never facts, while one
+    let through manufactures tomorrow's evidence about today's output.
+    Extraction-only, like _is_auto_capture — synthesis still sees these.
+    """
+    parts = [m.get("summary", "")]
+    parts.extend(str(f) for f in (m.get("key_facts") or []))
+    parts.extend(str(d) for d in (m.get("decisions") or []))
+    text = " ".join(parts)
+    return any(sig in text for sig in DREAMER_OUTPUT_SIGNATURES)
+
+
 def _is_auto_capture(m: dict) -> bool:
     """Ambient auto-capture noise, as opposed to intentional saves. Three flavors:
       1. Bridge captureCall flush — "[AUTO-CAPTURE] N tool calls:" prefix
@@ -933,6 +972,19 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     extraction_memories = [m for m in agent_memories if not _is_auto_capture(m)]
     if not extraction_memories:
         log.info(f"  stage 0.5 [{agent_id}]: all {len(agent_memories)} memories are auto-capture noise; skipping")
+        return []
+    derived = [m for m in extraction_memories if _is_dreamer_derived(m)]
+    if derived:
+        # Never-silent: name what was withheld so a dropped record is a logged
+        # decision, not an invisible one.
+        log.info(
+            f"  stage 0.5 [{agent_id}]: provenance-excluded {len(derived)} record(s) "
+            f"quoting dreamer output (self-eating guard, #2486): "
+            + ", ".join(m.get("session_id", "?") for m in derived)
+        )
+        extraction_memories = [m for m in extraction_memories if not _is_dreamer_derived(m)]
+    if not extraction_memories:
+        log.info(f"  stage 0.5 [{agent_id}]: nothing left after provenance exclusion; skipping")
         return []
     chunks = _chunk_memories_by_chars(extraction_memories, FACT_EXTRACTION_CHUNK_CHARS)
     total_chars = sum(len(_render_memory(m)) for m in extraction_memories)
