@@ -1210,37 +1210,26 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
       }
     }
 
-    try {
-      const data = await mnemoRequest("POST", "/context", {
-        prompt: "recent session summary, current projects, what happened last",
-        agent_id: effectiveAgentId,
-        max_results: 3,
-        // Thesaurus Loop is live-path only: the boot query's broad phrasing
-        // scores flat as the corpus grows, so expansion fires ~every boot and
-        // blows past FETCH_TIMEOUT_MS (25s observed vs 10s budget).
-        expand: false,
-      });
-      const chunks = data.chunks || [];
-      if (chunks.length > 0) {
-        const mnemoText = chunks
-          .map((c) => {
-            const tier = c.cache_tier || "?";
-            return `### [${tier}]\n${c.content}`;
-          })
-          .join("\n\n");
-        parts.push(
-          "# SIMILARITY MATCHES (boot phrase)\n\n" +
-            capSection(
-            mnemoText,
-            STARTUP_BUDGETS.mnemo,
-            "use mnemo_recall to pull more",
-            "similarity matches (boot phrase)"
-          )
-        );
-      }
-    } catch (e) {
-      parts.push("# MNEMO ERROR\nCould not reach Mnemo Cortex: " + e.message);
-    }
+    // SIMILARITY MATCHES: CUT 2026-08-14 (Guy's ruling, executed 08-15 by CC).
+    // It fetched three semantic matches on a fixed boot phrase and pasted them
+    // into every boot. Removed outright and replaced with NOTHING — Opie's
+    // close-written-query counter-proposal was RETRACTED (#2517), so this is a
+    // full removal, not a substitution.
+    //
+    // Why it had to go: the phrase was Guy's stopgap from when Mnemo was the
+    // only continuity mechanism. The dated KICKSTART block now does that job,
+    // and does it better — authored beats retrieved. Meanwhile this section had
+    // become the single largest consumer of the boot budget and was itself
+    // being truncated to fit: CC's boot on 2026-08-14 withheld 1,946 chars,
+    // 49% of the section, and spent the withheld-characters alarm on it.
+    // A retrieved guess was crowding out authored state and setting off the
+    // alarm meant for real loss.
+    //
+    // The MNEMO ERROR branch went with it. That is not a silenced check — the
+    // error only existed to report the failure of THIS fetch. No other boot
+    // signal is lost, and every other Mnemo call still fails loudly on its own.
+    //
+    // Do not reinstate a "smaller" version. The ruling is removal.
 
     try {
       // v2.14.0: dreams are written on the Cortex host, which is not

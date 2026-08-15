@@ -106,7 +106,13 @@ export const STARTUP_BUDGETS = {
   "active.md": 9_000,  // the board; NO-GROWTH gated, live 5,993 — lent 1,000 to doctrines
   "people.md": 2_000,
   "doctrines.md": 6_500, // was 5,500; +1,000 so Opie's queue can land (S220)
-  mnemo: 2_000,        // recent Mnemo context chunks
+  // The "mnemo" key (worth 2,000 units) was RETIRED 2026-08-15 — deliberately
+  // written WITHOUT the key:value shape, because boot-budget-check.py parses
+  // this block by regex and a commented-out entry still counted.
+  // The boot similarity section was CUT on
+  // Guy's ruling and replaced with NOTHING; its 2,000 units are RECLAIMED, not
+  // reassigned, so BOOT_TARGET is now that much less subscribed. Do not revive
+  // this key to fund a "smaller" version — the ruling is removal.
   dream: 3_500,        // overnight dream brief
 };
 
