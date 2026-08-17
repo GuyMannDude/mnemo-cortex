@@ -125,8 +125,14 @@ def visible_roots():
         p = Path(rel).expanduser()
         if not p.is_absolute():
             p = HOME / rel
-        if p.exists():
-            roots.append((p, content_ok))
+        # Same rationale as the roots guard above: a vanished allowlist dir
+        # must fail loud, or an incremental pass purges its files as "removed"
+        # while the run still reports success.
+        if not p.exists():
+            print(f"librarian: hidden_allowlist path missing: {p}",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        roots.append((p, content_ok))
     return roots
 
 
@@ -227,7 +233,13 @@ def cmd_index(full=False):
     t0 = time.time()
     con = open_db()
     if full:
-        con.executescript("DELETE FROM files; DELETE FROM fts;")
+        # execute(), not executescript(): executescript autocommits, which
+        # would land the wipe on disk before the rebuild — a rebuild that then
+        # dies would leave the index empty and committed. These two stay in
+        # the pass's one implicit transaction, so wipe + rebuild land together
+        # or not at all.
+        con.execute("DELETE FROM files")
+        con.execute("DELETE FROM fts")
     known = {p: (i, sz, mt) for i, p, sz, mt in
              con.execute("SELECT id, path, size, mtime FROM files")}
     seen, added, updated = set(), 0, 0
@@ -259,6 +271,26 @@ def cmd_index(full=False):
             con.execute("DELETE FROM files WHERE id=?", (fid,))
             con.execute("DELETE FROM fts WHERE rowid=?", (fid,))
             removed += 1
+    # Default-roots mode has no pinned list to check, so a top-level dir that
+    # unmounts or vanishes is only visible as its files all going missing at
+    # once. Fire only when a tree that held >=1000 files last pass yields ZERO
+    # this pass — a cache clear or big cleanup can't trip that, because the
+    # tree still yields files. A frozen index beats a silently gutted one:
+    # keep the old data, exit loudly. A deliberate removal of a whole tree
+    # clears it with `index --full`.
+    before = {}
+    for path in known:
+        before[_top_group(path)] = before.get(_top_group(path), 0) + 1
+    alive = {_top_group(path) for path in seen}
+    dead = sorted(g for g, n in before.items() if n >= 1000 and g not in alive)
+    if dead:
+        con.rollback()
+        con.close()
+        print(f"librarian: refusing to commit — {', '.join(dead)} held "
+              f"{sum(before[g] for g in dead)} indexed files and now yields "
+              f"none (unmounted? vanished?). Real removal? Rebuild with "
+              f"`librarian.py index --full`.", file=sys.stderr)
+        raise SystemExit(1)
     con.execute("INSERT OR REPLACE INTO meta VALUES('last_index', ?)",
                 (time.time(),))
     con.commit()
@@ -268,6 +300,18 @@ def cmd_index(full=False):
           f"in {time.time() - t0:.1f}s{err_note}")
     if _extract_errors > 50:  # systemic (e.g. pdftotext gone) — page via cron
         raise SystemExit(1)
+
+
+def _top_group(path):
+    """Bucket a path by its top-level tree: the first component under HOME
+    (matches both default roots and allowlist entries), or the first two
+    components for paths outside HOME. Structural, not config-derived — a
+    vanished root still buckets its old paths correctly."""
+    home = str(HOME) + os.sep
+    if path.startswith(home):
+        return home + path[len(home):].split(os.sep, 1)[0]
+    parts = path.split(os.sep)
+    return os.sep.join(parts[:3])
 
 
 def _match_expr(query, require_all):
