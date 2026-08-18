@@ -223,8 +223,6 @@ If the directory doesn't exist, those tools simply don't register — the model 
 | + wiki dir | 16 |
 | Both | 22 |
 
-Pair with [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) — an MCP tool chassis for giving your agent hands. Drop a Python file in `tools/`, flip it on, and you have a custom tool in ~5 minutes; it ships one example tool (`web_scrape`) as the template. Same MCP config pattern — just add a second `mcpServers` entry.
-
 ### Tips
 
 - **Pick a tool-capable model.** Qwen3, Llama 3.2, Mistral, and Gemma 2 all do tool-calling well. Smaller models (under 7B) can struggle; if the model never invokes the tool, scale up.

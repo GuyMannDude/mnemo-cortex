@@ -3,8 +3,8 @@
 
 No compiled wiki, no LLM, no cloud — one SQLite FTS5 index of filename +
 path + text-content head, refreshed by cron or on demand. Point an agent
-tool (e.g. FrankenClaw's `file_find`) or your shell at the index and a
-fuzzy description ("the spec about X") comes back as ranked real paths.
+tool (e.g. a read-only `file_find` MCP tool) or your shell at the index
+and a fuzzy description ("the spec about X") comes back as ranked paths.
 
 Usage:
   librarian.py index                # incremental refresh (cron this)

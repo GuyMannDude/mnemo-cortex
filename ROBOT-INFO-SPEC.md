@@ -207,7 +207,6 @@ renders in schema.org form when convenient.
 ## Where it's in use
 
 - [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex) — testbed; first to v0.2.
-- [FrankenClaw](https://github.com/GuyMannDude/frankenclaw) — v0.2.
 - [Disco-Bus](https://github.com/GuyMannDude/disco-bus) — v0.2.
 - [sparks-widget](https://github.com/GuyMannDude/sparks-widget) (Peter Widget) — v0.2.
 

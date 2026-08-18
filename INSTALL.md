@@ -211,15 +211,9 @@ how agents end up with a database they never think to read.
 
 ## 5. Related installs
 
-- **FrankenClaw (Franky)** — `https://github.com/GuyMannDude/frankenclaw`.
-  The "hands" companion to Mnemo's "memory": web search, vision,
-  browser, Shopify, NotebookLM, Google Drive. Same `robot.install`
-  pattern in its own repo. If your user wants Mnemo + Franky
-  together, install Mnemo first (this guide), then follow
-  Franky's [`INSTALL.md`](https://github.com/GuyMannDude/frankenclaw/blob/master/INSTALL.md)
-  in that repo. Both register as
-  separate `mcpServers` entries in the host's MCP config — they
-  don't conflict.
+- **FrankenClaw (Franky)** — the former "hands" companion to Mnemo's
+  "memory". **Withdrawn from public distribution** — do not install;
+  see the [withdrawal notice](https://projectsparks.ai/frankenclaw).
 
 - **Disco-Bus** — `https://github.com/GuyMannDude/disco-bus`.
   Standalone agent-to-agent messaging (successor to Sparks Bus,
