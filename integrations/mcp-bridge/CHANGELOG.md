@@ -12,6 +12,37 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.22.0 — 2026-08-19 — session_end stops sweeping other agents' work into its commit
+
+**Problem.** `session_end` staged with `git add -A` in the one repo five
+agents share. A dirty tree is the NORMAL mid-session state, so whoever
+ended a session first swept every other agent's in-progress edits into a
+commit under its own name — misattributing work, landing unfinished files
+with no gates run, indistinguishable from a correct commit afterward. The
+`git-add-specific-paths` doctrine is hook-enforced on agents' shells, but
+the bridge shells out from node and never passes through the hook
+(snag-session-end-git-add-all). It hadn't bitten only because
+`write_brain_file` auto-commits keep the tree nearly clean — timing, not
+safety. Second, the exit line "Total tool calls this session" counts only
+capture-instrumented tools, so it under-reported every session
+(snag-session-end-tool-call-counter).
+
+**Fix.** New `sessionEndCommit()` in `brain-git.js` (tested): stages ONLY
+the ending agent's own files UNDER the brain dir (basename `<agent>.*` /
+`<agent>-*` — lane, session archives, archive index) via `:/` root
+pathspecs, names exactly what it committed in the report line, and REPORTS
+anything left dirty instead of sweeping it ("Left uncommitted (not yours
+to sweep): ..."). Status parsing is NUL-terminated + unquoted
+(`core.quotePath=false`, `-z`, `--untracked-files=all`) so renames commit
+both sides, non-ASCII names don't poison the batch, and untracked
+directories expand to stageable files. If
+a leftover is the agent's own shared-file edit, the line says to re-save
+it via `write_brain_file`, which commits pathspec-scoped. The counter line
+is renamed to what it measures: "Captured tool calls this session
+(activity-trail subset)". Also: `test.js`'s write test now accepts the
+server's v4.15.0 near-dup HELD response — the identical-every-run test
+payload trips the dedup filter, which still proves the write path.
+
 ## 2.21.0 — 2026-08-12 — the write that creates an overrun now says so, instead of the boot that suffers it
 
 **Problem.** `agent_startup` caps every boot-loaded file and keeps the head —

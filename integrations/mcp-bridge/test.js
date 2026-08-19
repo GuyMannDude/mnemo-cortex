@@ -67,8 +67,14 @@ if (AUTH_TOKEN) await test("Write memory", async () => {
     }),
   });
   const data = await res.json();
-  if (!data.memory_id) throw new Error("No memory_id returned");
-  console.log(`         memory_id: ${data.memory_id}`);
+  // Since server v4.15.0 a repeat of an identical summary is HELD by the
+  // near-dup filter (status:"held", empty memory_id) — that still proves
+  // the full write path (auth, parse, embed, dedup compare) works.
+  if (!data.memory_id && data.status !== "held")
+    throw new Error("No memory_id returned");
+  console.log(
+    `         ${data.memory_id ? `memory_id: ${data.memory_id}` : "near-dup HELD by dedup — write path verified"}`
+  );
 });
 
 // 3. Recall the memory we just wrote

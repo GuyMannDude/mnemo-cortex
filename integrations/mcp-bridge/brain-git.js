@@ -82,3 +82,132 @@ export function autoCommitBrainFile({ brainDir, filename, agentId, dateStr }) {
     return `committed locally; push FAILED (${firstLine(err)}) — pull/rebase and push manually, or session_end will report it`;
   }
 }
+
+/**
+ * session_end's brain commit. Stages ONLY the ending agent's own files —
+ * basename `<agent>.<ext>` or `<agent>-*` (lane, session archives,
+ * archive index) — never the shared tree. The brain repo is shared by five
+ * agents and a dirty tree is the NORMAL mid-session state; the old
+ * `git add -A` here swept every other agent's in-progress edits into a
+ * commit under the ending agent's name (snag-session-end-git-add-all).
+ * Anything left dirty is REPORTED, not swallowed, and the commit line
+ * names exactly what it landed.
+ *
+ * @param {object} opts
+ * @param {string} opts.brainDir  BRAIN_DIR (may be a subdir of the repo)
+ * @param {string} opts.agentId   for ownership matching + commit message
+ * @param {string} opts.dateStr   local date, e.g. "2026-08-19"
+ * @returns {string[]} human-readable status lines — never throws
+ */
+export function sessionEndCommit({ brainDir, agentId, dateStr }) {
+  let insideWorkTree = false;
+  try {
+    insideWorkTree =
+      git(["rev-parse", "--is-inside-work-tree"], brainDir) === "true";
+  } catch {
+    // git missing or not a repo — fall through to the skip status.
+  }
+  if (!insideWorkTree)
+    return ["Brain commit skipped (brain dir is not a git repo)"];
+
+  let porcelain;
+  try {
+    // NOT the git() helper: its trim() would eat the leading status column
+    // of the first record. `-z` + quotePath=false gives NUL-terminated
+    // records with RAW paths — no C-style quoting of non-ASCII names to
+    // mis-decode, and a rename's origin arrives as its own NUL field
+    // instead of an ambiguous " -> " inside one line. --untracked-files=all
+    // expands an untracked DIRECTORY into real file paths ("dir/" has no
+    // basename and would otherwise be unclassifiable).
+    porcelain = execFileSync(
+      "git",
+      ["-c", "core.quotePath=false", "status", "--porcelain", "-z", "--untracked-files=all"],
+      { cwd: brainDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+  } catch (err) {
+    return [`Brain commit FAILED reading git status (${firstLine(err)})`];
+  }
+  const records = porcelain.split("\0").filter((f) => f.length > 0);
+  if (!records.length) return ["Brain commit: no changes to commit"];
+
+  // Porcelain paths are relative to the REPO ROOT while brainDir may be a
+  // subdir ("brain/"): staging uses `:/` top-of-tree pathspec magic, and
+  // ownership is bounded to files UNDER brainDir via the prefix.
+  let prefix = "";
+  try {
+    prefix = git(["rev-parse", "--show-prefix"], brainDir);
+  } catch {
+    // best effort — empty prefix means brainDir is treated as the root.
+  }
+
+  // needsAdd: the worktree column (Y) differs from the index — untracked,
+  // modified, or deleted in the worktree. A path whose change is FULLY
+  // staged (Y = " ", e.g. a `git mv`) must NOT be passed to `git add`: a
+  // staged rename's origin exists in neither worktree nor index, so add
+  // errors "pathspec did not match" — the pathspec COMMIT below already
+  // picks up staged state, deletions included.
+  const entries = [];
+  for (let i = 0; i < records.length; i++) {
+    const xy = records[i].slice(0, 2);
+    entries.push({ path: records[i].slice(3), needsAdd: xy[1] !== " " });
+    // Rename/copy: the ORIGIN path follows as its own field. Both sides
+    // must be classified, or a staged rename's deletion is silently
+    // dropped and the pushed brain keeps the file under BOTH names.
+    if (xy[0] === "R" || xy[0] === "C") {
+      i++;
+      if (records[i]) entries.push({ path: records[i], needsAdd: false });
+    }
+  }
+
+  const isMine = (e) => {
+    if (!e.path.startsWith(prefix)) return false; // outside brainDir ≠ lane work
+    const base = e.path.split("/").pop();
+    return base.startsWith(`${agentId}.`) || base.startsWith(`${agentId}-`);
+  };
+  const mineEntries = entries.filter(isMine);
+  const mine = mineEntries.map((e) => e.path);
+  const others = entries.filter((e) => !isMine(e)).map((e) => e.path);
+
+  const lines = [];
+  if (mine.length) {
+    const spec = mine.map((p) => `:/${p}`);
+    const toAdd = mineEntries.filter((e) => e.needsAdd).map((e) => `:/${e.path}`);
+    try {
+      if (toAdd.length) git(["add", "-A", "--", ...toAdd], brainDir);
+      git(
+        ["commit", "-m", `brain: ${agentId} session end — ${dateStr}`, "--", ...spec],
+        brainDir
+      );
+      try {
+        git(["push"], brainDir, { timeout: 15000 });
+        lines.push(`Brain commit + push: OK (${mine.join(", ")})`);
+      } catch (err) {
+        lines.push(
+          `Brain commit: OK (${mine.join(", ")}); push FAILED (${firstLine(err)}) — pull/rebase and push manually`
+        );
+      }
+    } catch (err) {
+      lines.push(
+        `Brain commit FAILED (${firstLine(err)}) — still on disk, uncommitted: ${mine.join(", ")}`
+      );
+    }
+  } else {
+    lines.push("Brain commit: no changes of yours to commit");
+  }
+  if (others.length) {
+    // Report brain files by the name write_brain_file knows them by;
+    // anything outside brainDir is marked so nobody tries to re-save it
+    // through a tool that cannot reach it (its filenames are flat).
+    const shown = others.map((p) =>
+      p.startsWith(prefix) && prefix ? p.slice(prefix.length) : prefix ? `<repo>/${p}` : p
+    );
+    lines.push(`⚠️ Left uncommitted (not yours to sweep): ${shown.join(", ")}`);
+    const saveable = shown.filter((p) => !p.includes("/"));
+    if (saveable.length) {
+      lines.push(
+        `   If any of these are YOUR OWN edits, re-save via write_brain_file to commit: ${saveable.join(", ")}`
+      );
+    }
+  }
+  return lines;
+}

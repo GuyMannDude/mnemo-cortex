@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoCommitBrainFile } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit } from "./brain-git.js";
 
 let passed = 0;
 let failed = 0;
@@ -128,6 +128,121 @@ test("non-repo brain dir → skipped, never throws", () => {
   writeFileSync(join(plain, "x.md"), "x\n");
   const status = autoCommitBrainFile({ ...opts("x.md"), brainDir: plain });
   assert(status.includes("not a git repo"), `status: ${status}`);
+});
+
+// ── sessionEndCommit ─────────────────────────────────────────────
+
+const seOpts = {
+  brainDir: clone,
+  agentId: "test-agent",
+  dateStr: "2026-08-19",
+};
+
+console.log("\n── sessionEndCommit ──\n");
+
+test("clean tree → 'no changes to commit'", () => {
+  const lines = sessionEndCommit(seOpts);
+  assert(lines.length === 1 && lines[0].includes("no changes to commit"), lines.join(" | "));
+});
+
+test("commits ONLY own files; other agents' dirty work reported, not swept", () => {
+  writeFileSync(join(clone, "test-agent-s99.md"), "my session archive\n");
+  writeFileSync(join(clone, "other-agent.md"), "someone else's half-written lane\n");
+  writeFileSync(join(clone, "active.md"), "shared board, mid-edit\n");
+  const lines = sessionEndCommit(seOpts);
+  const committed = git(["show", "--name-only", "--format=", "HEAD"], clone);
+  assert(committed === "test-agent-s99.md", `committed: ${committed}`);
+  assert(lines[0].includes("OK (test-agent-s99.md)"), `line0: ${lines[0]}`);
+  assert(
+    lines[1] && lines[1].includes("other-agent.md") && lines[1].includes("active.md"),
+    `line1: ${lines[1]}`
+  );
+  const remoteLog = git(["log", "-1", "--format=%s", "master"], bare);
+  assert(remoteLog === "brain: test-agent session end — 2026-08-19", `remote: ${remoteLog}`);
+  rmSync(join(clone, "other-agent.md"));
+  rmSync(join(clone, "active.md"));
+});
+
+test("prefix cannot cross agents (agent 'cc' does not match cody-*)", () => {
+  writeFileSync(join(clone, "cody-session.md"), "cody's work\n");
+  const before = git(["rev-parse", "HEAD"], clone);
+  const lines = sessionEndCommit({ ...seOpts, agentId: "cc" });
+  assert(git(["rev-parse", "HEAD"], clone) === before, "HEAD moved");
+  assert(lines[0].includes("no changes of yours"), `line0: ${lines[0]}`);
+  assert(lines[1].includes("cody-session.md"), `line1: ${lines[1]}`);
+  rmSync(join(clone, "cody-session.md"));
+});
+
+test("brainDir as SUBDIR of the repo → own file found and committed via :/ pathspec", () => {
+  const sub = join(clone, "brain");
+  writeFileSync(join(sub, "test-agent.md"), "lane edited outside write_brain_file\n");
+  writeFileSync(join(clone, "root-junk.md"), "untracked clutter at root\n");
+  const lines = sessionEndCommit({ ...seOpts, brainDir: sub });
+  const committed = git(["show", "--name-only", "--format=", "HEAD"], clone);
+  assert(committed === "brain/test-agent.md", `committed: ${committed}`);
+  assert(lines[0].includes("brain/test-agent.md"), `line0: ${lines[0]}`);
+  assert(lines[1].includes("root-junk.md"), `line1: ${lines[1]}`);
+  rmSync(join(clone, "root-junk.md"));
+});
+
+test("push failure → committed locally, loud FAILED status, leftovers still reported", () => {
+  git(["remote", "set-url", "origin", join(root, "nonexistent.git")], clone);
+  writeFileSync(join(clone, "test-agent-s100.md"), "archive\n");
+  writeFileSync(join(clone, "other-agent.md"), "foreign\n");
+  const lines = sessionEndCommit(seOpts);
+  assert(lines[0].includes("push FAILED") && lines[0].includes("test-agent-s100.md"), `line0: ${lines[0]}`);
+  assert(lines[1].includes("other-agent.md"), `line1: ${lines[1]}`);
+  git(["remote", "set-url", "origin", bare], clone);
+  git(["push"], clone);
+  rmSync(join(clone, "other-agent.md"));
+});
+
+test("staged rename → BOTH sides land, old name deleted from HEAD", () => {
+  writeFileSync(join(clone, "test-agent-s101.md"), "to be renamed\n");
+  git(["add", "test-agent-s101.md"], clone);
+  git(["commit", "-m", "seed rename source"], clone);
+  git(["push"], clone);
+  git(["mv", "test-agent-s101.md", "test-agent-s102.md"], clone);
+  const lines = sessionEndCommit(seOpts);
+  assert(lines[0].startsWith("Brain commit + push: OK"), `line0: ${lines[0]}`);
+  const tree = git(["ls-tree", "-r", "--name-only", "HEAD"], clone);
+  assert(!tree.includes("test-agent-s101.md"), "old name still in HEAD — rename deletion dropped");
+  assert(tree.includes("test-agent-s102.md"), "new name missing from HEAD");
+  assert(git(["status", "--porcelain"], clone) === "", "tree not clean after");
+});
+
+test("non-ASCII filename → committed cleanly, batch not poisoned", () => {
+  writeFileSync(join(clone, "test-agent-café.md"), "accented\n");
+  writeFileSync(join(clone, "test-agent-s103.md"), "plain\n");
+  const lines = sessionEndCommit(seOpts);
+  assert(lines[0].startsWith("Brain commit + push: OK"), `line0: ${lines[0]}`);
+  assert(git(["status", "--porcelain"], clone) === "", "left dirty");
+});
+
+test("untracked DIRECTORY of own files → expanded and committed, not left as 'dir/'", () => {
+  mkdirSync(join(clone, "test-agent-arch"));
+  writeFileSync(join(clone, "test-agent-arch", "test-agent-old1.md"), "archived\n");
+  const lines = sessionEndCommit(seOpts);
+  assert(lines[0].includes("test-agent-arch/test-agent-old1.md"), `line0: ${lines[0]}`);
+  assert(git(["status", "--porcelain"], clone) === "", "left dirty");
+});
+
+test("own-prefixed file OUTSIDE brainDir → reported with <repo>/ marker, never committed", () => {
+  const sub = join(clone, "brain");
+  writeFileSync(join(sub, "test-agent.md"), "lane v2\n");
+  writeFileSync(join(clone, "test-agent-tool.sh"), "#!/bin/sh\n");
+  const lines = sessionEndCommit({ ...seOpts, brainDir: sub });
+  const committed = git(["show", "--name-only", "--format=", "HEAD"], clone);
+  assert(committed === "brain/test-agent.md", `committed: ${committed}`);
+  assert(lines[1].includes("<repo>/test-agent-tool.sh"), `line1: ${lines[1]}`);
+  rmSync(join(clone, "test-agent-tool.sh"));
+});
+
+test("non-repo dir → skipped, never throws", () => {
+  const plain = join(root, "plain-dir-se");
+  mkdirSync(plain);
+  const lines = sessionEndCommit({ ...seOpts, brainDir: plain });
+  assert(lines[0].includes("not a git repo"), lines.join(" | "));
 });
 
 rmSync(root, { recursive: true, force: true });

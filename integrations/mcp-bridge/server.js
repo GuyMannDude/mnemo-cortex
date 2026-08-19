@@ -16,7 +16,7 @@ import {
   getBootCuts,
   formatCutManifest,
 } from "./boot-budget.js";
-import { autoCommitBrainFile } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit } from "./brain-git.js";
 import { refusesBrainWrite } from "./lane-guard.js";
 import { budgetWarning } from "./write-budget.js";
 import { searchScope } from "./search-scope.js";
@@ -1627,25 +1627,17 @@ server.registerTool(
       results.push(`Mnemo save: FAILED (${err.message})`);
     }
 
-    try {
-      const gitStatus = execSync("git status --porcelain", {
-        cwd: BRAIN_DIR,
-        encoding: "utf-8",
-      }).trim();
-      if (gitStatus) {
-        execSync("git add -A", { cwd: BRAIN_DIR });
-        execSync(
-          `git commit -m "brain: ${AGENT_ID} session end — ${localDateOnly()}"`,
-          { cwd: BRAIN_DIR }
-        );
-        execSync("git push", { cwd: BRAIN_DIR });
-        results.push("Brain commit + push: OK");
-      } else {
-        results.push("Brain commit: no changes to commit");
-      }
-    } catch (err) {
-      results.push(`Brain commit: FAILED (${err.message})`);
-    }
+    // v2.22.0: stages ONLY this agent's own files (pathspec commit) and
+    // reports anything left dirty — the old `git add -A` swept every other
+    // agent's in-progress edits into a commit under this agent's name
+    // (snag-session-end-git-add-all). Never throws.
+    results.push(
+      ...sessionEndCommit({
+        brainDir: BRAIN_DIR,
+        agentId: AGENT_ID,
+        dateStr: localDateOnly(),
+      })
+    );
 
     // v2.15.0: advisory line when this session (bridge lifetime) never
     // touched the agent's own lane file — the Lane Protocol step agents
@@ -1710,7 +1702,7 @@ server.registerTool(
       content: [
         {
           type: "text",
-          text: `Session end complete.\n${results.join("\n")}\n${elapsed}\nTotal tool calls this session: ${sessionToolCalls}`,
+          text: `Session end complete.\n${results.join("\n")}\n${elapsed}\nCaptured tool calls this session: ${sessionToolCalls} (activity-trail subset — only capture-instrumented tools count, not every MCP call)`,
         },
       ],
     };
