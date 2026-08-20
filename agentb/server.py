@@ -378,6 +378,23 @@ class TenantManager:
         log.info(f"Tenant '{key}' initialized at {data_dir}")
         return tenant
 
+    def has_named_tenants(self) -> bool:
+        """Whether this installation contains any non-default tenant.
+
+        A missing ``agent_id`` retains the historical default-tenant behavior
+        for genuinely single-tenant installs.  Once named tenants exist,
+        however, silently querying the empty ``default`` tenant is ambiguous
+        and dangerous: callers can mistake a green zero-result response for an
+        empty shared store (#1941).
+        """
+        if self.config.agents:
+            return True
+        agents_dir = Path(self.config.data_dir) / "agents"
+        try:
+            return any(p.is_dir() and p.name != "default" for p in agents_dir.iterdir())
+        except FileNotFoundError:
+            return False
+
     @property
     def active_tenants(self) -> list[str]:
         return list(self._tenants.keys())
@@ -866,7 +883,20 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     # ── Context ──
     @app.post("/context", response_model=ContextResponse)
     async def context(req: ContextRequest, request: Request):
+        """Recall one tenant's context.
+
+        ``agent_id`` may be omitted only on a legacy/default-only install.  On
+        a multi-tenant installation omission is an explicit 400: the server
+        will neither invent a tenant nor return a misleading empty 200.  A
+        future cross-tenant search must be a separate, deliberate contract.
+        """
         _enforce_scope(request, req.agent_id)
+        if req.agent_id is None and tenants.has_named_tenants():
+            raise HTTPException(
+                400,
+                "agent_id is required on a multi-tenant installation; "
+                "unscoped /context search is not supported",
+            )
         start = time.time()
         persona = get_persona(config, req.persona, req.agent_id)
         tenant = tenants.get(req.agent_id)

@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -419,7 +420,11 @@ You'll be given that agent's writebacks in chronological order. Produce a dense,
 3. **Blocked or pending** — open issues, next steps
 4. **Lessons learned** — failures, doctrines reinforced
 
-Be specific. Names, paths, versions, error messages. No fluff. Output markdown, 8-20 bullet lines. Lead with the agent's name as a header."""
+Be specific. Names, paths, versions, error messages. No fluff. Lead with the agent's name as a markdown header.
+
+Every non-header output line MUST be exactly one stated line in this grammar:
+<one factual claim with an explicit subject> · <owner> · <ISO timestamp> · <one-token status>
+Use the literal middle-dot separator with one space on each side. Write 8-20 lines. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. The owner is the agent or person responsible for the claim, not the summarizer."""
 
 ROLLUP_SYSTEM_PROMPT = """You are the cross-agent memory synthesizer.
 
@@ -431,7 +436,41 @@ You'll be given per-agent daily briefs from a multi-agent workspace. Produce one
 4. **Cross-agent connections** — work one agent did that another should know about
 5. **Lessons learned** — failures, workarounds, doctrines reinforced
 
-Be specific. Names, paths, versions, error messages. No fluff. Format as markdown with the sections above. This brief will be injected into each agent's startup context."""
+Be specific. Names, paths, versions, error messages. No fluff. Use the markdown section headers above.
+
+Every non-header output line MUST be exactly one stated line in this grammar:
+<one factual claim with an explicit subject> · <owner> · <ISO timestamp> · <one-token status>
+Use the literal middle-dot separator with one space on each side. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. Preserve each source line's owner and timestamp; never invent either. This brief will be injected into each agent's startup context."""
+
+
+def _validate_stated_lines(payload: str) -> None:
+    """Run the shared Part-B shape gate over a generated dream brief.
+
+    ``BRAIN_DIR`` is optional for public/default deployments.  When configured,
+    the validator is mandatory: missing tooling or any malformed stated line
+    aborts before the new dream is persisted, leaving the last good brief in
+    place and making CronAlarm report the failure.
+    """
+    brain_dir = os.getenv("BRAIN_DIR", "").strip()
+    if not brain_dir:
+        log.warning("BRAIN_DIR is unset; stated-line validation is unavailable")
+        return
+    checker = Path(brain_dir) / "tools" / "stated-line-check.py"
+    if not checker.is_file():
+        raise RuntimeError(f"stated-line validator missing: {checker}")
+    proc = subprocess.run(
+        [sys.executable, str(checker), "--check", "-"],
+        input=payload.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    report = proc.stdout.decode("utf-8", errors="replace").strip()
+    if proc.returncode:
+        raise RuntimeError(f"stated-line validation failed:\n{report}")
+    if "ZERO stated lines found" in report:
+        raise RuntimeError(f"stated-line validation checked no claims:\n{report}")
+    log.info("  stated-line validation passed")
 
 
 def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
@@ -614,6 +653,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
     total_prompt_tokens += usage.get("prompt_tokens", 0)
     total_completion_tokens += usage.get("completion_tokens", 0)
 
+    _validate_stated_lines(dream_text)
     log.info(f"LLM usage total: {total_prompt_tokens} prompt, {total_completion_tokens} completion ({len(by_agent)+1} calls)")
     return dream_text
 

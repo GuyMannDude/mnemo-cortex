@@ -15,6 +15,7 @@ test rather than waiting for the next stuck-window incident to exercise it.
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,50 @@ _DREAM_PATH = Path(__file__).resolve().parent.parent / "mnemo-dream.py"
 _spec = importlib.util.spec_from_file_location("mnemo_dream", _DREAM_PATH)
 dream = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dream)
+
+
+def test_dream_prompts_require_stated_line_grammar():
+    for prompt in (dream.PER_AGENT_SYSTEM_PROMPT, dream.ROLLUP_SYSTEM_PROMPT):
+        assert "explicit subject" in prompt
+        assert " · " in prompt
+        assert "no shorthand" in prompt
+        assert "parentheticals" in prompt
+
+
+def test_stated_line_gate_pipes_utf8_bytes(monkeypatch, tmp_path):
+    checker = tmp_path / "tools" / "stated-line-check.py"
+    checker.parent.mkdir()
+    checker.write_text("# test placeholder", encoding="utf-8")
+    monkeypatch.setenv("BRAIN_DIR", str(tmp_path))
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["input"] = kwargs["input"]
+        return SimpleNamespace(returncode=0, stdout=b"1 stated line(s)\nAll stated lines conform.")
+
+    monkeypatch.setattr(dream.subprocess, "run", fake_run)
+    dream._validate_stated_lines("Mnemo shipped UTF-8 support · Cody · 2026-08-20 · shipped")
+    assert seen["argv"][-2:] == ["--check", "-"]
+    assert isinstance(seen["input"], bytes)
+    assert "·" in seen["input"].decode("utf-8")
+
+
+@pytest.mark.parametrize("returncode, output", [
+    (1, b"FIELDS violation"),
+    (0, b"note: ZERO stated lines found -- nothing was validated here"),
+])
+def test_stated_line_gate_fails_closed(monkeypatch, tmp_path, returncode, output):
+    checker = tmp_path / "tools" / "stated-line-check.py"
+    checker.parent.mkdir()
+    checker.write_text("# test placeholder", encoding="utf-8")
+    monkeypatch.setenv("BRAIN_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        dream.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=returncode, stdout=output),
+    )
+    with pytest.raises(RuntimeError, match="stated-line validation"):
+        dream._validate_stated_lines("bad payload")
 
 
 def _mem(i: int, summary: str) -> dict:

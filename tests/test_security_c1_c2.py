@@ -116,6 +116,22 @@ def test_context_rejects_traversal_agent_id(client):
     assert r.status_code == 400
 
 
+def test_context_rejects_missing_agent_on_multi_tenant_install(client, tmp_path):
+    """#1941: omission must scream, never query an empty default tenant."""
+    (tmp_path / "agents" / "opie").mkdir(parents=True)
+    r = client.post("/context", json={"prompt": "where is the shared memory?"},
+                    headers=_auth(MASTER))
+    assert r.status_code == 400
+    assert "agent_id is required" in r.json()["detail"]
+
+
+def test_context_missing_agent_keeps_legacy_default_tenant(client):
+    """Default-only deployments keep their pre-#1941 API contract."""
+    r = client.post("/context", json={"prompt": "legacy default tenant"},
+                    headers=_auth(MASTER))
+    assert r.status_code == 200
+
+
 def test_valid_agent_id_still_works(client):
     body = {"agent_id": "cc", "summary": "ok", "key_facts": ["x"], "session_id": "s1"}
     r = client.post("/writeback", json=body, headers=_auth(MASTER))
