@@ -12,6 +12,24 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.23.0 — 2026-08-19 — every tool call now leaves a latency record
+
+**Problem.** `mnemo_save`/`mnemo_recall` logged no timing, so a hang that
+cleared between wedge-watch samples left zero record — the watch samples
+state, not intervals (snag-mnemo-verbs-no-latency-record; the 08-07
+incident's only trace was bus pings). The Developer Dump does record
+latency, but it captures full params and responses and is default OFF —
+too heavy to be the always-on answer.
+
+**Fix.** New `latency.js`: a slim, always-on wrapper around every tool
+handler writes one JSONL line per call — `tool`, `ms`, `ok` — to
+`~/.mnemo-cortex/latency/<agent>/<date>.jsonl` (UTC-dated, one file per
+day, reusing the dump module's daily file naming and fail-loud-once
+handling — note neither module prunes old files; lines here are tiny). Measured bridge-side, so it
+includes the network time the server cannot see; a handler returning
+`isError` or throwing records `ok:false`. No params, no response bodies.
+Opt out with `MNEMO_LATENCY=off`; relocate with `MNEMO_LATENCY_DIR`.
+
 ## 2.22.0 — 2026-08-19 — session_end stops sweeping other agents' work into its commit
 
 **Problem.** `session_end` staged with `git add -A` in the one repo five

@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { execSync, execFileSync } from "node:child_process";
 import { DumpWriter } from "./dump.js";
+import { LatencyWriter } from "./latency.js";
 import {
   BOOT_TARGET,
   STARTUP_BUDGETS,
@@ -498,13 +499,14 @@ const server = new McpServer({
 // Output: ~/.mnemo-cortex/dumps/<agent_id>/<YYYY-MM-DD>.jsonl
 const dump = new DumpWriter(AGENT_ID);
 const harnessToolGate = createHarnessToolGate(process.env.HARNESS_ENABLED_TOOLS);
+const latency = new LatencyWriter(AGENT_ID);
 const _origRegisterTool = server.registerTool.bind(server);
 server.registerTool = (name, schema, handler) =>
   harnessToolGate.register(
     _origRegisterTool,
     name,
     schema,
-    dump.wrap(name, handler)
+    dump.wrap(name, latency.wrap(name, handler))
   );
 
 if (dump.enabled) {
