@@ -13,7 +13,7 @@ import json
 import time
 from pathlib import Path
 
-from agentb.analyst import analyze_tenant, _parse_notes
+from agentb.analyst import analyze_tenant, _gather_candidates, _parse_notes
 from agentb.config import AnalysisConfig
 from agentb.vec import VecStore
 
@@ -78,6 +78,32 @@ def test_parse_notes_handles_fences_and_garbage():
     assert _parse_notes("```json\n[]\n```", 10) == []
     assert _parse_notes("I could not find anything.", 10) == []
     assert _parse_notes('{"not": "a list"}', 10) == []
+
+
+def test_candidate_scan_uses_bounded_sql_index(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "memory"
+    store = VecStore(tmp_path / "vec.sqlite")
+    for i in range(40):
+        _seed_log(memory_dir, f"log{i:02d}", f"entry {i}", processed=i < 20)
+        store.upsert(f"log{i:02d}", f"entry {i}", list(VEC_A),
+                     source_file=(memory_dir / f"log{i:02d}.json").as_posix(),
+                     created_at=float(i), category="session_log")
+    real_read = Path.read_text
+    reads = []
+    def counted(path, *args, **kwargs):
+        reads.append(path)
+        return real_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", counted)
+    first = asyncio.run(_gather_candidates(
+        memory_dir, 5, marker="analyst_processed", vec_store=store))
+    assert first == []
+    assert len(reads) == 20, "legacy-marker import must be capped at 4x output limit"
+    reads.clear()
+    candidates = asyncio.run(_gather_candidates(
+        memory_dir, 5, marker="analyst_processed", vec_store=store))
+    assert [entry["id"] for _, entry in candidates] == [f"log{i:02d}" for i in range(20, 25)]
+    assert len(reads) == 5
+    store.close()
 
 
 def test_analyze_extracts_persists_and_marks(tmp_path):

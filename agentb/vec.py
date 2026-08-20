@@ -32,7 +32,7 @@ import sqlite_vec
 log = logging.getLogger("agentb.vec")
 
 EMBED_DIM = 768  # nomic-embed-text
-SCHEMA_VERSION = 2  # v2: vec_sources.category column (#468 category pushdown)
+SCHEMA_VERSION = 3  # v3: bounded Analyst/Muse lens progress index
 
 # nomic-embed-text accepts ~2048 tokens. For typical English prose that's
 # ~6-8k chars, but path-heavy content (long file URIs, UUIDs, hash strings)
@@ -109,6 +109,13 @@ class VecStore:
                 memory_id TEXT PRIMARY KEY,
                 access_count INTEGER NOT NULL DEFAULT 0,
                 last_accessed REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS lens_processed (
+                memory_id TEXT NOT NULL,
+                lens TEXT NOT NULL,
+                processed_at REAL NOT NULL,
+                PRIMARY KEY(memory_id, lens)
             );
         """)
         # v2 (#468): `category` column on an existing v1 table. Additive and
@@ -204,6 +211,34 @@ class VecStore:
             )
 
     # ── Reads ──
+
+    def pending_lens_sources(self, lens: str, limit: int) -> list[tuple[str, str]]:
+        """Return oldest indexed session logs not yet processed by a lens."""
+        rows = self._conn.execute(
+            """
+            SELECT s.memory_id, s.source_file
+            FROM vec_sources AS s
+            LEFT JOIN lens_processed AS p
+              ON p.memory_id = s.memory_id AND p.lens = ?
+            WHERE s.category = 'session_log' AND p.memory_id IS NULL
+            ORDER BY s.created_at ASC, s.memory_id ASC
+            LIMIT ?
+            """, (lens, max(0, int(limit))),
+        ).fetchall()
+        return [(r["memory_id"], r["source_file"] or "") for r in rows]
+
+    def session_log_source_count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM vec_sources WHERE category = 'session_log'"
+        ).fetchone()
+        return int(row["n"])
+
+    def mark_lens_processed(self, memory_id: str, lens: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO lens_processed(memory_id, lens, processed_at) "
+                "VALUES (?, ?, ?)", (memory_id, lens, time.time()),
+            )
 
     def search(
         self,

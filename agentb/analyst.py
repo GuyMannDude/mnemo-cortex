@@ -150,7 +150,7 @@ def _parse_notes(raw: str, max_notes: int, allowed: set[str] = ALLOWED_CATEGORIE
 
 
 async def _gather_candidates(
-    memory_dir: Path, limit: int, marker: str = "analyst_processed"
+    memory_dir: Path, limit: int, marker: str = "analyst_processed", vec_store=None,
 ) -> list[tuple[Path, dict]]:
     """Oldest-first unprocessed session_log memories (each is read once, ever).
 
@@ -163,6 +163,22 @@ async def _gather_candidates(
     the watchdog restarting a process that was alive and simply unable to
     reply (2026-07-26). The executor threads are idle while this runs."""
     def _scan() -> list[tuple[Path, dict]]:
+        if vec_store is not None and vec_store.session_log_source_count():
+            candidates = []
+            rows = vec_store.pending_lens_sources(marker, max(limit * 4, limit))
+            for memory_id, source_file in rows:
+                path = Path(source_file) if source_file else memory_dir / f"{memory_id}.json"
+                try:
+                    entry = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if entry.get(marker):
+                    vec_store.mark_lens_processed(memory_id, marker)
+                    continue
+                candidates.append((path, entry))
+                if len(candidates) >= limit:
+                    break
+            return candidates
         candidates = []
         for path in memory_dir.glob("*.json"):
             try:
@@ -249,7 +265,7 @@ async def _lens_pass(
     stats: dict = {"scanned": 0, "batches": 0, "notes_extracted": 0,
                    "notes_deduped": 0, "notes_saved": 0, "failed": 0}
     candidates = await _gather_candidates(memory_dir, config.max_memories_per_cycle,
-                                          marker=marker)
+                                          marker=marker, vec_store=vec_store)
     if not candidates:
         return stats
 
@@ -403,6 +419,7 @@ async def _lens_pass(
             # write_text here could destroy it on a crash mid-write, and
             # tear reads from the off-loop l3_scan walker.
             atomic_write_text(path, json.dumps(fresh, indent=2, default=str))
+            vec_store.mark_lens_processed(str(fresh.get("id") or path.stem), marker)
         except Exception as e:
             log.warning(f"Failed to mark {path} {marker}: {e}")
 
