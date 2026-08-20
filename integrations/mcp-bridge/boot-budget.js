@@ -100,12 +100,21 @@ export const BOOT_OVERHEAD = 2_900;
 // relaxed, 9,000 binds where 10,000 would not have.** Whoever relaxes it is also
 // spending doctrine headroom, and will not be told so by anything but this
 // comment. Relax the gate -> restore 10,000/5,500 or re-measure both.
+// ── 2026-08-20: 500 more moved active.md -> doctrines.md. NET ZERO, Guy-approved. ──
+// Same shape as S220, same direction, same reason one wall later: the index hit
+// FULL at 35 doctrines (321 spare vs the 325 MARGIN_FLOOR) and Opie's
+// security-spending doctrine could not land without degrading eight other
+// claim lines to buy 44 chars — clarity is the product of an index line, so
+// trimming claims to fit new rules is a tax on the wrong asset (Opie #2781).
+// Budgets still sum to 38,500; no host sees a larger block. ⚠️ #2391's caveat
+// now covers 1,500 total: ALL of it is borrowed against board-check.py's
+// NO-GROWTH gate. Relax that gate -> restore 10,000/5,500 or re-measure.
 export const STARTUP_BUDGETS = {
   lane: 11_000,        // the agent's own continuity — biggest slice
   "CLAUDE.md": 6_500,  // cross-agent operating doc / session ritual
-  "active.md": 9_000,  // the board; NO-GROWTH gated, live 5,993 — lent 1,000 to doctrines
+  "active.md": 8_500,  // the board; NO-GROWTH gated — lent 1,000 (S220) + 500 (08-20) to doctrines
   "people.md": 2_000,
-  "doctrines.md": 6_500, // was 5,500; +1,000 so Opie's queue can land (S220)
+  "doctrines.md": 7_000, // was 5,500; +1,000 (S220) +500 (08-20, Guy) so doctrine authoring never stalls
   // The "mnemo" key (worth 2,000 units) was RETIRED 2026-08-15 — deliberately
   // written WITHOUT the key:value shape, because boot-budget-check.py parses
   // this block by regex and a commented-out entry still counted.

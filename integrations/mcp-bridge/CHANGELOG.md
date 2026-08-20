@@ -12,6 +12,20 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.23.1 — 2026-08-20 — boot budget rebalance: 500 more active.md → doctrines.md
+
+**Problem.** The doctrines.md boot index hit FULL at 35 doctrines — 321 spare
+against the 325 margin floor — so the next doctrine ANY agent wrote was
+gate-blocked (first casualty: Opie's security-spending doctrine, Guy's 08-20
+ruling, which could only fit by degrading eight other claim lines for 44
+chars). Meanwhile active.md idled at 5,435 of 9,000 behind its NO-GROWTH gate.
+
+**Fix.** `STARTUP_BUDGETS`: active.md 9,000 → 8,500; doctrines.md 6,500 →
+7,000. Net zero — the sum stays 38,500, no host sees a larger block (same
+shape as the S220 move, one wall later). Guy approved 2026-08-20. #2391's
+borrowed-against-a-gate caveat now covers the full 1,500: relax
+board-check.py's no-growth gate and this must be restored or re-measured.
+
 ## 2.23.0 — 2026-08-19 — every tool call now leaves a latency record
 
 **Problem.** `mnemo_save`/`mnemo_recall` logged no timing, so a hang that
