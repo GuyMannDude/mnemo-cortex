@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **AgentB server imports are side-effect free; ASGI serving now uses an explicit app factory.**
+  Removed module-level `app = create_app()` from `agentb/server.py`, which previously loaded the
+  user's configured YAML and initialized stores at real production paths on any import. Supported
+  uvicorn launchers now use `agentb.server:create_app --factory`; `python -m agentb.server` uses
+  the same factory contract. A subprocess regression test points `AGENTB_CONFIG` at deliberately
+  invalid YAML and proves a bare module import neither reads it nor constructs an app.
+
 - **Boot: the SIMILARITY MATCHES section is CUT — removed outright, replaced with nothing** (`integrations/mcp-bridge/server.js`; its 2,000-unit budget retired from `boot-budget.js`). Problem this fixes: every boot ran a fixed-phrase semantic recall ("recent session summary, current projects, what happened last") and pasted the top three matches into the payload. That phrase was Guy's stopgap from when Mnemo was the only continuity mechanism; the dated KICKSTART block now does that job and does it better, because authored beats retrieved. Meanwhile the section had become the largest single consumer of the boot budget and was being truncated to fit — CC's 2026-08-14 boot withheld 1,946 characters, 49% of the section, and spent the withheld-characters alarm on it. A retrieved guess was crowding out authored state and firing the alarm meant for real loss. The `MNEMO ERROR` branch went with it: that error existed only to report the failure of this fetch, so no boot signal is lost and every other Mnemo call still fails loudly on its own. Guy's ruling 2026-08-14, executed 08-15; Opie's close-written-query counter-proposal was RETRACTED (#2517), so this is a full removal and must not be reinstated in a smaller form.
 - **Boot budget gate: commented-out budgets no longer count** (`brain/tools/boot-budget-check.py` in sparks-brain-guy). Found while doing the above: the gate parses `STARTUP_BUDGETS` with a `key: value` regex and never stripped `//` comments, so commenting an entry out for the record left it silently counted — the retired `mnemo` key held the reported total at 40,500 when the real figure was 38,500. The parser now strips comments before matching, and the retired entry is deliberately written without the `key: value` shape as a second line of defence.
 

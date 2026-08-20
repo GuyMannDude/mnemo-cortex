@@ -57,7 +57,7 @@ else
     warn "Could not reach ${MNEMO_URL}"
     echo ""
     echo "  Make sure mnemo-cortex is running. To start it:"
-    echo "    cd /path/to/mnemo-cortex && python -m uvicorn agentb.server:app --port 50001"
+    echo "    cd /path/to/mnemo-cortex && python -m uvicorn agentb.server:create_app --factory --port 50001"
     echo ""
     read -rp "Continue anyway? (y/N): " cont
     [[ "$cont" =~ ^[Yy] ]] || exit 1

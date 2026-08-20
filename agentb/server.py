@@ -740,7 +740,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Fail closed on EVERY serving path — this runs under uvicorn/gunicorn
-        # (e.g. `uvicorn agentb.server:app`, the systemd unit) as well as
+        # (e.g. `uvicorn agentb.server:create_app --factory`) as well as
         # `python -m agentb.server`. Refuses to serve a non-loopback bind with
         # no auth unless server.allow_unauthenticated is set.
         assert_safe_auth_posture(config)
@@ -777,7 +777,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # The startup guard above checks the configured bind address, but ASGI
     # launchers can override it (for example: a loopback config launched with
-    # ``uvicorn agentb.server:app --host 0.0.0.0``). Preserve the fail-closed
+    # ``uvicorn agentb.server:create_app --factory --host 0.0.0.0``). Preserve the fail-closed
     # guarantee at request time too: an unauthenticated deployment that has
     # not explicitly opted open may serve loopback clients only, regardless
     # of how the process was actually bound.
@@ -2059,12 +2059,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     return app
 
 
-app = create_app()
-
 if __name__ == "__main__":
     import uvicorn
     cfg = load_config()
     assert_safe_auth_posture(cfg)
     port = int(os.environ["MNEMO_PORT"]) if os.environ.get("MNEMO_PORT") else cfg.server.port
-    uvicorn.run("agentb.server:app", host=cfg.server.host, port=port,
+    uvicorn.run("agentb.server:create_app", factory=True, host=cfg.server.host, port=port,
                 reload=False, log_level=cfg.log_level)
