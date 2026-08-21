@@ -170,7 +170,11 @@ async def _gather_candidates(
                 path = Path(source_file) if source_file else memory_dir / f"{memory_id}.json"
                 try:
                     entry = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
+                except Exception as e:
+                    log.warning(
+                        "Lens candidate %s is unreadable and remains pending for %s: %s",
+                        path, marker, e,
+                    )
                     continue
                 if entry.get(marker):
                     vec_store.mark_lens_processed(memory_id, marker)
@@ -179,6 +183,11 @@ async def _gather_candidates(
                 if len(candidates) >= limit:
                     break
             return candidates
+        log.warning(
+            "Lens %s is using the unbounded legacy disk fallback because the "
+            "vector index contains zero session_log sources",
+            marker,
+        )
         candidates = []
         for path in memory_dir.glob("*.json"):
             try:

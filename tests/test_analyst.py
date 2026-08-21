@@ -106,6 +106,35 @@ def test_candidate_scan_uses_bounded_sql_index(tmp_path, monkeypatch):
     store.close()
 
 
+def test_candidate_scan_warns_for_unreadable_indexed_file(tmp_path, caplog):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    store = VecStore(tmp_path / "vec.sqlite")
+    missing = memory_dir / "missing.json"
+    store.upsert("missing", "entry", list(VEC_A), source_file=missing.as_posix(),
+                 created_at=1.0, category="session_log")
+    with caplog.at_level("WARNING", logger="agentb.analyst"):
+        candidates = asyncio.run(_gather_candidates(
+            memory_dir, 5, marker="analyst_processed", vec_store=store))
+    assert candidates == []
+    assert "unreadable and remains pending" in caplog.text
+    assert str(missing) in caplog.text
+    store.close()
+
+
+def test_candidate_scan_warns_when_legacy_fallback_is_used(tmp_path, caplog):
+    memory_dir = tmp_path / "memory"
+    _seed_log(memory_dir, "log1", "legacy entry")
+    store = VecStore(tmp_path / "vec.sqlite")
+    with caplog.at_level("WARNING", logger="agentb.analyst"):
+        candidates = asyncio.run(_gather_candidates(
+            memory_dir, 5, marker="analyst_processed", vec_store=store))
+    assert [entry["id"] for _, entry in candidates] == ["log1"]
+    assert "unbounded legacy disk fallback" in caplog.text
+    assert "zero session_log sources" in caplog.text
+    store.close()
+
+
 def test_analyze_extracts_persists_and_marks(tmp_path):
     memory_dir = tmp_path / "memory"
     _seed_log(memory_dir, "log1", "CC: we chose Hetzner over artforge self-host for blast radius.")
