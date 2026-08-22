@@ -15,6 +15,9 @@ test rather than waiting for the next stuck-window incident to exercise it.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -33,6 +36,11 @@ def test_dream_prompts_require_stated_line_grammar():
         assert " · " in prompt
         assert "no shorthand" in prompt
         assert "parentheticals" in prompt
+        # First live night of the gate: source data names agents in lowercase
+        # ids and the validator rejects lowercase subjects — the prompt must
+        # bridge that seam explicitly.
+        assert "capitalized subject" in prompt
+        assert "CC, Cody, Opie, Rocky, Dave" in prompt
 
 
 def test_stated_line_gate_pipes_utf8_bytes(monkeypatch, tmp_path):
@@ -376,3 +384,108 @@ def test_boot_dream_budget_is_utf16_units_near_emoji_boundary():
     source = "# What changed\n\n" + ("x" * 35) + ("😀" * 10)
     result = dream._compose_boot_dream(source, 70)
     assert len(result.encode("utf-16-le")) // 2 <= 70
+
+
+# ---------------------------------------------------------------------------
+# Rollup validation retry + quarantine (added after the gate's first live
+# night, 2026-08-21: 79 SUBJECT violations from lowercase agent ids discarded
+# the whole paid synthesis — degrade to raw, never to nothing).
+# ---------------------------------------------------------------------------
+
+def _synthesize_with_fakes(monkeypatch, tmp_path, rollup_results, failing_texts):
+    """Run synthesize() with the LLM and validator faked.
+
+    rollup_results: successive stage-2 responses — a str is returned, a
+    RuntimeError instance is raised (fault injection for the retry call).
+    failing_texts: payloads the fake validator rejects.
+    Returns (result, rollup_inputs).
+    """
+    monkeypatch.setattr(dream, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
+    monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
+    remaining = list(rollup_results)
+    rollup_inputs = []
+
+    def fake_call(system, content, max_tokens=4096):
+        if system is dream.PER_AGENT_SYSTEM_PROMPT:
+            return "agent brief", {}
+        rollup_inputs.append(content)
+        result = remaining.pop(0)
+        if isinstance(result, RuntimeError):
+            raise result
+        return result, {}
+
+    def fake_validate(payload):
+        if payload in failing_texts:
+            raise RuntimeError("stated-line validation failed:\nSUBJECT claim starts lowercase: cc")
+
+    monkeypatch.setattr(dream, "_call_openrouter_adaptive", fake_call)
+    monkeypatch.setattr(dream, "_validate_stated_lines", fake_validate)
+    return dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}]), rollup_inputs
+
+
+def _read_single_quarantine(tmp_path):
+    rejected = list(tmp_path.glob("rejected-*"))
+    assert len(rejected) == 1
+    # The quarantine must stay invisible to the real consumers' globs:
+    # agentb/server.py /dream/latest globs *.md, the dreamer memory dir *.json.
+    assert not list(tmp_path.glob("*.md"))
+    assert not list(tmp_path.glob("*.json"))
+    return rejected[0].read_text(encoding="utf-8")
+
+
+def test_rollup_retry_recovers_from_validation_failure(monkeypatch, tmp_path):
+    result, rollup_inputs = _synthesize_with_fakes(
+        monkeypatch, tmp_path, ["bad rollup", "good rollup"], {"bad rollup"})
+    assert result == "good rollup"
+    # The retry prompt must carry the validator's report back to the model.
+    assert len(rollup_inputs) == 2
+    assert "REJECTED" in rollup_inputs[1]
+    assert "starts lowercase" in rollup_inputs[1]
+    # A recovered run leaves no quarantine file behind.
+    assert not list(tmp_path.glob("rejected-*"))
+
+
+def test_rollup_double_failure_quarantines_and_raises(monkeypatch, tmp_path):
+    with pytest.raises(RuntimeError, match="stated-line validation"):
+        _synthesize_with_fakes(
+            monkeypatch, tmp_path, ["bad one", "bad two"], {"bad one", "bad two"})
+    body = _read_single_quarantine(tmp_path)
+    assert "bad two" in body           # the final attempt is preserved
+    assert "RETRY attempt" in body     # and labeled as the retry's text
+    assert "starts lowercase" in body  # with the validator's report
+
+
+def test_rollup_retry_call_failure_quarantines_first_attempt(monkeypatch, tmp_path):
+    # The retry API call dying must not masquerade as a validation failure:
+    # the FIRST attempt's text is preserved and labeled as such.
+    with pytest.raises(RuntimeError, match="OpenRouter 502"):
+        _synthesize_with_fakes(
+            monkeypatch, tmp_path,
+            ["bad one", RuntimeError("OpenRouter 502: bad gateway")], {"bad one"})
+    body = _read_single_quarantine(tmp_path)
+    assert "bad one" in body
+    assert "FIRST attempt" in body
+    assert "OpenRouter 502" in body
+
+
+_BRAIN_DIR = os.environ.get("BRAIN_DIR", "").strip()
+_REAL_CHECKER = Path(_BRAIN_DIR) / "tools" / "stated-line-check.py" if _BRAIN_DIR else None
+
+
+@pytest.mark.skipif(not (_REAL_CHECKER and _REAL_CHECKER.is_file()),
+                    reason="BRAIN_DIR with tools/stated-line-check.py not available")
+def test_capitalized_agent_lines_pass_the_real_checker():
+    # The 2026-08-21 failure shipped because producer and validator had only
+    # ever met through fakes. Where the real checker is present (dev hosts,
+    # the deployed runtime), prove lines shaped like the new prompt rules
+    # actually pass it.
+    lines = "\n".join([
+        "CC used Bash to set a watcher for the sixteen hundred digest · CC · 2026-08-20T22:01:11 · done",
+        "Cody accepted the cadence split after reviewing the spec · Cody · 2026-08-20 · accepted",
+        "Opie shipped the bounded build specification for sec-watch · Opie · 2026-08-20 · shipped",
+    ])
+    proc = subprocess.run(
+        [sys.executable, str(_REAL_CHECKER), "--check", "-"],
+        input=lines.encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.returncode == 0, proc.stdout.decode("utf-8", errors="replace")

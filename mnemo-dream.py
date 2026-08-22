@@ -424,7 +424,7 @@ Be specific. Names, paths, versions, error messages. No fluff. Lead with the age
 
 Every non-header output line MUST be exactly one stated line in this grammar:
 <one factual claim with an explicit subject> · <owner> · <ISO timestamp> · <one-token status>
-Use the literal middle-dot separator with one space on each side. Write 8-20 lines. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. The owner is the agent or person responsible for the claim, not the summarizer."""
+Use the literal middle-dot separator with one space on each side. Write 8-20 lines. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. The owner is the agent or person responsible for the claim, not the summarizer. Begin every claim with its capitalized subject: write agent names as CC, Cody, Opie, Rocky, Dave — never the lowercase ids that appear in the source data (cc, cody, opie, rocky, dave). Never open a claim with a bare verb such as Fixed, Shipped, Added, or Updated — name the actor first."""
 
 ROLLUP_SYSTEM_PROMPT = """You are the cross-agent memory synthesizer.
 
@@ -440,7 +440,7 @@ Be specific. Names, paths, versions, error messages. No fluff. Use the markdown 
 
 Every non-header output line MUST be exactly one stated line in this grammar:
 <one factual claim with an explicit subject> · <owner> · <ISO timestamp> · <one-token status>
-Use the literal middle-dot separator with one space on each side. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. Preserve each source line's owner and timestamp; never invent either. This brief will be injected into each agent's startup context."""
+Use the literal middle-dot separator with one space on each side. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. Preserve each source line's owner and timestamp; never invent either. Begin every claim with its capitalized subject: write agent names as CC, Cody, Opie, Rocky, Dave — never the lowercase ids that appear in the source data (cc, cody, opie, rocky, dave). Never open a claim with a bare verb such as Fixed, Shipped, Added, or Updated — name the actor first. This brief will be injected into each agent's startup context."""
 
 
 def _validate_stated_lines(payload: str) -> None:
@@ -471,6 +471,37 @@ def _validate_stated_lines(payload: str) -> None:
     if "ZERO stated lines found" in report:
         raise RuntimeError(f"stated-line validation checked no claims:\n{report}")
     log.info("  stated-line validation passed")
+
+
+def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: str) -> None:
+    """Preserve a gate-rejected rollup for diagnosis (degrade to raw, never to nothing).
+
+    The ``rejected-<date>.txt`` name is invisible to the server's ``*.md``
+    brief glob and the dreamer's ``*.json`` memory glob, so a quarantined text
+    can never be served as a brief. Like every other on-disk write of LLM
+    output, the payload goes through the redaction choke point first — and this
+    path fires precisely on malformed-output nights, when a slipped secret is
+    most likely.
+    """
+    body = (f"# Dream rollup quarantined — stated-line gate did not pass\n"
+            f"# First attempt's violation report:\n{first_report}\n\n"
+            f"# Outcome of the corrective retry:\n{outcome_note}\n\n"
+            f"# Preserved text follows\n\n{rejected_text}\n")
+    try:
+        from agentb.redact import redact_text
+        body, red_counts = redact_text(body)
+        if red_counts:
+            log.warning(f"🔒 Redacted {sum(red_counts.values())} secret(s) from quarantined rollup: "
+                        + ", ".join(f"{k}×{v}" for k, v in red_counts.items()))
+    except ImportError:
+        log.warning("agentb.redact unavailable — quarantined rollup written unredacted")
+    reject_path = DREAM_DIR / f"rejected-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.txt"
+    try:
+        DREAM_DIR.mkdir(parents=True, exist_ok=True)
+        reject_path.write_text(body, encoding="utf-8")
+        log.error(f"  rejected rollup preserved at {reject_path}")
+    except OSError as e:
+        log.error(f"  could not preserve rejected rollup: {e}")
 
 
 def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
@@ -652,9 +683,47 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         sys.exit(1)
     total_prompt_tokens += usage.get("prompt_tokens", 0)
     total_completion_tokens += usage.get("completion_tokens", 0)
+    llm_calls = len(per_agent_briefs) + 1
 
-    _validate_stated_lines(dream_text)
-    log.info(f"LLM usage total: {total_prompt_tokens} prompt, {total_completion_tokens} completion ({len(by_agent)+1} calls)")
+    try:
+        try:
+            _validate_stated_lines(dream_text)
+        except RuntimeError as first_err:
+            # First live night of the gate (2026-08-21) rejected 79 lines and
+            # the whole paid synthesis was discarded. One corrective retry:
+            # hand the model its own violation report; if the gate still
+            # rejects, quarantine the text (degrade to raw, never to nothing)
+            # and keep failing loud.
+            log.warning(f"  stated-line validation rejected the rollup, retrying once:\n{first_err}")
+            retry_input = (
+                f"{rollup_input}\n\n---\n\n# YOUR PREVIOUS ATTEMPT WAS REJECTED\n"
+                f"The grammar validator reported:\n{first_err}\n\n"
+                "Rewrite the complete brief so every stated line conforms: four "
+                "fields separated by middle dots, one sentence per claim, and "
+                "every claim begins with its capitalized subject (CC, Cody, "
+                "Opie, Rocky, Dave — never lowercase agent ids, never a bare "
+                "verb).")
+            try:
+                retry_text, usage = _call_openrouter_adaptive(
+                    ROLLUP_SYSTEM_PROMPT, retry_input, max_tokens=4096)
+            except RuntimeError as retry_call_err:
+                _quarantine_rejected(dream_text, str(first_err),
+                                     "the corrective retry CALL itself failed, so the preserved "
+                                     f"text is the FIRST attempt: {retry_call_err}")
+                raise
+            total_prompt_tokens += usage.get("prompt_tokens", 0)
+            total_completion_tokens += usage.get("completion_tokens", 0)
+            llm_calls += 1
+            try:
+                _validate_stated_lines(retry_text)
+            except RuntimeError as second_err:
+                _quarantine_rejected(retry_text, str(first_err),
+                                     "the retry was also rejected, so the preserved text is the "
+                                     f"RETRY attempt:\n{second_err}")
+                raise
+            dream_text = retry_text
+    finally:
+        log.info(f"LLM usage total: {total_prompt_tokens} prompt, {total_completion_tokens} completion ({llm_calls} calls)")
     return dream_text
 
 
