@@ -386,6 +386,23 @@ def test_boot_dream_budget_is_utf16_units_near_emoji_boundary():
     assert len(result.encode("utf-16-le")) // 2 <= 70
 
 
+def test_boot_dream_trims_oversized_sections_instead_of_dropping_everything():
+    source = (
+        "# What was built or shipped\n\n"
+        "Cody shipped the first important change.\n"
+        "Cody shipped the second important change.\n"
+        "Cody shipped the third important change.\n\n"
+        "Cody shipped the fourth important change.\n"
+        "Cody shipped the fifth important change.\n\n"
+        "# Lessons learned\n\n" + ("background line\n" * 20)
+    )
+    result = dream._compose_boot_dream(source, 190)
+    assert "# What was built or shipped" in result
+    assert "Cody shipped the first important change." in result
+    assert "(trimmed)" in result
+    assert len(result.encode("utf-16-le")) // 2 <= 190
+
+
 # ---------------------------------------------------------------------------
 # Rollup validation retry + quarantine (added after the gate's first live
 # night, 2026-08-21: 79 SUBJECT violations from lowercase agent ids discarded
@@ -467,6 +484,29 @@ def test_rollup_retry_call_failure_quarantines_first_attempt(monkeypatch, tmp_pa
     assert "bad one" in body
     assert "FIRST attempt" in body
     assert "OpenRouter 502" in body
+
+
+def test_rollup_double_failure_drops_only_named_bad_lines(monkeypatch, tmp_path):
+    monkeypatch.setattr(dream, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
+    monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
+    responses = iter(["agent brief", "bad first", "# Decisions\ngood line\nbad line"])
+    monkeypatch.setattr(
+        dream, "_call_openrouter_adaptive",
+        lambda *args, **kwargs: (next(responses), {}))
+
+    def validate(payload):
+        if payload == "bad first":
+            raise RuntimeError("stated-line validation failed:\nline 1 FIELDS")
+        if payload.endswith("bad line"):
+            raise RuntimeError("stated-line validation failed:\n         line 3    STATUS")
+
+    monkeypatch.setattr(dream, "_validate_stated_lines", validate)
+    result = dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}])
+    assert "good line" in result
+    assert "bad line" not in result
+    assert result.endswith("DROPPED: 1 invalid stated line(s) after corrective retry")
+    assert not list(tmp_path.glob("rejected-*"))
 
 
 _BRAIN_DIR = os.environ.get("BRAIN_DIR", "").strip()

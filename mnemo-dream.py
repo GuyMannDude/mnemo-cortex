@@ -81,7 +81,7 @@ def _boot_budget(name: str) -> int:
 
 
 def _compose_boot_dream(text: str, budget: int) -> str:
-    """Keep complete Markdown sections in boot priority order and name loss."""
+    """Keep high-priority Markdown lines within budget and name every loss."""
     def units(value: str) -> int:
         return len(value.encode("utf-16-le")) // 2
 
@@ -106,23 +106,77 @@ def _compose_boot_dream(text: str, budget: int) -> str:
         return 2
 
     ordered = sorted(enumerate(sections), key=lambda pair: (rank(pair[1][0]), pair[0]))
-    kept = []
-    dropped = []
+    kept: list[tuple[str, str]] = []
+    dropped: list[str] = []
+
+    def rendered(extra: str | None = None, losses: list[str] | None = None) -> str:
+        parts = [body for _, body in kept]
+        if extra:
+            parts.append(extra)
+        named = dropped if losses is None else losses
+        parts.append(f"DROPPED: {', '.join(named) if named else 'nothing'}")
+        return "\n\n".join(parts)
+
     for _, (name, body) in ordered:
-        prospective = kept + [body]
-        line = f"DROPPED: {', '.join(dropped) if dropped else 'nothing'}"
-        if units("\n\n".join(prospective + [line])) <= budget:
-            kept.append(body)
+        if units(rendered(body)) <= budget:
+            kept.append((name, body))
+            continue
+
+        # Keep the heading/preamble plus the largest prefix of COMPLETE lines.
+        # Stated lines are atomic; slicing characters would manufacture an
+        # invalid claim that had never existed in the validated full brief.
+        lines = body.splitlines()
+        prefix: list[str] = []
+        content_lines = 0
+        for raw in lines:
+            candidate = "\n".join(prefix + [raw]).strip()
+            losses = dropped + [f"{name} (trimmed)"]
+            if not candidate or units(rendered(candidate, losses)) > budget:
+                if candidate:
+                    break
+                continue
+            prefix.append(raw)
+            if raw.strip() and not raw.lstrip().startswith("#"):
+                content_lines += 1
+        fragment = "\n".join(prefix).strip()
+        if fragment and content_lines:
+            kept.append((name, fragment))
+            dropped.append(f"{name} (trimmed)")
         else:
             dropped.append(name)
-    line = f"DROPPED: {', '.join(dropped) if dropped else 'nothing'}"
-    while kept and units("\n\n".join(kept + [line])) > budget:
-        removed = kept.pop()
-        dropped.insert(0, re.sub(r"^#{1,3}\s+", "", removed.splitlines()[0]).strip())
-        line = f"DROPPED: {', '.join(dropped)}"
-    result = "\n\n".join(kept + [line])
+
+    result = rendered()
+    # Later loss identifiers can grow the final line. Reclaim complete lines
+    # from the lowest-priority kept section instead of evicting it wholesale.
+    while kept and units(result) > budget:
+        name, body = kept[-1]
+        lines = body.splitlines()
+        removable = next(
+            (index for index in range(len(lines) - 1, -1, -1)
+             if lines[index].strip() and not lines[index].lstrip().startswith("#")),
+            None,
+        )
+        if removable is None:
+            kept.pop()
+            if name not in dropped and f"{name} (trimmed)" not in dropped:
+                dropped.append(name)
+        else:
+            del lines[removable]
+            fragment = "\n".join(lines).strip()
+            if any(line.strip() and not line.lstrip().startswith("#") for line in lines):
+                kept[-1] = (name, fragment)
+                if name not in dropped and f"{name} (trimmed)" not in dropped:
+                    dropped.append(f"{name} (trimmed)")
+            else:
+                kept.pop()
+                trimmed = f"{name} (trimmed)"
+                if trimmed in dropped:
+                    dropped[dropped.index(trimmed)] = name
+                elif name not in dropped:
+                    dropped.append(name)
+        result = rendered()
     if units(result) > budget:
-        result = "DROPPED: identifier list exceeds boot budget"
+        raise RuntimeError("boot dream composer exceeded its reserved budget")
     return result
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -424,7 +478,7 @@ Be specific. Names, paths, versions, error messages. No fluff. Lead with the age
 
 Every non-header output line MUST be exactly one stated line in this grammar:
 <one factual claim with an explicit subject> · <owner> · <ISO timestamp> · <one-token status>
-Use the literal middle-dot separator with one space on each side. Write 8-20 lines. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. The owner is the agent or person responsible for the claim, not the summarizer. Begin every claim with its capitalized subject: write agent names as CC, Cody, Opie, Rocky, Dave — never the lowercase ids that appear in the source data (cc, cody, opie, rocky, dave). Never open a claim with a bare verb such as Fixed, Shipped, Added, or Updated — name the actor first."""
+Use the literal middle-dot separator with one space on each side. Write 8-20 lines. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. The owner is the agent or person responsible for the claim, not the summarizer. The status MUST be exactly one token chosen from: shipped, fixed, decided, blocked, pending, learned, verified, watching, parked, or in-progress. Write learned, never lessons learned. Begin every claim with its capitalized subject: write agent names as CC, Cody, Opie, Rocky, Dave — never the lowercase ids that appear in the source data (cc, cody, opie, rocky, dave). Never open a claim with a bare verb such as Fixed, Shipped, Added, or Updated — name the actor first."""
 
 ROLLUP_SYSTEM_PROMPT = """You are the cross-agent memory synthesizer.
 
@@ -440,7 +494,7 @@ Be specific. Names, paths, versions, error messages. No fluff. Use the markdown 
 
 Every non-header output line MUST be exactly one stated line in this grammar:
 <one factual claim with an explicit subject> · <owner> · <ISO timestamp> · <one-token status>
-Use the literal middle-dot separator with one space on each side. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. Preserve each source line's owner and timestamp; never invent either. Begin every claim with its capitalized subject: write agent names as CC, Cody, Opie, Rocky, Dave — never the lowercase ids that appear in the source data (cc, cody, opie, rocky, dave). Never open a claim with a bare verb such as Fixed, Shipped, Added, or Updated — name the actor first. This brief will be injected into each agent's startup context."""
+Use the literal middle-dot separator with one space on each side. Put one claim on each line. Use full English words: no shorthand, arrows, parentheticals, dangling attributes, or multiple sentences. Preserve each source line's owner and timestamp; never invent either. The status MUST be exactly one token chosen from: shipped, fixed, decided, blocked, pending, learned, verified, watching, parked, or in-progress. Write learned, never lessons learned. Begin every claim with its capitalized subject: write agent names as CC, Cody, Opie, Rocky, Dave — never the lowercase ids that appear in the source data (cc, cody, opie, rocky, dave). Never open a claim with a bare verb such as Fixed, Shipped, Added, or Updated — name the actor first. This brief will be injected into each agent's startup context."""
 
 
 def _validate_stated_lines(payload: str) -> None:
@@ -471,6 +525,24 @@ def _validate_stated_lines(payload: str) -> None:
     if "ZERO stated lines found" in report:
         raise RuntimeError(f"stated-line validation checked no claims:\n{report}")
     log.info("  stated-line validation passed")
+
+
+def _drop_invalid_stated_lines(payload: str, report: str) -> tuple[str, int]:
+    """Remove only lines named by the validator and append an explicit loss report.
+
+    This is used only after the model's corrective retry also fails. The caller
+    must validate the returned payload again before it can be persisted.
+    """
+    bad_lines = {int(value) for value in re.findall(r"(?m)^\s*line\s+(\d+)\s+", report)}
+    if not bad_lines:
+        return payload, 0
+    lines = payload.splitlines()
+    valid_indexes = {index for index in bad_lines if 1 <= index <= len(lines)}
+    if not valid_indexes:
+        return payload, 0
+    kept = [line for index, line in enumerate(lines, 1) if index not in valid_indexes]
+    kept.append(f"DROPPED: {len(valid_indexes)} invalid stated line(s) after corrective retry")
+    return "\n".join(kept).strip(), len(valid_indexes)
 
 
 def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: str) -> None:
@@ -700,6 +772,8 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
                 f"The grammar validator reported:\n{first_err}\n\n"
                 "Rewrite the complete brief so every stated line conforms: four "
                 "fields separated by middle dots, one sentence per claim, and "
+                "a one-token status chosen from shipped, fixed, decided, blocked, "
+                "pending, learned, verified, watching, parked, or in-progress. "
                 "every claim begins with its capitalized subject (CC, Cody, "
                 "Opie, Rocky, Dave — never lowercase agent ids, never a bare "
                 "verb).")
@@ -717,11 +791,29 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
             try:
                 _validate_stated_lines(retry_text)
             except RuntimeError as second_err:
-                _quarantine_rejected(retry_text, str(first_err),
-                                     "the retry was also rejected, so the preserved text is the "
-                                     f"RETRY attempt:\n{second_err}")
-                raise
-            dream_text = retry_text
+                salvaged_text, dropped_count = _drop_invalid_stated_lines(
+                    retry_text, str(second_err))
+                if dropped_count:
+                    try:
+                        _validate_stated_lines(salvaged_text)
+                    except RuntimeError as salvage_err:
+                        _quarantine_rejected(
+                            retry_text, str(first_err),
+                            "the retry and per-line salvage were rejected; preserved text is "
+                            f"the RETRY attempt:\n{second_err}\n\nSalvage:\n{salvage_err}")
+                        raise
+                    log.warning(
+                        "  corrective retry still malformed; dropped %d invalid line(s) and "
+                        "preserved the validated remainder", dropped_count)
+                    dream_text = salvaged_text
+                else:
+                    _quarantine_rejected(retry_text, str(first_err),
+                                         "the retry was also rejected and its report named no "
+                                         "salvageable line numbers; preserved text is the RETRY "
+                                         f"attempt:\n{second_err}")
+                    raise
+            else:
+                dream_text = retry_text
     finally:
         log.info(f"LLM usage total: {total_prompt_tokens} prompt, {total_completion_tokens} completion ({llm_calls} calls)")
     return dream_text
