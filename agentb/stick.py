@@ -569,13 +569,16 @@ class SyncReport:
     brain: str = "not configured"   # no brain_repo on this host
     facts_to_host: int = 0
     facts_to_stick: int = 0
+    history_to_host: int = 0      # 4.21.2: origin fact_history rows carried
+    history_to_stick: int = 0
 
     @property
     def changed(self) -> bool:
         return bool(self.to_stick or self.to_host or self.deleted_on_stick
                     or self.deleted_on_host or self.merged_jsonl
                     or self.conflicts or self.brain in ("pushed", "merged")
-                    or self.facts_to_host or self.facts_to_stick)
+                    or self.facts_to_host or self.facts_to_stick
+                    or self.history_to_host or self.history_to_stick)
 
 
 def _scan(root: Path, pattern: str, transform=None) -> dict[str, str]:
@@ -1214,11 +1217,15 @@ def sync(
 
         def _facts(rep: SyncReport, files: dict, dry: bool = False) -> None:
             nonlocal facts_bytes
-            from agentb.stick_facts import sync_facts
+            from agentb.stick_facts import sync_fact_history, sync_facts
             stick_id = _load_json(stick / "passport.json", {}).get("stick_id", "")
+            db = data_dir / "facts.sqlite"
             rep.facts_to_host, rep.facts_to_stick, _, facts_bytes = sync_facts(
-                data_dir / "facts.sqlite", stick, codec, stick_id, files,
-                dry_run=dry)
+                db, stick, codec, stick_id, files, dry_run=dry)
+            # history rides after the rows it describes (4.21.2)
+            rep.history_to_host, rep.history_to_stick, _, hist_bytes = \
+                sync_fact_history(db, stick, codec, files, dry_run=dry)
+            facts_bytes += hist_bytes
 
         if facts:                        # plan the facts merge dry, like channels
             _facts(plan, dict(manifest_files), dry=True)
@@ -1233,7 +1240,8 @@ def sync(
 
         # ── 4. free-space, sized from the plan (incl. the facts payload) ──
         need = _plan_need_bytes(channels, plan, encrypted=codec.encrypted)
-        if facts and (plan.facts_to_stick or plan.facts_to_host):
+        if facts and (plan.facts_to_stick or plan.facts_to_host
+                      or plan.history_to_stick or plan.history_to_host):
             need += facts_bytes
         free = shutil.disk_usage(stick).free
         if need + FREE_SPACE_MARGIN > free:

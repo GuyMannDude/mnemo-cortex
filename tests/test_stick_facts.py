@@ -273,3 +273,129 @@ def test_courier_never_clobbers_concurrent_live_write(world):
     assert applied == 0
     fact = store(b).get("e", "k")
     assert fact.value == "live-verified" and fact.confidence == "verified"
+
+
+# ── 4.21.2: fact_history travels (the S04 offline-carry finding) ──
+
+from agentb.stick_facts import HISTORY_REL, history_row_id  # noqa: E402
+
+
+def history_of(host: Path, entity: str, attribute: str) -> list[dict]:
+    return store(host).history(entity, attribute)
+
+
+def test_receiving_host_can_answer_what_it_used_to_be(world):
+    """S04 finding: B answered '40w' but not 'what did it used to be'."""
+    a, b, stick = world
+    s = store(a)
+    s.save(entity="lamp", attribute="power", value="30w",
+           confidence="verified", evidence_source="test", source_agent="cc")
+    s.save(entity="lamp", attribute="power", value="40w",
+           confidence="verified", evidence_source="test", source_agent="cc")
+    assert [h["new_value"] for h in history_of(a, "lamp", "power")] == ["40w", "30w"]
+    courier(a, stick, "host-a")
+    r = courier(b, stick, "host-b")
+    assert r.history_to_host == 2
+    origin = [h for h in history_of(b, "lamp", "power")
+              if not str(h["changed_by"] or "").startswith("stick:")]
+    assert [h["new_value"] for h in origin] == ["40w", "30w"]
+    assert origin[0]["old_value"] == "30w"          # the fact's past is now on B
+    assert store(b).get("lamp", "power").value == "40w"
+
+
+def test_history_merge_is_idempotent_and_courier_rows_stay_local(world):
+    a, b, stick = world
+    store(a).save(entity="e", attribute="k", value="v",
+                  confidence="verified", evidence_source="test")
+    courier(a, stick, "host-a")
+    courier(b, stick, "host-b")
+    manifest = json.loads((stick / "manifest.json").read_text())
+    ver_before = manifest["files"][HISTORY_REL]["version"]
+    for hid, host in (("host-b", b), ("host-a", a)):
+        r = courier(host, stick, hid)
+        assert not r.changed, f"{hid} re-sync was not a no-op"
+        assert (r.history_to_host, r.history_to_stick) == (0, 0)
+    manifest = json.loads((stick / "manifest.json").read_text())
+    assert manifest["files"][HISTORY_REL]["version"] == ver_before
+    # B's courier audit row never crossed back to A
+    assert not any(str(h["changed_by"] or "").startswith("stick:")
+                   for h in history_of(a, "e", "k"))
+    # and A's origin row exists exactly once on B
+    ids = [history_row_id(h) for h in history_of(b, "e", "k")
+           if not str(h["changed_by"] or "").startswith("stick:")]
+    assert len(ids) == len(set(ids)) == 1
+
+
+def test_history_is_ciphertext_and_manifest_covered(world):
+    from agentb.stick import StickError
+    a, b, stick = world
+    store(a).save(entity="e", attribute="k", value="secret-value",
+                  confidence="verified", evidence_source="test")
+    courier(a, stick, "host-a")
+    p = stick / HISTORY_REL
+    assert p.is_file() and b"secret-value" not in p.read_bytes()
+    raw = bytearray(p.read_bytes())
+    raw[-1] ^= 0xFF
+    p.write_bytes(bytes(raw))
+    with pytest.raises(StickError, match="TORN GENERATION"):
+        courier(b, stick, "host-b")
+
+
+def test_demotion_history_travels_both_ways(world):
+    """Two hosts each contribute origin rows; both end with the union."""
+    a, b, stick = world
+    store(a).save(entity="e", attribute="k", value="v",
+                  confidence="verified", evidence_source="test")
+    courier(a, stick, "host-a")
+    courier(b, stick, "host-b")
+    store(b).demote("e", "k", reason="proven wrong", changed_by="opie")
+    courier(b, stick, "host-b")
+    r = courier(a, stick, "host-a")
+    assert r.history_to_host == 1
+    reasons = {h["reason"] for h in history_of(a, "e", "k")}
+    assert "demote: proven wrong" in reasons
+
+
+def test_locked_history_table_aborts_instead_of_duplicating(world, monkeypatch):
+    """Reviewer finding: a swallowed OperationalError read as 'no history'
+    and re-imported the whole stick log. A real error must propagate."""
+    import agentb.stick_facts as sf
+    a, b, stick = world
+    store(a).save(entity="e", attribute="k", value="v",
+                  confidence="verified", evidence_source="test")
+    courier(a, stick, "host-a")
+    courier(b, stick, "host-b")
+    real_connect = sqlite3.connect
+
+    class LockedConn(sqlite3.Connection):
+        def execute(self, sql, *p):
+            if "FROM fact_history" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, *p)
+
+    def locked_connect(path, *args, **kw):
+        if str(path).endswith("facts.sqlite"):
+            kw["factory"] = LockedConn
+        return real_connect(path, *args, **kw)
+
+    monkeypatch.setattr(sf.sqlite3, "connect", locked_connect)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        courier(b, stick, "host-b")
+    monkeypatch.undo()
+    r = courier(b, stick, "host-b")
+    assert (r.history_to_host, r.history_to_stick) == (0, 0)
+    ids = [history_row_id(h) for h in history_of(b, "e", "k")
+           if not str(h["changed_by"] or "").startswith("stick:")]
+    assert len(ids) == len(set(ids)) == 1
+
+
+def test_pre_history_facts_db_is_just_empty_history(world):
+    a, b, stick = world
+    conn = sqlite3.connect(str(a / "facts.sqlite"))
+    conn.execute("CREATE TABLE facts (entity TEXT, attribute TEXT, value TEXT, "
+                 "confidence TEXT, evidence_source TEXT, source_memory_id TEXT, "
+                 "source_agent TEXT, created_at REAL, last_updated REAL, "
+                 "PRIMARY KEY (entity, attribute))")
+    conn.commit(); conn.close()
+    from agentb.stick_facts import dump_history
+    assert dump_history(a / "facts.sqlite") == []

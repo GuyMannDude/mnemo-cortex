@@ -1602,6 +1602,9 @@ def _stick_report(report) -> None:
     if report.facts_to_host or report.facts_to_stick:
         console.print(f"  [bold]facts[/]: {report.facts_to_host} → host, "
                       f"{report.facts_to_stick} → stick")
+    if report.history_to_host or report.history_to_stick:
+        console.print(f"  [bold]fact history[/]: {report.history_to_host} → host, "
+                      f"{report.history_to_stick} → stick")
     for w in report.warnings:
         console.print(f"  [yellow]⚠ {w}[/]")
     for c in report.conflicts:
@@ -1819,6 +1822,9 @@ def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
             if report.facts_to_host or report.facts_to_stick:
                 bits.append(f"facts {report.facts_to_host} in / "
                             f"{report.facts_to_stick} out")
+            if report.history_to_host or report.history_to_stick:
+                bits.append(f"history {report.history_to_host} in / "
+                            f"{report.history_to_stick} out")
             if report.brain not in ("not configured", "skipped", "clean"):
                 bits.append(f"brain {report.brain}")
             if report.conflicts:

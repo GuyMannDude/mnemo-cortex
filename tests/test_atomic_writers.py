@@ -158,3 +158,112 @@ def test_classify_reclassify_write_is_atomic(tmp_path, monkeypatch):
 
 
 # ── F3: legacy over-cap L2 index must not be truncated on first add ──
+
+
+# ── 4.21.2: durable past a power cut, not just a process crash ──
+
+def test_atomic_write_text_fsyncs_file_before_replace_and_dir_after(tmp_path, monkeypatch):
+    """S06 finding: tmp + os.replace alone is process-crash durable only.
+    Order matters — the file's bytes must reach the medium BEFORE the rename
+    makes them the truth, and the directory entry after."""
+    import os as _os
+    import stat as _stat
+    from agentb import fsutil
+    events: list[tuple] = []
+    real_fsync, real_replace = _os.fsync, _os.replace
+
+    def spy_fsync(fd):
+        st = _os.fstat(fd)
+        events.append(("fsync", "dir" if _stat.S_ISDIR(st.st_mode) else "file"))
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        events.append(("replace", Path(src).suffix))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(fsutil.os, "fsync", spy_fsync)
+    monkeypatch.setattr(fsutil.os, "replace", spy_replace)
+    target = tmp_path / "mem.json"
+    atomic_write_text(target, '{"durable": true}')
+    assert json.loads(target.read_text()) == {"durable": True}
+    assert events[:2] == [("fsync", "file"), ("replace", ".tmp")]
+    assert ("fsync", "dir") in events[2:]   # dir fsync may be refused on odd FS
+
+
+def test_atomic_write_bytes_fsyncs_file_before_replace(tmp_path, monkeypatch):
+    import os as _os
+    import stat as _stat
+    from agentb import fsutil
+    from agentb.fsutil import atomic_write_bytes
+    events: list[tuple] = []
+    real_fsync, real_replace = _os.fsync, _os.replace
+
+    def spy_fsync(fd):
+        events.append(("fsync", "dir" if _stat.S_ISDIR(_os.fstat(fd).st_mode) else "file"))
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        events.append(("replace", Path(src).suffix))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(fsutil.os, "fsync", spy_fsync)
+    monkeypatch.setattr(fsutil.os, "replace", spy_replace)
+    atomic_write_bytes(tmp_path / "blob.bin", b"\x00\x01")
+    assert (tmp_path / "blob.bin").read_bytes() == b"\x00\x01"
+    assert events[:2] == [("fsync", "file"), ("replace", ".tmp")]
+
+
+def test_dir_fsync_itself_refused_does_not_fail_the_write(tmp_path, monkeypatch):
+    """The other half of the claim: the directory opens but fsync on it
+    raises (some filesystems). The file fsync must still be loud, so only
+    the directory fd is refused."""
+    import os as _os
+    import stat as _stat
+    from agentb import fsutil
+    real_fsync = _os.fsync
+
+    def refusing_dir_fsync(fd):
+        if _stat.S_ISDIR(_os.fstat(fd).st_mode):
+            raise OSError(22, "fsync on a directory is not supported here")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(fsutil.os, "fsync", refusing_dir_fsync)
+    target = tmp_path / "mem.json"
+    atomic_write_text(target, '{"ok": 2}')
+    assert json.loads(target.read_text()) == {"ok": 2}
+
+
+def test_tmp_reopen_refused_does_not_fail_the_write(tmp_path, monkeypatch):
+    """Windows AV sharing violation on the moment-old tmp: the write must
+    still land (reviewer finding, 4.21.2)."""
+    import builtins
+    from agentb import fsutil
+    real_open = builtins.open
+
+    def refusing_reopen(file, mode="r", *a, **k):
+        if mode == "r+b" and str(file).endswith(".tmp"):
+            raise PermissionError(32, "The process cannot access the file")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", refusing_reopen)
+    target = tmp_path / "mem.json"
+    atomic_write_text(target, '{"ok": 3}')
+    assert json.loads(target.read_text()) == {"ok": 3}
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_dir_fsync_refusal_does_not_fail_the_write(tmp_path, monkeypatch):
+    """Windows cannot open a directory; some filesystems refuse fsync on one.
+    Either way the write must still land."""
+    from agentb import fsutil
+    real_open = fsutil.os.open
+
+    def refusing_open(path, flags, *a, **k):
+        if Path(path).is_dir():
+            raise PermissionError("directories are not openable here")
+        return real_open(path, flags, *a, **k)
+
+    monkeypatch.setattr(fsutil.os, "open", refusing_open)
+    target = tmp_path / "mem.json"
+    atomic_write_text(target, '{"ok": 1}')
+    assert json.loads(target.read_text()) == {"ok": 1}

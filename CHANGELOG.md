@@ -1,5 +1,57 @@
 # Changelog
 
+## v4.21.2 — Durable writes and travelling history (2026-09-10)
+
+Two findings from the Memory Challenge harness, both boring, both real.
+
+Problem 1 (S06 crash durability): memory JSON went through
+`atomic_write_text` as tmp + `os.replace` with no fsync of the file or
+the directory. That is process-crash durable — the S06 SIGKILL test
+passed 8/8 — but a power cut between the rename and the kernel's
+writeback could lose an acknowledged memory. The ledger seal already
+fsynced; the memory it sealed did not.
+
+Fix: `atomic_write_text` and `atomic_write_bytes` fsync the temp file
+before the rename and the parent directory after it. The directory
+fsync is best-effort — Windows cannot open a directory and some
+filesystems refuse to fsync one — so those platforms keep the old
+guarantee rather than fail the write. A refused re-open of the temp
+file (a Windows antivirus sharing violation) is likewise not a
+durability signal and does not fail the save. Cost is two fsyncs (file
+and directory) per memory save on the writeback path; the ledger seal
+already paid one.
+
+Problem 2 (S04 offline carry): the Cortex Stick courier carried current
+fact rows only. Host B answered "40w" but could not answer "what did it
+used to be" — A's `fact_history` never crossed, and B's history held
+only the courier's own audit row.
+
+Fix: a second stick file, `facts/fact_history.jsonl`, the set-union of
+every host's ORIGIN audit rows (written by `save()`/`demote()`),
+identified by a content hash so the merge is idempotent and commutative.
+Encrypted and manifest-covered like `facts.jsonl`; a flipped byte
+torn-gates the sync. The courier's own rows (`changed_by='stick:…'`)
+stay local by design — carrying them would make every sync a change on
+the other side. `SyncReport` gains `history_to_host`/`history_to_stick`;
+the CLI prints them when non-zero.
+
+Stated limits: `fact_history` is never pruned, so the carried log grows
+with elapsed time, not with fact count, and each host holds every host's
+rows. A settled sync reuses the stick's own bytes instead of
+re-encrypting the union, but still decodes it. Fleet tenants hold
+hundreds of rows; a carry horizon is the follow-up if one crosses the
+low tens of thousands. Reviewer finding fixed before ship: the
+"table missing" guard used to swallow every sqlite operational error,
+so a locked database read as "no history" and re-imported the stick's
+whole log as duplicates — it now probes `sqlite_master` by name and lets
+real errors abort the sync.
+
+Tests: 5 new for the fsync order, both refused-directory branches and
+the refused tmp re-open; 6 new for the history channel (the S04 scenario
+end to end, idempotence + no version churn, ciphertext + torn gate,
+two-way demotion history, locked-table abort, pre-history database).
+Full suite 855 passed, 1 skipped.
+
 ## v4.21.1 — Exact identifiers first (2026-09-10)
 
 Problem: the first live smoke of the lexical lane on the production `cc`
