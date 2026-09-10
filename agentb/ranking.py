@@ -60,8 +60,15 @@ def composite_score(
     category: Optional[str],
     access_count: int,
     cfg: RankingConfig,
+    lexical: float = 0.0,
 ) -> float:
     sim = max(0.0, min(1.0, similarity))
+    # v4.21 — the lexical lane's evidence: BM25 over the memory's own words,
+    # normalised to the best lexical hit in the pool (1.0), 0.0 for a chunk
+    # the lane did not find. An exact identifier in the prompt is evidence
+    # the embedding geometry cannot see; the weight is small on purpose so
+    # word overlap re-orders the on-topic band and never outranks meaning.
+    lex = max(0.0, min(1.0, lexical))
 
     if age_days is None:
         recency = 0.5  # unknown age — neutral
@@ -79,6 +86,7 @@ def composite_score(
         + cfg.w_recency * recency
         + cfg.w_importance * importance
         + cfg.w_access * access
+        + cfg.w_lexical * lex
     )
 
 
@@ -117,8 +125,10 @@ SIMILARITY_SPAN = 0.20  # cosine distance below the pool's best hit at which the
 
 
 def _to_cosine(relevance: float, tier: str) -> float:
-    if tier != "VEC":
+    if tier not in ("VEC", "LEX"):
         return relevance  # L1/L2/L3 are cosine; HOT is the fixed sentinel (see above)
+    # LEX (v4.21) carries its cosine to the query on VEC's wire scale
+    # 1/(1+d), so merge_passes can compare the two lanes' relevance directly.
     if relevance <= 0.0:
         return 0.0
     d = 1.0 / relevance - 1.0

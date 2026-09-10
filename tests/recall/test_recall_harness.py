@@ -244,10 +244,19 @@ def _demote_first_hit(row: dict) -> dict:
     bottom slot stays put: pushing it out would be a lost query, which the
     primary recall floor already catches — the hard gate is for the
     regression that keeps every answer in the window and still degrades.
+    A hit at rank 1 also stays put since the v4.21 re-baseline — for an
+    arithmetic reason, stated plainly: the hard subset grew to 7 (q14, the
+    multi-hit query, sits at rank 1), and demoting all 7 costs the primary
+    MRR 0.036, more than its one-query headroom of 0.029, so the specimen
+    tripped the primary gate too and stopped discriminating. Demoting only
+    the already-buried answers (rank 2 to 3, 5 to 6) costs the primary 0.021
+    and the hard subset 0.107: primary green with 0.008 to spare, hard red.
+    That margin is a quarter of one rank step — the NEXT re-baseline must
+    re-derive this control, not nudge the predicate again.
     Synthetic, because that regression has not happened yet."""
     served = list(row["served"])
     idx = next((i for i, m in enumerate(served) if m in row["expected"]), None)
-    if idx is not None and idx + 1 < len(served):
+    if idx is not None and idx > 0 and idx + 1 < len(served):
         served[idx], served[idx + 1] = served[idx + 1], served[idx]
     ranks = [i + 1 for i, mid in enumerate(served) if mid in row["expected"]]
     return {**row, "served": served,
@@ -257,8 +266,9 @@ def _demote_first_hit(row: dict) -> dict:
 
 def test_hard_gate_catches_a_regression_the_primary_gate_hides(tmp_path, world):
     """Control for the hard-subset floor specifically: demote every hard
-    query by one rank inside the served window and leave the easy ones
-    alone (on the E1 baseline that is five of the six; q08 sits at slot 5).
+    query whose answer is already below rank 1 by one more rank inside the
+    served window and leave the easy ones alone (on the v4.21 baseline that
+    is six of the seven; q14's answers sit at ranks 1 and 3).
     The primary floors (one whole query of headroom over 35) must still
     PASS — that is the masking — and the hard floor must FAIL. If the
     primary gate also fails here, the hard gate is redundant and this test

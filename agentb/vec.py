@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -54,6 +55,75 @@ class VecHit:
     source_file: Optional[str] = None
     created_at: Optional[float] = None
     category: Optional[str] = None
+
+
+@dataclass
+class LexHit:
+    """One lexical-lane hit. `score` is positive, higher is better."""
+    memory_id: str
+    text: str
+    score: float
+    source_file: Optional[str] = None
+    created_at: Optional[float] = None
+    category: Optional[str] = None
+
+
+# Words that carry no lexical evidence on their own. Deliberately short:
+# BM25's idf already discounts common words, this list only keeps the
+# MATCH expression from being ten OR-terms of filler. Anything a prompt
+# would say about ITSELF ("what did we decide") rather than about the memory.
+_LEX_STOPWORDS = frozenset("""
+a an the and or but if then so of to in on at by for from with without into
+onto over under about as is are was were be been being am do does did done
+have has had having will would shall should can could may might must
+what which who whom whose when where why how this that these those there
+here it its it's we our us you your they them their he she his her i me my
+not no yes any all some each every much many more most very just also
+than too again ever never now still yet only even
+""".split())
+_LEX_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+LEX_MAX_TERMS = 12
+LEX_SCHEMA = 1  # bump to force every index to rebuild its lexical table on next open
+# Pruning (2026-09-10): a term present in most of the store is what makes
+# the FTS5 MATCH slow (every matching row is BM25-scored, LIMIT does not
+# bound the work — 87 ms for eight common words on a 17k-row tenant vs
+# 0.2 ms for a rare identifier) and is exactly what BM25's idf values least.
+# A term is dropped when its document count exceeds LEX_COMMON_FRACTION of
+# the rows AND LEX_COMMON_MIN rows — the floor keeps a small store (the
+# recall harnesses' 44 and 75 memories) unpruned, so every term still counts
+# there. A prompt of only common words yields no lexical evidence at all,
+# which is the honest answer: those words pick nothing out.
+LEX_COMMON_FRACTION = 0.10
+LEX_COMMON_MIN = 50
+
+
+def lexical_terms(prompt: str) -> list[str]:
+    """Turn a prompt into the lexical lane's search terms, [] when nothing
+    in it is worth matching.
+
+    Tokenises the way FTS5's default unicode61 tokenizer does (runs of
+    letters/digits; `-`, `.`, `_`, `/` all split) so "GHSA-8cw4-87c7-c6xx"
+    becomes the same four tokens on both sides of the match. Drops
+    stopwords and short filler (alpha < 3 chars; digit-bearing tokens keep
+    from 2 chars so the "2" of "4.20.2" is dropped but "c6xx" stays). Terms are
+    Digit-bearing tokens (ids, hashes, ports, versions) go first: they are
+    the identifiers the lane exists for, and the term cap trims from the
+    tail. VecStore.lexical_search turns the list into a MATCH expression —
+    every term quoted, so no prompt character reaches the parser, and
+    OR-ed: a prompt is a question, not a phrase, and the AND FTS5 applies
+    by default would match nothing."""
+    seen: set[str] = set()
+    ids: list[str] = []
+    words: list[str] = []
+    for tok in _LEX_TOKEN.findall(prompt.lower()):
+        if tok in seen or tok in _LEX_STOPWORDS:
+            continue
+        has_digit = any(ch.isdigit() for ch in tok)
+        if len(tok) < (2 if has_digit else 3):
+            continue
+        seen.add(tok)
+        (ids if has_digit else words).append(tok)
+    return (ids + words)[:LEX_MAX_TERMS]
 
 
 class VecDimMismatch(ValueError):
@@ -159,7 +229,43 @@ class VecStore:
                 processed_at REAL NOT NULL,
                 PRIMARY KEY(memory_id, lens)
             );
+
+            -- v4.21: the lexical lane. FTS5 over the same text the vectors
+            -- were built from, so an exact identifier (an advisory id, an
+            -- error string, a file name, a commit hash) is found by the
+            -- words it contains when the embedding geometry misses it. A
+            -- standalone table (not external-content over vec_sources: that
+            -- table's rowid is implicit and VACUUM may renumber it); the
+            -- text is short and stored twice on purpose.
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_lex USING fts5(
+                memory_id UNINDEXED,
+                text
+            );
+            -- per-term document counts over vec_lex (an FTS5 index seek per
+            -- lookup): lexical_search prunes the terms that match most of
+            -- the store before running the MATCH — see LEX_COMMON_FRACTION.
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_lex_vocab USING fts5vocab('vec_lex', 'row');
         """)
+        # v4.21: an index created before the lexical table has rows in
+        # vec_sources and none in vec_lex; rebuild the lexical side from the
+        # source text ONCE and stamp vec_meta, the way unit_norm is stamped.
+        # The stamp is the guard: dedup opens a fresh VecStore on every
+        # /writeback, and probing the FTS5 table's row count on each open
+        # was measured at ~28 ms on a 17k-row tenant (review, 2026-09-10).
+        # Bumping LEX_SCHEMA (a tokenizer change, say) forces one rebuild
+        # everywhere; so does deleting the key by hand. A downgrade to 4.20
+        # writes vec_sources without vec_lex — memories written under the
+        # old binary lack lexical evidence until the key is cleared; they
+        # are still found by the vectors (disclosed in the 4.21.0 notes).
+        stamp = self._conn.execute(
+            "SELECT value FROM vec_meta WHERE key = 'lex_schema'").fetchone()
+        if stamp is None or stamp["value"] != str(LEX_SCHEMA):
+            n_src = self._conn.execute("SELECT COUNT(*) AS n FROM vec_sources").fetchone()["n"]
+            self._conn.execute("DELETE FROM vec_lex")
+            self._conn.execute("INSERT INTO vec_lex(memory_id, text) SELECT memory_id, text FROM vec_sources")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO vec_meta(key, value) VALUES ('lex_schema', ?)", (str(LEX_SCHEMA),))
+            log.info(f"vec index {self.db_path}: lexical lane built over {n_src} row(s) (lex_schema {LEX_SCHEMA})")
         # v2 (#468): `category` column on an existing v1 table. Additive and
         # idempotent — old code ignores the column, search-without-category is
         # unchanged, so this is safe to run live. The column starts NULL on
@@ -222,6 +328,8 @@ class VecStore:
                 """,
                 (memory_id, text, source_file, ts, category),
             )
+            self._conn.execute("DELETE FROM vec_lex WHERE memory_id = ?", (memory_id,))
+            self._conn.execute("INSERT INTO vec_lex(memory_id, text) VALUES (?, ?)", (memory_id, text))
             self._conn.execute(
                 "DELETE FROM vec_embeddings WHERE memory_id = ?",
                 (memory_id,),
@@ -234,6 +342,7 @@ class VecStore:
     def delete(self, memory_id: str) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM vec_sources WHERE memory_id = ?", (memory_id,))
+            self._conn.execute("DELETE FROM vec_lex WHERE memory_id = ?", (memory_id,))
             self._conn.execute("DELETE FROM vec_embeddings WHERE memory_id = ?", (memory_id,))
 
     def update_category(self, memory_id: str, category: Optional[str]) -> None:
@@ -347,6 +456,83 @@ class VecStore:
             if filtering and len(hits) >= top_k:
                 break
         return hits
+
+    def lexical_search(
+        self,
+        terms: list[str],
+        *,
+        top_k: int = 8,
+        include_category: Optional[str] = None,
+        exclude_categories: Optional[Iterable[str]] = None,
+        overfetch_multiplier: int = 5,
+    ) -> list[LexHit]:
+        """The lexical lane (v4.21): BM25 over the stored text.
+
+        `terms` come from lexical_terms(); terms that match most of the
+        store are pruned first (LEX_COMMON_FRACTION), the rest are quoted
+        and OR-ed into the MATCH expression, so prompt punctuation can never
+        reach the parser. Hits come back best first with a POSITIVE score
+        (FTS5's bm25() is negative-is-better; negated here so callers reason
+        in one direction). Category filtering mirrors search() exactly —
+        include must equal, exclude drops, NULL is never excluded — and
+        over-fetches the same way so a filtered lane still fills.
+        """
+        terms = self.prune_common_terms(terms)
+        if not terms:
+            return []
+        # FTS5 escapes a quote inside a phrase by doubling it; the tokenizer
+        # never emits one, but a caller handing terms in raw still gets a
+        # string the parser cannot read as syntax.
+        match = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        exclude = set(exclude_categories or ())
+        filtering = bool(include_category) or bool(exclude)
+        k = top_k * overfetch_multiplier if filtering else top_k
+        rows = self._conn.execute(
+            """
+            SELECT s.memory_id, s.text, s.source_file, s.created_at, s.category,
+                   bm25(vec_lex) AS score
+            FROM vec_lex
+            JOIN vec_sources s ON s.memory_id = vec_lex.memory_id
+            WHERE vec_lex MATCH ?
+            ORDER BY score
+            LIMIT ?
+            """,
+            (match, k),
+        ).fetchall()
+        hits: list[LexHit] = []
+        for r in rows:
+            cat = r["category"]
+            if include_category is not None and cat != include_category:
+                continue
+            if cat is not None and cat in exclude:
+                continue
+            hits.append(
+                LexHit(
+                    memory_id=r["memory_id"],
+                    text=r["text"],
+                    score=-float(r["score"]),
+                    source_file=r["source_file"],
+                    created_at=r["created_at"],
+                    category=cat,
+                )
+            )
+            if filtering and len(hits) >= top_k:
+                break
+        return hits
+
+    def prune_common_terms(self, terms: list[str]) -> list[str]:
+        """Drop the terms whose document count exceeds LEX_COMMON_FRACTION of
+        the store (past the LEX_COMMON_MIN floor). One index seek per term."""
+        if not terms:
+            return []
+        ceiling = max(LEX_COMMON_MIN, LEX_COMMON_FRACTION * self.count())
+        kept = []
+        for t in terms:
+            row = self._conn.execute(
+                "SELECT doc FROM vec_lex_vocab WHERE term = ?", (t,)).fetchone()
+            if row is None or row["doc"] <= ceiling:
+                kept.append(t)
+        return kept
 
     def newest(
         self,

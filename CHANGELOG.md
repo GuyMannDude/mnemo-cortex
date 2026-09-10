@@ -1,5 +1,107 @@
 # Changelog
 
+## v4.21.0 — The lexical lane: exact identifiers stop getting lost in similarity (2026-09-10)
+
+Problem: recall was vector-only. An embedding knows what a memory is
+*about*; it does not know that the prompt's `GHSA-8cw4-87c7-c6xx`, its
+`ECONNREFUSED 127.0.0.1:50001`, its commit hash or its `ledger.torn` is
+the one string that picks the answer out of thirty memories on the same
+topic. On a store with many same-shaped memories (every closed advisory,
+every restart incident) the kNN pool fills with look-alikes and the one
+that carries the identifier can sit outside it. Measured on a 75-memory
+world of identifiers with look-alike decoys: pure vector recall put the
+right memory first on 8 of 11 identifier queries (MRR 0.848).
+
+Fix: a second candidate generator beside the vectors, in the same
+per-tenant `vec_index.sqlite`. An FTS5 table (`vec_lex`) indexes the same
+text the vectors were built from, kept in step on every upsert and delete,
+and rebuilt once from the stored text when an index that predates it is
+opened. On every `/context` the prompt becomes a quoted, OR-ed FTS5 MATCH
+expression (identifiers first, filler dropped, no prompt character reaches
+the parser) and BM25 ranks the matches. Two effects on the pool:
+
+- a memory the vectors already pooled gets its lexical evidence attached;
+- a memory the vectors missed joins as a `LEX` chunk, scored on the SAME
+  cosine scale as everything else (its stored vector against the query,
+  on VEC's wire relevance) — it earns its rank on meaning plus words,
+  never on words alone.
+
+The composite ranker gains one term, `w_lexical` (default 0.10), on the
+evidence normalised to the pool's best word match. 0.10 is the low end of
+the plateau on the recall harness: 0.10–0.15 score the same, 0.05 costs
+MRR, 0.20 loses a query. (The weights now sum to 1.10, not 1.00 —
+harmless for ordering; similarity's share is 0.55/1.10.) Terms present
+in more than a tenth of the store, past a 50-row floor, are pruned before
+the match runs: they are what BM25's idf values least and what makes the
+query slow; a prompt of only common words yields no lexical evidence, the
+honest answer. `ranking.lexical_enabled: false` restores 4.20's RECALL
+exactly (it is a recall switch, not a storage switch: the FTS5 table is
+created and maintained either way). Category filters (include / exclude /
+NULL-never-hidden) mirror the vector search exactly; the explore and
+recent lenses take the lane's candidates but ignore the term (adjacency
+and date are their criteria, not word overlap). The lane is gated on the
+query's dimension the way the kNN is: on a mismatch the vectors scream
+and serve nothing so the L3 disk-walk can rescue the recall, and the lane
+must not fill the pool with cosines over a truncated vector.
+
+Measured (tests/recall/): the E2 paraphrase world goes from recall@5
+0.971 to 1.000 at unchanged MRR 0.901 — one query the vectors could not
+reach (q13) is served, one paraphrase query (q02, "windows workstation")
+drops from first to second because the prompt's words match the machine
+memory verbatim; the hard-subset MRR rises 0.422 → 0.505. The new
+identifier world: lane ON MRR 1.000, lane OFF 0.848 (the control that
+proves the lane is doing something). E2's gates are re-baselined under
+the fixture file's own rule (floor = baseline minus one query; hard subset
+re-marked, 7 queries, floor 0.433); the demotion control now leaves
+rank-1 hits alone so it still discriminates.
+
+Disclosed (measured on a synthetic 17,400-row index with 3.5 KB rows,
+near the 4,000-char embed cap, and a 3,000-word vocabulary — the first
+figures in this entry were taken on 300-byte rows and were 2–25× too
+kind; the reviewer caught it): the lexical table stores each memory's
+text a second time; the first open of that index builds it once, 1.4 s,
+then stamps `vec_meta.lex_schema` so a routine open costs nothing extra
+(dedup opens a fresh store on every save, so the probe had to be free).
+The lane adds one FTS5 query per retrieval pass: 3 ms for a rare
+identifier, 7 ms for a mixed real prompt, 12 ms for a prompt of only
+common words (all pruned, no evidence) — before pruning the last two were
+64 and 87 ms. A delete now also removes the lexical row: 26 ms on that
+index (unindexed scan; deletes are supersedes, rare). A downgrade to 4.20
+writes memories the lexical table never sees; they stay findable by the
+vectors, and clearing the `lex_schema` key (or bumping `LEX_SCHEMA`)
+rebuilds the table on the next open. Wire: `cache_tier` can now be
+`"LEX"`, a value no prior release emitted (Mnemo's own CLI and refresher
+print it verbatim; a downstream consumer validating the tier set will
+see a new one); `cache_hits` gains a `LEX` key (additive); a LEX chunk's
+`relevance` is on VEC's 1/(1+d) scale.
+
+Credit (Clapton Method — the idea, never the code): the "keyword lane
+beside the vectors" point from the aiagentmemory.dev thread on Guy's
+Facebook post "What are you using for your AI's memory?" (2026-09-06).
+
+Reviewed (code-reviewer pass, 2026-09-10; eight findings, all applied):
+robot.info not bumped (ship-blocker); the dimension gate above; the
+per-open count probe (now the stamp); "byte for byte" overclaimed; the
+E2 demotion control's docstring gave a wrong reason for a change made to
+keep it discriminating (it now states the arithmetic and its 0.008
+margin); the perf figures; a test that could not tell a no-op reopen from
+a rebuild (now a sentinel survives the reopen); no test on the server
+block (now five). Fuzzed clean: 4,037 prompts of FTS5 syntax, unicode,
+NULs and 100 KB tokens through the tokenizer into a live MATCH — zero
+errors.
+
+Verified: 21 new tests — tokenizer (identifiers first, term cap, FTS5
+syntax inert, an embedded quote escaped), upsert/delete keep the lexical
+row in step, a pre-4.21 index is built once on open and the stamp stops
+a rebuild, common terms pruned past the floor and kept under it, BM25
+finds the identifier the vectors cannot see, category filters mirror
+`search()`, the ranker term counts and clamps and cannot outrank meaning,
+a memory outside the kNN reaches the wire as `LEX`, lane off is pure
+vector recall, a lexical row without a vector is skipped, a broken FTS5
+table degrades to 4.20 out loud, a dimension mismatch keeps the lane out
+of the pool, and the lexical harness with its lane-off control. Full
+suite: 837 passed, 1 skipped (was 816 + 21).
+
 ## v4.20.2 — `ledger seal --all` survives a slow tenant; `--json` is pure again (2026-09-06)
 
 Problem: on the production host the first-time adopt of the `cc` tenant

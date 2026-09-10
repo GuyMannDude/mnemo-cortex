@@ -28,6 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures.json"
 EXPLORE_FIXTURES = HERE / "explore_fixtures.json"  # E4: explore queries over the same memories
+LEXICAL_FIXTURES = HERE / "lexical_fixtures.json"  # v4.21: the lexical lane's identifier world
 EMBEDDINGS = HERE / "embeddings.json"
 EMBED_MODEL = "nomic-embed-text"
 # Bump whenever the embed INPUT changes without a model rename (task prefixes,
@@ -50,6 +51,10 @@ def load_explore_fixtures() -> dict:
     return json.loads(EXPLORE_FIXTURES.read_text(encoding="utf-8"))
 
 
+def load_lexical_fixtures() -> dict:
+    return json.loads(LEXICAL_FIXTURES.read_text(encoding="utf-8"))
+
+
 def load_cache() -> dict:
     if not EMBEDDINGS.exists():
         return {"model": EMBED_MODEL, "cache_version": CACHE_VERSION, "dim": None, "vectors": {}}
@@ -61,7 +66,11 @@ def wanted(fixtures: dict) -> list[tuple[str, str]]:
     queries = [("query", q["prompt"]) for q in fixtures["queries"]]
     # E4: the explore harness asks its own questions of the same memories.
     explore = [("query", q["prompt"]) for q in load_explore_fixtures()["queries"]]
-    return docs + queries + explore
+    # v4.21: the lexical world has its own memories AND queries.
+    lex = load_lexical_fixtures()
+    lex_pairs = [("document", m["summary"]) for m in lex["memories"]] + \
+                [("query", q["prompt"]) for q in lex["queries"]]
+    return docs + queries + explore + lex_pairs
 
 
 async def _embed_all(pairs: list[tuple[str, str]], url: str) -> list[list[float]]:

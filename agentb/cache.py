@@ -41,6 +41,7 @@ class ContextChunk:
         stale_warning: Optional[dict] = None,
         created_at: Optional[float] = None,
         revises: Optional[list] = None,
+        lexical: float = 0.0,
     ):
         self.content = content
         self.source = source
@@ -60,6 +61,10 @@ class ContextChunk:
         # was held against and the caller then FORCED past (`near_dup_of`
         # with `near_dup_forced`). Read by ranking.order_revisions.
         self.revises = revises or []
+        # v4.21: the lexical lane's normalised BM25 evidence for this memory
+        # (1.0 = the pool's best word match, 0.0 = the lane did not find it).
+        # Read by ranking.composite_score; not on the wire.
+        self.lexical = lexical
 
     def to_dict(self) -> dict:
         d = {"content": self.content, "source": self.source,

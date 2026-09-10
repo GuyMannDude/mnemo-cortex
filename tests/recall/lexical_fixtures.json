@@ -1,0 +1,646 @@
+{
+  "_about": [
+    "Lexical-lane harness fixtures (v4.21, 2026-09-10). Same fictional workshop",
+    "world as fixtures.json (Anvil the laptop, Bellows the workstation, Quill the",
+    "coding agent) — a separate file so the E2 gates keep their frozen world.",
+    "Every memory carries an IDENTIFIER: an advisory id, an error string, a",
+    "commit hash, a file name, a port, a CVE. Every query names one identifier",
+    "and little else — the case the lexical lane exists for. Decoys share the",
+    "topic (three advisories, two commits, two ports, two CVEs) so meaning alone",
+    "cannot pick the answer; only the words can.",
+    "PADDING: 61 look-alike decoys (pad-*) with different identifiers, so the store",
+    "outgrows the kNN pool (overfetch 15 for max_results 5) the way a real tenant does",
+    "— with 14 memories the pool held the whole store and the lane could only re-order.",
+    "Vectors: the production embedder (nomic via Ollama), cached in",
+    "embeddings.json by tests/recall/embed_fixtures.py like the E2 world.",
+    "gate: measured floors, never tuned to pass — recorded from the first honest",
+    "run with the lane ON. control: the SAME queries with the lane OFF must score",
+    "below the gate, or the lane is not doing anything on this world.",
+    "Every id, hash, path, host and number here is invented.",
+    "First honest run (2026-09-10, w_lexical 0.10, 75 memories / 11 queries):",
+    "lane ON recall@5 1.000, MRR 1.000, top-1 100%; lane OFF (control) recall@5",
+    "1.000, MRR 0.848, top-1 73% — three identifiers lost rank 1 to a look-alike.",
+    "Floors = baseline minus one whole query over 11 (1/11 = 0.0909): 0.909 / 0.909."
+  ],
+  "gate": {
+    "recall_at_5_min": 0.909,
+    "mrr_min": 0.909
+  },
+  "memories": [
+    {
+      "id": "lx-adv-csv",
+      "category": "decision",
+      "age_days": 5,
+      "access_count": 0,
+      "summary": "Advisory GHSA-7q2x-4mvp-9rrk in the csv reader was accepted: the import tool calls parse() with no options, so the vulnerable branch is unreachable."
+    },
+    {
+      "id": "lx-adv-json",
+      "category": "decision",
+      "age_days": 6,
+      "access_count": 0,
+      "summary": "Advisory GHSA-3h8k-p2wc-5nnt in the stream json parser was accepted: local-only tooling, not a running server; waiting on upstream."
+    },
+    {
+      "id": "lx-adv-xml",
+      "category": "decision",
+      "age_days": 6,
+      "access_count": 0,
+      "summary": "Advisory GHSA-9vd4-j6r7-2mmx in the xml parser rides the upstream lockfile gate: dev-only chain, not installed in the live deploy."
+    },
+    {
+      "id": "lx-err-timeout",
+      "category": "incident",
+      "age_days": 3,
+      "access_count": 0,
+      "summary": "The seal step on Bellows died with httpx.ReadTimeout after 120 s while the server finished the tenant behind it; rerun verify before sealing again."
+    },
+    {
+      "id": "lx-err-refused",
+      "category": "incident",
+      "age_days": 20,
+      "access_count": 0,
+      "summary": "The bridge on Anvil logged ECONNREFUSED 127.0.0.1:50001 for six minutes after the reboot; the path was wrong, not the service."
+    },
+    {
+      "id": "lx-commit-broke",
+      "category": "incident",
+      "age_days": 4,
+      "access_count": 0,
+      "summary": "Commit 4b1d9e2 broke ledger seal --all on archived tenant directories; the fix landed as 379f571."
+    },
+    {
+      "id": "lx-commit-cap",
+      "category": "decision",
+      "age_days": 3,
+      "access_count": 0,
+      "summary": "Commit 7f8a801 removed the read cap on the seal POST so a slow tenant no longer kills the whole run."
+    },
+    {
+      "id": "lx-file-torn",
+      "category": "doctrine",
+      "age_days": 4,
+      "access_count": 0,
+      "summary": "A crash fragment at the tail of ledger.jsonl is quarantined to ledger.torn so one crash never bricks adoption."
+    },
+    {
+      "id": "lx-file-keys",
+      "category": "topology",
+      "age_days": 60,
+      "access_count": 0,
+      "summary": "The fleet key vault lives on at ~/.lever/keys.json even though the Lever service itself was retired."
+    },
+    {
+      "id": "lx-port-bus",
+      "category": "topology",
+      "age_days": 10,
+      "access_count": 0,
+      "summary": "The bus listener on Bellows is port 9137, restarted by a logon task with a hidden window."
+    },
+    {
+      "id": "lx-port-hud",
+      "category": "topology",
+      "age_days": 12,
+      "access_count": 0,
+      "summary": "Quill's dashboard is port 3001 on Anvil, reachable on the tailnet behind a login gate."
+    },
+    {
+      "id": "lx-cve-new",
+      "category": "current_state",
+      "age_days": 1,
+      "access_count": 0,
+      "summary": "CVE-2031-40412 is a V8 out-of-bounds write; browser build 153.0.8010.36 carries the fix on both machines."
+    },
+    {
+      "id": "lx-cve-old",
+      "category": "current_state",
+      "age_days": 5,
+      "access_count": 0,
+      "summary": "CVE-2031-38820 was the earlier V8 bug; the snap build never got a fix and was retired for the vendor build."
+    },
+    {
+      "id": "lx-model",
+      "category": "topology",
+      "age_days": 30,
+      "access_count": 0,
+      "summary": "The reasoning model on Bellows is qwen2.5:32b-instruct on the local runner; the embedder is nomic-embed-text."
+    },
+    {
+      "id": "pad-adv-00",
+      "category": "decision",
+      "age_days": 13,
+      "access_count": 0,
+      "summary": "Advisory GHSA-3kpp-zpbm-2s2d in the yaml loader was accepted: dev-only dependency, not in the live deploy."
+    },
+    {
+      "id": "pad-adv-01",
+      "category": "decision",
+      "age_days": 3,
+      "access_count": 0,
+      "summary": "Advisory GHSA-wdr2-kt9h-72hc in the toml reader was accepted: the input is trusted config we write ourselves."
+    },
+    {
+      "id": "pad-adv-02",
+      "category": "decision",
+      "age_days": 32,
+      "access_count": 0,
+      "summary": "Advisory GHSA-tzcd-mt6w-fcb2 in the markdown renderer was accepted: upstream pins the old major; waiting on their release."
+    },
+    {
+      "id": "pad-adv-03",
+      "category": "decision",
+      "age_days": 10,
+      "access_count": 0,
+      "summary": "Advisory GHSA-xvfg-e6j7-6k7v in the http client was accepted: the vulnerable call is never reached from our entry point."
+    },
+    {
+      "id": "pad-adv-04",
+      "category": "decision",
+      "age_days": 6,
+      "access_count": 0,
+      "summary": "Advisory GHSA-b7em-ydpj-8eej in the zip extractor was accepted: the vulnerable call is never reached from our entry point."
+    },
+    {
+      "id": "pad-adv-05",
+      "category": "decision",
+      "age_days": 12,
+      "access_count": 0,
+      "summary": "Advisory GHSA-vnwa-4cs7-fp93 in the regex engine was accepted: local tooling on the laptop, no server exposure."
+    },
+    {
+      "id": "pad-adv-06",
+      "category": "decision",
+      "age_days": 16,
+      "access_count": 0,
+      "summary": "Advisory GHSA-n4sd-kzyc-vrpf in the image decoder was accepted: dev-only dependency, not in the live deploy."
+    },
+    {
+      "id": "pad-adv-07",
+      "category": "decision",
+      "age_days": 4,
+      "access_count": 0,
+      "summary": "Advisory GHSA-x5es-2jrj-mkv8 in the template engine was accepted: upstream pins the old major; waiting on their release."
+    },
+    {
+      "id": "pad-adv-08",
+      "category": "decision",
+      "age_days": 8,
+      "access_count": 0,
+      "summary": "Advisory GHSA-7635-q54y-z66h in the date parser was accepted: local tooling on the laptop, no server exposure."
+    },
+    {
+      "id": "pad-adv-09",
+      "category": "decision",
+      "age_days": 36,
+      "access_count": 0,
+      "summary": "Advisory GHSA-jhrc-8g8g-jx87 in the url parser was accepted: the vulnerable call is never reached from our entry point."
+    },
+    {
+      "id": "pad-adv-10",
+      "category": "decision",
+      "age_days": 35,
+      "access_count": 0,
+      "summary": "Advisory GHSA-2kra-xtsa-g2hf in the cookie jar was accepted: the vulnerable call is never reached from our entry point."
+    },
+    {
+      "id": "pad-adv-11",
+      "category": "decision",
+      "age_days": 30,
+      "access_count": 0,
+      "summary": "Advisory GHSA-trev-pb9a-shpr in the form encoder was accepted: upstream pins the old major; waiting on their release."
+    },
+    {
+      "id": "pad-adv-12",
+      "category": "decision",
+      "age_days": 38,
+      "access_count": 0,
+      "summary": "Advisory GHSA-kyst-exen-98jc in the websocket frame was accepted: the input is trusted config we write ourselves."
+    },
+    {
+      "id": "pad-adv-13",
+      "category": "decision",
+      "age_days": 33,
+      "access_count": 0,
+      "summary": "Advisory GHSA-bspf-tr55-hs8u in the tar unpacker was accepted: dev-only dependency, not in the live deploy."
+    },
+    {
+      "id": "pad-adv-14",
+      "category": "decision",
+      "age_days": 30,
+      "access_count": 0,
+      "summary": "Advisory GHSA-knsk-nddh-ggnm in the font loader was accepted: dev-only dependency, not in the live deploy."
+    },
+    {
+      "id": "pad-adv-15",
+      "category": "decision",
+      "age_days": 28,
+      "access_count": 0,
+      "summary": "Advisory GHSA-8zvm-smeh-84zf in the svg sanitizer was accepted: the input is trusted config we write ourselves."
+    },
+    {
+      "id": "pad-adv-16",
+      "category": "decision",
+      "age_days": 25,
+      "access_count": 0,
+      "summary": "Advisory GHSA-2tby-sr42-z9tm in the ini reader was accepted: the input is trusted config we write ourselves."
+    },
+    {
+      "id": "pad-adv-17",
+      "category": "decision",
+      "age_days": 19,
+      "access_count": 0,
+      "summary": "Advisory GHSA-3mth-ucbx-6rtv in the jwt verifier was accepted: dev-only dependency, not in the live deploy."
+    },
+    {
+      "id": "pad-adv-18",
+      "category": "decision",
+      "age_days": 16,
+      "access_count": 0,
+      "summary": "Advisory GHSA-wrwu-7m77-yjzk in the path matcher was accepted: mitigated by the sandbox the process runs in."
+    },
+    {
+      "id": "pad-adv-19",
+      "category": "decision",
+      "age_days": 26,
+      "access_count": 0,
+      "summary": "Advisory GHSA-2njw-qp4y-3yq3 in the glob walker was accepted: local tooling on the laptop, no server exposure."
+    },
+    {
+      "id": "pad-commit-00",
+      "category": "decision",
+      "age_days": 28,
+      "access_count": 0,
+      "summary": "Commit db64b07 made the doctor probe /health instead of the PID file."
+    },
+    {
+      "id": "pad-commit-01",
+      "category": "decision",
+      "age_days": 39,
+      "access_count": 0,
+      "summary": "Commit a40120e moved the skip notices to stderr."
+    },
+    {
+      "id": "pad-commit-02",
+      "category": "decision",
+      "age_days": 9,
+      "access_count": 0,
+      "summary": "Commit a41d94c added the archived-tenant skip to the tenant scan."
+    },
+    {
+      "id": "pad-commit-03",
+      "category": "decision",
+      "age_days": 28,
+      "access_count": 0,
+      "summary": "Commit ee107ad quarantined crash fragments at the ledger tail."
+    },
+    {
+      "id": "pad-commit-04",
+      "category": "decision",
+      "age_days": 30,
+      "access_count": 0,
+      "summary": "Commit 7419cfe capped the classify input at 1500 chars."
+    },
+    {
+      "id": "pad-commit-05",
+      "category": "decision",
+      "age_days": 2,
+      "access_count": 0,
+      "summary": "Commit b46fda4 pinned the embed cache to the home directory."
+    },
+    {
+      "id": "pad-commit-06",
+      "category": "decision",
+      "age_days": 28,
+      "access_count": 0,
+      "summary": "Commit 0c9d995 normalised stored vectors at the boundary."
+    },
+    {
+      "id": "pad-commit-07",
+      "category": "decision",
+      "age_days": 59,
+      "access_count": 0,
+      "summary": "Commit 96de78e pushed the category filter into the kNN."
+    },
+    {
+      "id": "pad-commit-08",
+      "category": "decision",
+      "age_days": 41,
+      "access_count": 0,
+      "summary": "Commit 54f8e47 made the recent lens union the newest rows."
+    },
+    {
+      "id": "pad-commit-09",
+      "category": "decision",
+      "age_days": 53,
+      "access_count": 0,
+      "summary": "Commit bbf6492 let writeback timestamps drive created_at."
+    },
+    {
+      "id": "pad-commit-10",
+      "category": "decision",
+      "age_days": 7,
+      "access_count": 0,
+      "summary": "Commit a3a2d84 turned the near-duplicate hold into a revision link."
+    },
+    {
+      "id": "pad-commit-11",
+      "category": "decision",
+      "age_days": 30,
+      "access_count": 0,
+      "summary": "Commit ee2d62e let the seal loop continue past one refusal."
+    },
+    {
+      "id": "pad-commit-12",
+      "category": "decision",
+      "age_days": 27,
+      "access_count": 0,
+      "summary": "Commit e61dae8 dropped the HOT and L1 tiers from the pool."
+    },
+    {
+      "id": "pad-commit-13",
+      "category": "decision",
+      "age_days": 20,
+      "access_count": 0,
+      "summary": "Commit f781bde rescaled the explore band to span fractions."
+    },
+    {
+      "id": "pad-commit-14",
+      "category": "decision",
+      "age_days": 7,
+      "access_count": 0,
+      "summary": "Commit cddf932 made verify trust the chain only to the first break."
+    },
+    {
+      "id": "pad-port-00",
+      "category": "topology",
+      "age_days": 46,
+      "access_count": 0,
+      "summary": "The file watcher on Bellows is port 40411, started by a logon task."
+    },
+    {
+      "id": "pad-port-01",
+      "category": "topology",
+      "age_days": 61,
+      "access_count": 0,
+      "summary": "The cron listener on Bellows is port 10489, started by a logon task."
+    },
+    {
+      "id": "pad-port-02",
+      "category": "topology",
+      "age_days": 59,
+      "access_count": 0,
+      "summary": "The metrics exporter on Anvil is port 4844, started by a logon task."
+    },
+    {
+      "id": "pad-port-03",
+      "category": "topology",
+      "age_days": 49,
+      "access_count": 0,
+      "summary": "The print server on Anvil is port 48465, started by a logon task."
+    },
+    {
+      "id": "pad-port-04",
+      "category": "topology",
+      "age_days": 35,
+      "access_count": 0,
+      "summary": "The wiki server on Anvil is port 31808, started by a logon task."
+    },
+    {
+      "id": "pad-port-05",
+      "category": "topology",
+      "age_days": 18,
+      "access_count": 0,
+      "summary": "The gallery preview on Anvil is port 21213, started by a logon task."
+    },
+    {
+      "id": "pad-port-06",
+      "category": "topology",
+      "age_days": 84,
+      "access_count": 0,
+      "summary": "The backup receiver on Bellows is port 13538, started by a logon task."
+    },
+    {
+      "id": "pad-port-07",
+      "category": "topology",
+      "age_days": 34,
+      "access_count": 0,
+      "summary": "The voice bridge on Bellows is port 19520, started by a logon task."
+    },
+    {
+      "id": "pad-port-08",
+      "category": "topology",
+      "age_days": 8,
+      "access_count": 0,
+      "summary": "The webhook relay on Anvil is port 36095, started by a logon task."
+    },
+    {
+      "id": "pad-port-09",
+      "category": "topology",
+      "age_days": 77,
+      "access_count": 0,
+      "summary": "The log shipper on Anvil is port 47436, started by a logon task."
+    },
+    {
+      "id": "pad-cve-00",
+      "category": "current_state",
+      "age_days": 8,
+      "access_count": 0,
+      "summary": "CVE-2031-46197 is a font stack bug; build 149.0.2178.65 carries the fix."
+    },
+    {
+      "id": "pad-cve-01",
+      "category": "current_state",
+      "age_days": 17,
+      "access_count": 0,
+      "summary": "CVE-2031-49829 is a kernel bug; build 149.0.4354.89 carries the fix."
+    },
+    {
+      "id": "pad-cve-02",
+      "category": "current_state",
+      "age_days": 28,
+      "access_count": 0,
+      "summary": "CVE-2031-31834 is a font stack bug; build 144.0.8394.20 carries the fix."
+    },
+    {
+      "id": "pad-cve-03",
+      "category": "current_state",
+      "age_days": 27,
+      "access_count": 0,
+      "summary": "CVE-2031-31899 is a V8 bug; build 149.0.5228.64 carries the fix."
+    },
+    {
+      "id": "pad-cve-04",
+      "category": "current_state",
+      "age_days": 16,
+      "access_count": 0,
+      "summary": "CVE-2031-42602 is a image codec bug; build 147.0.8406.36 carries the fix."
+    },
+    {
+      "id": "pad-cve-05",
+      "category": "current_state",
+      "age_days": 2,
+      "access_count": 0,
+      "summary": "CVE-2031-30480 is a image codec bug; build 146.0.4985.34 carries the fix."
+    },
+    {
+      "id": "pad-cve-06",
+      "category": "current_state",
+      "age_days": 14,
+      "access_count": 0,
+      "summary": "CVE-2031-33597 is a image codec bug; build 141.0.4845.82 carries the fix."
+    },
+    {
+      "id": "pad-cve-07",
+      "category": "current_state",
+      "age_days": 24,
+      "access_count": 0,
+      "summary": "CVE-2031-41748 is a TLS bug; build 144.0.9283.36 carries the fix."
+    },
+    {
+      "id": "pad-err-00",
+      "category": "incident",
+      "age_days": 43,
+      "access_count": 0,
+      "summary": "The file watcher on Bellows logged ETIMEDOUT 192.0.2.7:8443 for a while after the upgrade; the path was wrong."
+    },
+    {
+      "id": "pad-err-01",
+      "category": "incident",
+      "age_days": 19,
+      "access_count": 0,
+      "summary": "The webhook relay on Anvil logged EADDRINUSE 127.0.0.1:8080 for a while after the upgrade; a restart cleared it."
+    },
+    {
+      "id": "pad-err-02",
+      "category": "incident",
+      "age_days": 14,
+      "access_count": 0,
+      "summary": "The wiki server on Bellows logged SSL_ERROR_SYSCALL on the tailnet for a while after the upgrade; the path was wrong."
+    },
+    {
+      "id": "pad-err-03",
+      "category": "incident",
+      "age_days": 30,
+      "access_count": 0,
+      "summary": "The voice bridge on Bellows logged ENOSPC on /var/log for a while after the reboot; the service was fine."
+    },
+    {
+      "id": "pad-err-04",
+      "category": "incident",
+      "age_days": 36,
+      "access_count": 0,
+      "summary": "The log shipper on Bellows logged EPIPE writing the export for a while after the network change; a restart cleared it."
+    },
+    {
+      "id": "pad-err-05",
+      "category": "incident",
+      "age_days": 45,
+      "access_count": 0,
+      "summary": "The print server on Anvil logged ECONNRESET from the model runner for a while after the network change; the service was fine."
+    },
+    {
+      "id": "pad-err-06",
+      "category": "incident",
+      "age_days": 45,
+      "access_count": 0,
+      "summary": "The log shipper on Anvil logged EACCES on ~/.lever for a while after the upgrade; a restart cleared it."
+    },
+    {
+      "id": "pad-err-07",
+      "category": "incident",
+      "age_days": 28,
+      "access_count": 0,
+      "summary": "The file watcher on Bellows logged ENOENT for ledger.jsonl for a while after the upgrade; the service was fine."
+    }
+  ],
+  "queries": [
+    {
+      "id": "lq01",
+      "prompt": "what did we decide about GHSA-7q2x-4mvp-9rrk",
+      "expected": [
+        "lx-adv-csv"
+      ],
+      "note": "advisory id; two advisory decoys"
+    },
+    {
+      "id": "lq02",
+      "prompt": "GHSA-9vd4-j6r7-2mmx status",
+      "expected": [
+        "lx-adv-xml"
+      ],
+      "note": "advisory id, bare"
+    },
+    {
+      "id": "lq03",
+      "prompt": "who saw httpx.ReadTimeout",
+      "expected": [
+        "lx-err-timeout"
+      ],
+      "note": "error class name"
+    },
+    {
+      "id": "lq04",
+      "prompt": "ECONNREFUSED 127.0.0.1:50001 after the reboot",
+      "expected": [
+        "lx-err-refused"
+      ],
+      "note": "error string + address"
+    },
+    {
+      "id": "lq05",
+      "prompt": "what did commit 4b1d9e2 break",
+      "expected": [
+        "lx-commit-broke"
+      ],
+      "note": "commit hash; one commit decoy"
+    },
+    {
+      "id": "lq06",
+      "prompt": "which change was 7f8a801",
+      "expected": [
+        "lx-commit-cap"
+      ],
+      "note": "commit hash, bare"
+    },
+    {
+      "id": "lq07",
+      "prompt": "what is ledger.torn",
+      "expected": [
+        "lx-file-torn"
+      ],
+      "note": "file name"
+    },
+    {
+      "id": "lq08",
+      "prompt": "where is keys.json",
+      "expected": [
+        "lx-file-keys"
+      ],
+      "note": "file name, old memory"
+    },
+    {
+      "id": "lq09",
+      "prompt": "what runs on port 9137",
+      "expected": [
+        "lx-port-bus"
+      ],
+      "note": "port number; one port decoy"
+    },
+    {
+      "id": "lq10",
+      "prompt": "is CVE-2031-40412 fixed",
+      "expected": [
+        "lx-cve-new"
+      ],
+      "note": "CVE id; one CVE decoy"
+    },
+    {
+      "id": "lq11",
+      "prompt": "which host runs nomic-embed-text",
+      "expected": [
+        "lx-model"
+      ],
+      "note": "model name"
+    }
+  ]
+}

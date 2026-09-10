@@ -149,6 +149,16 @@ class RankingConfig:
     w_importance: float = 0.15
     w_access: float = 0.10
     recency_half_life_days: float = 30.0
+    # v4.21 — the lexical lane: BM25 over the memory text as a second
+    # candidate generator, plus this weight on its evidence in the composite.
+    # Off = pure vector RECALL, identical to 4.20 (the FTS5 table in the
+    # index is created and maintained regardless — this is a recall switch,
+    # not a storage switch).
+    # 0.10 = the low end of the plateau on the recall harness (0.10-0.15
+    # score the same; 0.05 costs MRR, 0.20 loses a query) — the lightest
+    # weight that buys the whole gain (sweep 2026-09-10, CHANGELOG 4.21.0).
+    lexical_enabled: bool = True
+    w_lexical: float = 0.10
 
 
 @dataclass

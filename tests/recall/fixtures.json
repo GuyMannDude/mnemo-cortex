@@ -29,6 +29,13 @@
     "primary gate and therefore adds nothing.",
     "First honest hard-subset run: MRR 0.4222 (6 queries, 2026-09-02, ranker E1,",
     "same serving as the primary baseline) minus 0.0833 = 0.338.",
+    "SECOND BASELINE (2026-09-10, v4.21 lexical lane, w_lexical 0.10): recall@5",
+    "1.000 (was 0.971: q13 now served), MRR 0.901 (unchanged: q13 +0.5, q02 -0.5),",
+    "top-1 83%. Primary floors: 1.000 - 1/35 = 0.971; 0.901 - 1/35 = 0.872.",
+    "Hard re-marked per the re-selection rule: rr < 1.0 = q02 q06 q08 q13 q19 q33,",
+    "multi-hit = q14 → 7 queries, hard MRR 0.5048, minus 0.5/7 = 0.0714 → 0.433.",
+    "q02 is the lane's one cost: 'windows workstation' matches the machine memory",
+    "word for word, so it now edges the ssh memory that answers the question.",
     "",
     "Two caveats on the hard floor (review, 2026-09-02): the 0.0833 step is",
     "sourced entirely by q14, the only hard query at rr 1.0 — the other five",
@@ -39,9 +46,9 @@
     "under the new baseline plus every multi-hit query, re-measure, re-floor."
   ],
   "gate": {
-    "recall_at_5_min": 0.942,
+    "recall_at_5_min": 0.971,
     "mrr_min": 0.872,
-    "hard_mrr_min": 0.338
+    "hard_mrr_min": 0.433
   },
   "memories": [
     {
@@ -368,7 +375,8 @@
       "expected": [
         "m-bellows-ssh"
       ],
-      "note": "paraphrase: 'windows workstation' vs 'Bellows'"
+      "note": "paraphrase: 'windows workstation' vs 'Bellows'",
+      "hard": true
     },
     {
       "id": "q03",

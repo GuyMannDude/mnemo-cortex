@@ -385,3 +385,34 @@ def test_recent_lens_survives_a_dim_mismatch_without_fabricating_hits(tmp_path, 
     with pytest.raises(VecDimMismatch):
         store.newest([1.0, 0.0], n=3)
     store.close()
+
+
+# ── v4.21: the lexical lane's term ──────────────────────────────────────────
+
+def test_lex_tier_maps_to_cosine_like_vec():
+    # LEX chunks carry VEC's wire scale so merge_passes compares the lanes directly
+    assert _to_cosine(_rel(0.9), "LEX") == pytest.approx(_to_cosine(_rel(0.9), "VEC"))
+
+
+def test_lexical_evidence_reorders_the_band_but_never_outranks_meaning():
+    on_topic = composite_score(similarity=1.0, age_days=10, category="topology",
+                               access_count=0, cfg=CFG, lexical=0.0)
+    on_topic_with_words = composite_score(similarity=1.0, age_days=10, category="topology",
+                                          access_count=0, cfg=CFG, lexical=1.0)
+    off_topic_with_words = composite_score(similarity=0.0, age_days=10, category="topology",
+                                           access_count=0, cfg=CFG, lexical=1.0)
+    assert on_topic_with_words > on_topic                 # the term counts
+    assert on_topic_with_words - on_topic == pytest.approx(CFG.w_lexical)
+    assert off_topic_with_words < on_topic                # words alone cannot win
+    assert composite_score(similarity=0.5, age_days=None, category=None, access_count=0,
+                           cfg=CFG) == composite_score(similarity=0.5, age_days=None, category=None,
+                                                       access_count=0, cfg=CFG, lexical=0.0)
+
+
+def test_lexical_term_clamps_and_reads_its_weight_from_config():
+    cfg = RankingConfig(w_lexical=0.4)
+    base = composite_score(similarity=0.5, age_days=None, category=None, access_count=0, cfg=cfg)
+    assert composite_score(similarity=0.5, age_days=None, category=None, access_count=0,
+                           cfg=cfg, lexical=5.0) - base == pytest.approx(0.4)
+    assert composite_score(similarity=0.5, age_days=None, category=None, access_count=0,
+                           cfg=cfg, lexical=-1.0) == pytest.approx(base)

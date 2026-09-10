@@ -521,3 +521,145 @@ def test_newest_filters_in_sql_before_the_limit(tmp_path: Path):
     newest = store.newest(_vec_along(0), n=2)
     assert [h.memory_id for h in newest] == ["log39", "log38"]       # newest first, distance real
     assert newest[0].distance == pytest.approx(0.0, abs=1e-6)
+
+
+# ── v4.21: the lexical lane ─────────────────────────────────────────────────
+
+from agentb.vec import LexHit, LEX_COMMON_MIN, LEX_MAX_TERMS, lexical_terms  # noqa: E402
+
+
+def _lex_rows(store: VecStore) -> dict[str, str]:
+    return {r["memory_id"]: r["text"]
+            for r in store._conn.execute("SELECT memory_id, text FROM vec_lex")}
+
+
+def test_lexical_terms_tokenise_like_fts5_and_drop_filler():
+    t = lexical_terms("what did we decide about GHSA-8cw4-87c7-c6xx in csv-parse?")
+    # identifiers split on '-' the way unicode61 does, digit-bearing tokens first
+    assert t[:3] == ["8cw4", "87c7", "c6xx"]
+    assert {"decide", "ghsa", "csv", "parse"} <= set(t)
+    assert not {"what", "did", "we", "about", "in"} & set(t)
+    # only letter/digit runs survive: nothing a MATCH parser could read as syntax
+    assert all(part.isalnum() for part in t)
+
+
+def test_lexical_terms_empty_when_nothing_is_worth_matching():
+    assert lexical_terms("what is it") == []
+    assert lexical_terms("") == []
+    assert lexical_terms("!!! --- ???") == []
+
+
+def test_lexical_terms_cap_and_keep_identifiers_first():
+    words = " ".join(f"alpha{chr(97 + i)}" for i in range(20))
+    t = lexical_terms(f"{words} port 9137 hash 4b1d9e2")
+    assert len(t) == LEX_MAX_TERMS
+    assert t[:2] == ["9137", "4b1d9e2"]
+
+
+def test_lexical_search_survives_fts5_syntax_in_the_prompt(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("m1", "the seal step failed with ECONNRESET on port 9137", _vec_along(0))
+    # AND/OR/NOT, quotes, parens, colons, stars: all would be MATCH syntax raw
+    hits = store.lexical_search(lexical_terms('port:9137 AND (NOT "seal") OR econnreset* -foo'), top_k=5)
+    assert [h.memory_id for h in hits] == ["m1"]
+    # and a term handed in raw (no tokenizer) is still quoted, never parsed
+    assert store.lexical_search(['9137" OR "seal'], top_k=5) == []
+
+
+def test_common_terms_are_pruned_past_the_floor(tmp_path: Path):
+    """A term in most of the store is BM25's least valuable and the MATCH's
+    most expensive; past the LEX_COMMON_MIN floor it is dropped before the
+    query runs. Below the floor nothing is pruned (the harness worlds)."""
+    store = VecStore(tmp_path / "vec.sqlite")
+    n = LEX_COMMON_MIN * 2
+    for i in range(n):
+        store.upsert(f"m{i}", f"common restart note number {i}" + (" needle-7q2x" if i == 3 else ""),
+                     _vec_along(i % EMBED_DIM))
+    assert store.prune_common_terms(["restart", "7q2x", "unseen"]) == ["7q2x", "unseen"]
+    assert [h.memory_id for h in store.lexical_search(["restart", "7q2x"], top_k=5)] == ["m3"]
+    assert store.lexical_search(["restart", "common"], top_k=5) == []   # only common words: no evidence
+    small = VecStore(tmp_path / "small.sqlite")
+    for i in range(5):
+        small.upsert(f"s{i}", "everyone says restart", _vec_along(i))
+    assert small.prune_common_terms(["restart"]) == ["restart"]        # under the floor: kept
+
+
+def test_upsert_and_delete_keep_the_lexical_row_in_step(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("m1", "advisory GHSA-8cw4 accepted on the csv reader", _vec_along(0))
+    assert _lex_rows(store) == {"m1": "advisory GHSA-8cw4 accepted on the csv reader"}
+    store.upsert("m1", "advisory GHSA-8cw4 RETRACTED", _vec_along(0))
+    assert _lex_rows(store) == {"m1": "advisory GHSA-8cw4 RETRACTED"}  # replaced, not doubled
+    store.delete("m1")
+    assert _lex_rows(store) == {}
+
+
+def test_pre_lexical_index_is_backfilled_once_on_open(tmp_path: Path):
+    """An index built before v4.21 has vec_sources rows and no vec_lex table.
+    Opening it must rebuild the lexical side from the stored text, once."""
+    path = tmp_path / "vec.sqlite"
+    store = VecStore(path)
+    store.upsert("m1", "the memory server listens on port 50001", _vec_along(0))
+    store.upsert("m2", "advisory GHSA-8cw4 accepted", _vec_along(1))
+    store._conn.execute("DROP TABLE vec_lex")  # simulate the pre-4.21 schema:
+    store._conn.execute("DELETE FROM vec_meta WHERE key = 'lex_schema'")  # no table, no stamp
+    store._conn.commit()
+    store.close()
+
+    reopened = VecStore(path)
+    assert _lex_rows(reopened) == {
+        "m1": "the memory server listens on port 50001",
+        "m2": "advisory GHSA-8cw4 accepted",
+    }
+    hits = reopened.lexical_search(lexical_terms("port 50001"), top_k=5)
+    assert [h.memory_id for h in hits] == ["m1"]
+    # a second open does NOT rebuild: a sentinel written into vec_lex survives
+    # it (a rebuild would restore the source text). The stamp, not the row
+    # count, is the guard — so this also pins that the probe is skipped.
+    reopened._conn.execute("UPDATE vec_lex SET text = 'SENTINEL' WHERE memory_id = 'm1'")
+    reopened._conn.commit()
+    reopened.close()
+    again = VecStore(path)
+    assert _lex_rows(again)["m1"] == "SENTINEL"
+    # clearing the stamp forces the rebuild (the lever for a tokenizer change)
+    again._conn.execute("DELETE FROM vec_meta WHERE key = 'lex_schema'")
+    again._conn.commit()
+    again.close()
+    rebuilt = VecStore(path)
+    assert _lex_rows(rebuilt)["m1"] == "the memory server listens on port 50001"
+
+
+def test_lexical_search_finds_the_identifier_the_vectors_cannot_see(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    # three memories on the same topic; only one carries the id in the prompt
+    store.upsert("adv-a", "advisory GHSA-8cw4-87c7-c6xx in csv-parse accepted: branch unreachable",
+                 _vec_along(0), category="decision")
+    store.upsert("adv-b", "advisory GHSA-528h-pc64-c93x in stream-json accepted: local only",
+                 _vec_along(1), category="decision")
+    store.upsert("adv-c", "advisory GHSA-4w3w-2rp5-g8jm in xmldom accepted: dev-only chain",
+                 _vec_along(2), category="decision")
+    hits = store.lexical_search(lexical_terms("what did we decide on GHSA-8cw4-87c7-c6xx"), top_k=5)
+    assert hits and hits[0].memory_id == "adv-a"
+    assert isinstance(hits[0], LexHit) and hits[0].score > 0
+    # the shared words ("advisory", "accepted") match the others too, but weaker
+    assert all(h.score < hits[0].score for h in hits[1:])
+    assert hits[0].category == "decision" and hits[0].created_at is not None
+
+
+def test_lexical_search_category_filters_mirror_search(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("log", "port 9137 listener restarted", _vec_along(0), category="session_log")
+    store.upsert("doc", "port 9137 is the bus listener", _vec_along(1), category="doctrine")
+    store.upsert("nul", "port 9137 unknown provenance", _vec_along(2), category=None)
+    q = lexical_terms("port 9137")
+    assert {h.memory_id for h in store.lexical_search(q, top_k=5)} == {"log", "doc", "nul"}
+    # exclude drops the hidden category and KEEPS the NULL row (unknown ≠ hidden)
+    assert {h.memory_id for h in store.lexical_search(q, top_k=5, exclude_categories={"session_log"})} == {"doc", "nul"}
+    # include: a NULL row cannot satisfy a positive filter
+    assert [h.memory_id for h in store.lexical_search(q, top_k=5, include_category="doctrine")] == ["doc"]
+
+
+def test_lexical_search_empty_match_is_a_no_op(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("m1", "anything", _vec_along(0))
+    assert store.lexical_search([], top_k=5) == []

@@ -16,6 +16,8 @@ https://github.com/GuyMannDude/mnemo-cortex
 
 import os
 import re
+import math
+import sqlite3
 import json
 import time
 import hashlib
@@ -58,7 +60,10 @@ from agentb.redact import redact_text, redact_obj
 from agentb.capture_gate import CaptureGate
 from agentb.ranking import composite_score, pool_similarities, explore_score, order_revisions
 from agentb.analyst import analyze_tenant, muse_tenant
-from agentb.vec import VecStore, detect_mode as vec_detect_mode, backfill as vec_backfill, VecDimMismatch
+from agentb.vec import (
+    VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
+    VecDimMismatch, EMBED_DIM, lexical_terms, unit_vector,
+)
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
 
@@ -1094,7 +1099,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         pool_factor = 5 if mode == "explore" else 3
         overfetch = max(req.max_results * pool_factor, req.max_results + 5)
 
-        cache_hits = {"HOT": 0, "L1": 0, "VEC": 0, "L2": 0, "L3": 0, "MEM0": 0}
+        cache_hits = {"HOT": 0, "L1": 0, "VEC": 0, "LEX": 0, "L2": 0, "L3": 0, "MEM0": 0}
+        # v4.21: the lexical lane's MATCH expression, built once from the
+        # caller's prompt (expansion variants are paraphrases; the exact
+        # identifiers the lane exists for live in the original wording).
+        lex_terms = lexical_terms(req.prompt) if config.ranking.lexical_enabled else []
 
         # v4.1: tiers no longer fill a sequential budget. Each tier contributes
         # its filtered candidates to a pool; the pool is re-ranked by the
@@ -1245,6 +1254,66 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             pass_chunks.append(c)
                             seen_memory_ids.add(hit.memory_id)
 
+            # LEX (v4.21): the lexical lane. BM25 over the same stored text
+            # finds the memory that holds the prompt's exact identifier —
+            # an advisory id, an error string, a file name, a hash — when
+            # the kNN neighbourhood missed it. Two effects on the pool:
+            #   1. a hit already pooled by VEC gets its lexical evidence
+            #      attached (composite_score's lexical term);
+            #   2. a hit VEC did not pool joins as a LEX chunk, scored on
+            #      the SAME cosine scale as everything else — its stored
+            #      vector against the query, mapped to VEC's wire
+            #      relevance 1/(1+d) — so it earns its rank on meaning
+            #      plus words, never on words alone.
+            # Evidence is normalised to the lane's best hit (1.0), so a
+            # prompt of common words yields weak, evenly spread credit.
+            # Gated on the query's dimension like the kNN is: on a mismatch
+            # the vector lane screams and serves nothing so L3 can rescue
+            # the recall; a LEX cosine over a truncating zip would serve
+            # fabricated relevance AND fill the pool past the L3 gate
+            # (review, 2026-09-10).
+            if lex_terms and vec_store.count() > 0 and len(query_embedding) == EMBED_DIM:
+                query_unit = unit_vector(query_embedding)
+                try:
+                    lex_hits = vec_store.lexical_search(
+                        lex_terms,
+                        top_k=overfetch,
+                        include_category=req.category,
+                        exclude_categories=effective_exclude,
+                        overfetch_multiplier=config.cache.vec_category_overfetch_multiplier,
+                    )
+                except sqlite3.Error as e:
+                    # the vector lane already served; a broken lexical lane
+                    # degrades to 4.20 behaviour out loud, never silently
+                    log.error(f"lexical lane failed (agent={req.agent_id}): {e}")
+                    lex_hits = []
+                if lex_hits:
+                    top_lex = lex_hits[0].score or 1.0
+                    pooled = {c.memory_id: c for c in pass_chunks if c.memory_id}
+                    for lh in lex_hits:
+                        evidence = max(0.0, lh.score / top_lex)
+                        already = pooled.get(lh.memory_id)
+                        if already is not None:
+                            already.lexical = max(already.lexical, evidence)
+                            continue
+                        if lh.memory_id in seen_memory_ids:
+                            continue
+                        stored = vec_store.get_embedding(lh.memory_id)
+                        if stored is None or len(stored) != EMBED_DIM:
+                            continue  # text row without a (usable) vector: not a served memory
+                        cos = sum(a * b for a, b in zip(stored, query_unit))
+                        distance = math.sqrt(max(0.0, 2.0 - 2.0 * cos))
+                        c = _chunk_from_vec_hit(VecHit(
+                            memory_id=lh.memory_id, text=lh.text, distance=distance,
+                            source_file=lh.source_file, created_at=lh.created_at,
+                            category=lh.category,
+                        ))
+                        c.cache_tier = "LEX"
+                        c.lexical = evidence
+                        if keep_chunk(c):
+                            pass_chunks.append(c)
+                            seen_memory_ids.add(lh.memory_id)
+
             # L3: the expensive disk-walk (embeds candidates) stays an escape
             # hatch — only runs when VEC couldn't fill the request AND served
             # nothing at all.
@@ -1328,6 +1397,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # Serendipity lens: adjacency to the pool's top hit, no recency,
             # novelty over familiarity. Zero-scored chunks are the noise band
             # and must not pad the results.
+            # v4.21: LEX chunks are in this pool as candidates; the lens
+            # deliberately ignores chunk.lexical (so does `recent` below) —
+            # adjacency and date are their criteria, not word overlap. A LEX
+            # chunk can never raise the pool's top (it was outside the kNN's
+            # returned set), so the band constants are undisturbed.
             access = vec_store.access_counts([c.memory_id for c in all_chunks if c.memory_id])
             # E4: the lens reads the same pool-normalised similarity focus
             # mode scores on (cosine, every tier on one scale, anchored on
@@ -1384,6 +1458,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     category=c.category,
                     access_count=access.get(c.memory_id, 0) if c.memory_id else 0,
                     cfg=config.ranking,
+                    lexical=c.lexical,
                 ), c)
                 for sim, c in zip(sims, all_chunks)
             ]

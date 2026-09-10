@@ -164,6 +164,10 @@ Every recall commits to one phrasing. If a memory was stored under different wor
 
 The design choice that makes it safe is **escalation** — the loop only fires on a *miss*. Good searches run exactly as fast as they do today; the expansion pass costs nothing until a search actually whiffs, which is precisely when it's worth paying for. *In development — escalation model designed, build in progress.*
 
+### 🔤 The Lexical Lane — Exact Identifiers, Found by Their Words
+
+An embedding knows what a memory is *about*. It does not know that `GHSA-8cw4-87c7-c6xx`, `ECONNREFUSED 127.0.0.1:50001` or commit `4b1d9e2` is the one string that picks the answer out of thirty memories on the same topic. Since v4.21 every recall also runs a BM25 keyword search (SQLite FTS5, inside the same per-agent index) over the same text the vectors were built from. A memory the vectors missed joins the candidate pool scored on the same cosine scale as everything else, and a small lexical term in the ranker lets exact words re-order the on-topic band — meaning plus words, never words alone. On a 75-memory world of identifiers with look-alike decoys, vectors alone put the right memory first 8 times in 11; with the lane, 11 in 11. Off switch: `ranking.lexical_enabled: false`.
+
 ### 🌙 Dreaming Mnemo — Cross-Agent Overnight Synthesis
 
 Every agent accumulates raw conversation memory. Dreaming runs a nightly map-reduce pass: each agent's recent memories are compacted into themes, then a cross-agent merge produces shared context so every agent wakes up knowing what the others did. After a May 16 rehab, the pipeline uses disciplined chunking and token budgets that keep Ollama compaction costs predictable — no more runaway synthesis jobs. The result is reliable overnight context sharing that actually runs every night.
