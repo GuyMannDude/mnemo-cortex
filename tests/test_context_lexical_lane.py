@@ -99,11 +99,91 @@ def test_memory_outside_the_knn_reaches_the_caller_as_a_lex_chunk(tmp_path):
     served = {c["memory_id"]: c for c in body["chunks"]}
     assert "target" in served, body
     assert served["target"]["cache_tier"] == "LEX"
-    assert served["near"]["cache_tier"] == "VEC"           # meaning still wins slot 1
-    assert body["chunks"][0]["memory_id"] == "near"
+    assert served["near"]["cache_tier"] == "VEC"
+    # 4.21.1: the prompt named a rare identifier; the memory holding it is
+    # served FIRST even at cosine -1 — the prompt picked it, meaning orders the rest
+    assert [c["memory_id"] for c in body["chunks"]] == ["target", "near"]
     assert body["cache_hits"]["LEX"] == 1 and body["cache_hits"]["VEC"] == 1
     # the LEX chunk's relevance is on VEC's wire scale: cosine -1 → d = 2 → 1/3
     assert served["target"]["relevance"] == pytest.approx(1 / 3, abs=1e-3)
+
+
+def test_a_word_match_without_a_rare_identifier_does_not_pin(tmp_path):
+    """Same world, prompt shares topical words with `target` but names no
+    identifier: the lane attaches evidence, meaning still wins slot 1."""
+    _seed_world(tmp_path)
+    with _client(tmp_path) as client:
+        body = _context(client, "which advisory did we accept as unreachable")
+    assert body["chunks"][0]["memory_id"] == "near"
+
+
+def test_an_identifier_many_memories_share_is_a_topic_not_a_pin(tmp_path):
+    """'2026' or a port everyone mentions must not pin: past LEX_EXACT_MAX_DF
+    memories the term is a topic, and the composite decides as before."""
+    from agentb.vec import LEX_EXACT_MAX_DF
+    _seed_world(tmp_path)
+    for i in range(LEX_EXACT_MAX_DF + 1):
+        _seed(tmp_path, f"shared-{i}", f"note {i} mentions build 8010 too", _axis(9 + i))
+    with _client(tmp_path) as client:
+        body = _context(client, "what about build 8010")
+    assert body["chunks"][0]["memory_id"] == "near"       # cosine 1.0 still first
+    assert not any(c["memory_id"].startswith("shared-") and i == 0
+                   for i, c in enumerate(body["chunks"]))
+
+
+def test_pins_never_own_the_window(tmp_path):
+    """Five hashes pasted beside a real question: the pins take at most
+    half the window, the question's answer (cosine 1.0) is still served."""
+    _seed_world(tmp_path)
+    hashes = ["a1b2c3d", "b2c3d4e", "c3d4e5f", "d4e5f6a", "e5f6a7b"]
+    for i, h in enumerate(hashes):
+        _seed(tmp_path, f"log-{h}", f"session log: commit {h} landed", _axis(0, -1.0))
+    with _client(tmp_path) as client:
+        r = client.post("/context", json={
+            "prompt": "in light of commits " + " ".join(hashes) + ", what does the memory server listen on",
+            "max_results": 4})
+    assert r.status_code == 200, r.text
+    served = [c["memory_id"] for c in r.json()["chunks"]]
+    # exactly two pins lead (half of 4), then the answer; a third pinned log
+    # may follow on its own score — the fillers are equally irrelevant here
+    assert all(m.startswith("log-") for m in served[:2]), served
+    assert served[2] == "near", served
+
+
+def test_a_bare_four_digit_number_does_not_pin(tmp_path):
+    _seed_world(tmp_path)
+    _seed(tmp_path, "offtopic", "the printer jam cost us 2000 sheets", _axis(0, -1.0))
+    with _client(tmp_path) as client:
+        focus = _context(client, "write me the 2000 word session summary")
+        recent = _context(client, "write me the 2000 word session summary", mode="recent")
+    # focus: no pin means meaning keeps slot 1 (the word match only earns
+    # the ordinary bonus, which in this all-irrelevant filler world is slot 2)
+    assert focus["chunks"][0]["memory_id"] == "near"
+    # recent: not pinned, so out of band stays out — no band-gate bypass
+    assert "offtopic" not in {c["memory_id"] for c in recent["chunks"]}
+
+
+def test_recent_lens_pins_too_and_explore_does_not(tmp_path):
+    _seed_world(tmp_path)
+    # a NEWER on-topic memory: the date sort alone would put it first, so
+    # `target` leading proves the pin, not the sort
+    base = tmp_path / "agents" / "default"
+    newer = base / "memory" / "newer.json"
+    newer.write_text(json.dumps({"id": "newer", "summary": "the memory server moved hosts today",
+                                 "key_facts": [], "category": "decision", "source": "user",
+                                 "created_at": time.time()}))
+    st = VecStore(base / "vec_index.sqlite")
+    st.upsert("newer", "the memory server moved hosts today", _axis(0), source_file=newer.as_posix(),
+              created_at=time.time(), category="decision")
+    st.close()
+    with _client(tmp_path) as client:
+        recent = _context(client, "GHSA-7q2x-4mvp-9rrk", mode="recent")
+        explore = _context(client, "GHSA-7q2x-4mvp-9rrk", mode="explore")
+    # recent: in-band chunks by date, then the pin goes first. `target` is at
+    # cosine -1 — out of band — so it can only appear through the pin.
+    assert [c["memory_id"] for c in recent["chunks"]] == ["target", "newer"]
+    # explore keeps its serendipity: out-of-band chunks stay out, no pin
+    assert "target" not in {c["memory_id"] for c in explore["chunks"]}
 
 
 def test_lane_off_is_pure_vector_recall(tmp_path):

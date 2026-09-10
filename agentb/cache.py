@@ -42,6 +42,7 @@ class ContextChunk:
         created_at: Optional[float] = None,
         revises: Optional[list] = None,
         lexical: float = 0.0,
+        exact: bool = False,
     ):
         self.content = content
         self.source = source
@@ -61,10 +62,13 @@ class ContextChunk:
         # was held against and the caller then FORCED past (`near_dup_of`
         # with `near_dup_forced`). Read by ranking.order_revisions.
         self.revises = revises or []
-        # v4.21: the lexical lane's normalised BM25 evidence for this memory
-        # (1.0 = the pool's best word match, 0.0 = the lane did not find it).
-        # Read by ranking.composite_score; not on the wire.
+        # v4.21: the lexical lane's BM25 evidence for this memory, scaled to
+        # the OR-query's best hit (0.0 = the lane did not find it; an exact
+        # pass hit can exceed 1.0, composite_score clamps). Not on the wire.
         self.lexical = lexical
+        # v4.21.1: this memory holds a rare identifier the prompt named
+        # (vec.exact_terms). Served first in focus and recent modes.
+        self.exact = exact
 
     def to_dict(self) -> dict:
         d = {"content": self.content, "source": self.source,

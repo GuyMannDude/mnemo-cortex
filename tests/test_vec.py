@@ -525,7 +525,7 @@ def test_newest_filters_in_sql_before_the_limit(tmp_path: Path):
 
 # ── v4.21: the lexical lane ─────────────────────────────────────────────────
 
-from agentb.vec import LexHit, LEX_COMMON_MIN, LEX_MAX_TERMS, lexical_terms  # noqa: E402
+from agentb.vec import LexHit, LEX_COMMON_MIN, LEX_EXACT_MAX_DF, LEX_MAX_TERMS, lexical_terms  # noqa: E402
 
 
 def _lex_rows(store: VecStore) -> dict[str, str]:
@@ -577,6 +577,8 @@ def test_common_terms_are_pruned_past_the_floor(tmp_path: Path):
                      _vec_along(i % EMBED_DIM))
     assert store.prune_common_terms(["restart", "7q2x", "unseen"]) == ["7q2x", "unseen"]
     assert [h.memory_id for h in store.lexical_search(["restart", "7q2x"], top_k=5)] == ["m3"]
+    # prune=False skips the pruning (and its COUNT): the common term matches everything
+    assert len(store.lexical_search(["restart"], top_k=5, prune=False)) == 5
     assert store.lexical_search(["restart", "common"], top_k=5) == []   # only common words: no evidence
     small = VecStore(tmp_path / "small.sqlite")
     for i in range(5):
@@ -663,3 +665,24 @@ def test_lexical_search_empty_match_is_a_no_op(tmp_path: Path):
     store = VecStore(tmp_path / "vec.sqlite")
     store.upsert("m1", "anything", _vec_along(0))
     assert store.lexical_search([], top_k=5) == []
+
+
+def test_exact_terms_are_rare_identifier_shaped_terms(tmp_path: Path):
+    from agentb.vec import is_identifier_shaped
+    store = VecStore(tmp_path / "vec.sqlite")
+    # v4, 55 and 2000 are all PRESENT (df 1) so the shape rule, not the df rule, rejects them
+    store.upsert("m1", "commit 379f571 fixed the seal; port 50001; v4 build 55 wrote 2000 rows in 2026",
+                 _vec_along(0))
+    for i in range(LEX_EXACT_MAX_DF + 1):
+        store.upsert(f"y{i}", f"note {i} from 2026", _vec_along(i + 1))
+    assert store.term_doc_count("379f571") == 1
+    assert store.term_doc_count("2026") == LEX_EXACT_MAX_DF + 2
+    assert store.term_doc_count("nowhere") == 0
+    terms = lexical_terms("what happened with commit 379f571 on port 50001 in 2026, v4 build 55, 2000 rows")
+    assert store.exact_terms(terms) == ["379f571", "50001"]  # 2026 too common; v4/55/2000 wrong shape; 'commit' no digit
+    assert store.exact_terms(["c0ffee"]) == []   # shaped, but in NO memory: not a pin
+    # the shape rule on its own
+    assert is_identifier_shaped("7q2x") and is_identifier_shaped("379f571") and is_identifier_shaped("50001")
+    assert not is_identifier_shaped("2000") and not is_identifier_shaped("9137")   # bare 4 digits
+    assert not is_identifier_shaped("v4") and not is_identifier_shaped("55")
+    assert not is_identifier_shaped("commit") and not is_identifier_shaped("20")

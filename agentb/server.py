@@ -58,11 +58,11 @@ from agentb.classify import classify_category, reclassify_memory_dir, is_routine
 from agentb.dedup import find_near_duplicates
 from agentb.redact import redact_text, redact_obj
 from agentb.capture_gate import CaptureGate
-from agentb.ranking import composite_score, pool_similarities, explore_score, order_revisions
+from agentb.ranking import composite_score, pool_similarities, explore_score, order_revisions, exact_first
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
-    VecDimMismatch, EMBED_DIM, lexical_terms, unit_vector,
+    VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
@@ -1287,6 +1287,25 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                     # degrades to 4.20 behaviour out loud, never silently
                     log.error(f"lexical lane failed (agent={req.agent_id}): {e}")
                     lex_hits = []
+                # 4.21.1: the rare identifiers the prompt named, and the
+                # memories that hold them — pinned to the front of the served
+                # window (ranking.exact_first, capped there). One bounded
+                # single-term seek per exact term; the hits are pooled even
+                # when the OR-query's top_k would have cut them (the live
+                # case: rank 19 of 15).
+                exact_ids: set[str] = set()
+                try:
+                    for term in vec_store.exact_terms(lex_terms):
+                        for eh in vec_store.lexical_search(
+                                [term], top_k=LEX_EXACT_MAX_DF,
+                                include_category=req.category,
+                                exclude_categories=effective_exclude,
+                                prune=False):
+                            exact_ids.add(eh.memory_id)
+                            if eh.memory_id not in {h.memory_id for h in lex_hits}:
+                                lex_hits.append(eh)
+                except sqlite3.Error as e:
+                    log.error(f"lexical exact pass failed (agent={req.agent_id}): {e}")
                 if lex_hits:
                     top_lex = lex_hits[0].score or 1.0
                     pooled = {c.memory_id: c for c in pass_chunks if c.memory_id}
@@ -1295,6 +1314,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         already = pooled.get(lh.memory_id)
                         if already is not None:
                             already.lexical = max(already.lexical, evidence)
+                            already.exact = already.exact or lh.memory_id in exact_ids
                             continue
                         if lh.memory_id in seen_memory_ids:
                             continue
@@ -1310,6 +1330,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         ))
                         c.cache_tier = "LEX"
                         c.lexical = evidence
+                        c.exact = lh.memory_id in exact_ids
                         if keep_chunk(c):
                             pass_chunks.append(c)
                             seen_memory_ids.add(lh.memory_id)
@@ -1434,8 +1455,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # excluded, unknown age last.
             now = time.time()
             sims = pool_similarities([(c.relevance, c.cache_tier) for c in all_chunks])
-            in_band = [c for sim, c in zip(sims, all_chunks) if sim > 0.0]
-            all_chunks = sorted(in_band, key=lambda c: chunk_age_days(c, now))
+            # 4.21.1: a pinned chunk (rare identifier the prompt named) passes
+            # the band gate — the prompt picked it, its cosine is beside the point
+            in_band = [c for sim, c in zip(sims, all_chunks) if sim > 0.0 or c.exact]
+            all_chunks = exact_first(sorted(in_band, key=lambda c: chunk_age_days(c, now)),
+                                     limit=max(1, req.max_results // 2))
         elif config.ranking.enabled:
             now = time.time()
 
@@ -1463,7 +1487,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 for sim, c in zip(sims, all_chunks)
             ]
             scored.sort(key=lambda sc: sc[0], reverse=True)
-            all_chunks = [c for _, c in scored]
+            # 4.21.1: a memory holding a rare identifier the prompt named is
+            # served first — the prompt picked it; the score orders the rest.
+            # At most half the window: pins re-order it, never own it.
+            all_chunks = exact_first([c for _, c in scored], limit=max(1, req.max_results // 2))
 
         # v4.18.4: inside the served window a memory that revises another
         # served memory (forced past the dedup gate, `near_dup_of`) comes

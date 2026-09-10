@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from agentb.ranking import composite_score, pool_similarities, SIMILARITY_SPAN, _to_cosine, order_revisions
+from agentb.ranking import composite_score, pool_similarities, SIMILARITY_SPAN, _to_cosine, order_revisions, exact_first
 from agentb.vec import VecStore
 from agentb.config import (
     AgentBConfig, ResilientProviderConfig, ProviderConfig, RankingConfig,
@@ -416,3 +416,18 @@ def test_lexical_term_clamps_and_reads_its_weight_from_config():
                            cfg=cfg, lexical=5.0) - base == pytest.approx(0.4)
     assert composite_score(similarity=0.5, age_days=None, category=None, access_count=0,
                            cfg=cfg, lexical=-1.0) == pytest.approx(base)
+
+
+def test_exact_first_is_a_stable_partition():
+    class C:
+        def __init__(self, name, exact=False): self.name, self.exact = name, exact
+    a, b, c, d = C("a"), C("b", True), C("c"), C("d", True)
+    assert [x.name for x in exact_first([a, b, c, d])] == ["b", "d", "a", "c"]
+    assert [x.name for x in exact_first([a, c])] == ["a", "c"]
+    assert exact_first([]) == []
+    assert [x.name for x in exact_first([C("z")])] == ["z"]   # no attribute surprises on plain chunks
+    # the cap: only `limit` pins lead; the rest keep their scored place
+    e = [C("p1", True), C("s1"), C("p2", True), C("s2"), C("p3", True)]
+    assert [x.name for x in exact_first(e, limit=1)] == ["p1", "s1", "p2", "s2", "p3"]
+    assert [x.name for x in exact_first(e, limit=2)] == ["p1", "p2", "s1", "s2", "p3"]
+    assert [x.name for x in exact_first(e, limit=0)] == ["p1", "s1", "p2", "s2", "p3"]

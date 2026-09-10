@@ -95,6 +95,38 @@ LEX_SCHEMA = 1  # bump to force every index to rebuild its lexical table on next
 # which is the honest answer: those words pick nothing out.
 LEX_COMMON_FRACTION = 0.10
 LEX_COMMON_MIN = 50
+# Exact identifiers (4.21.1): an identifier-shaped term that appears in at
+# most LEX_EXACT_MAX_DF memories is a PIN, not a topic — a commit hash, an
+# advisory id, a CVE. The memory that holds it is served first (server.py),
+# because on a real tenant a long, diffuse memory that carries the hash
+# sits far below the pool's top on cosine and no honest lexical weight
+# lifts it (live smoke 2026-09-10: the cc tenant, 'what happened with
+# commit 379f571', 20 vector chunks served, the one memory holding the
+# hash absent — CC2's diagnostic put it at lexical rank 19, cut by the
+# lane's own top_k before the ranker saw it).
+# Shape: letters AND digits at 4+ chars ('379f571', '7q2x', 'c6xx'), or
+# all digits at 5+ ('50001', '40412') — a bare 4-digit number ('2000
+# words', a year) pinned an unrelated memory in review, so it is out; the
+# 4-digit ports ('9137') go with it, the honest trade. The df cap is 25,
+# not 5: auto-capture echoes every query and bus receipt that mentions a
+# hash, so a discussed identifier sits in a dozen memories and is still
+# the thing the prompt named. A year or a port everyone mentions is in
+# hundreds and stays a topic. The served window is protected separately
+# (ranking.exact_first limit): pins re-order it, never own it.
+LEX_EXACT_MAX_DF = 25
+LEX_EXACT_MIN_LEN = 4        # letters + digits
+LEX_EXACT_MIN_LEN_DIGITS = 5  # digits only
+
+
+def is_identifier_shaped(term: str) -> bool:
+    """Letters and digits mixed at LEX_EXACT_MIN_LEN+, or digits only at
+    LEX_EXACT_MIN_LEN_DIGITS+. A version string never qualifies: '4.20.2'
+    tokenises to '4' '20' '2' (stated limit, 4.21.1)."""
+    if not any(ch.isdigit() for ch in term):
+        return False
+    if term.isdigit():
+        return len(term) >= LEX_EXACT_MIN_LEN_DIGITS
+    return len(term) >= LEX_EXACT_MIN_LEN
 
 
 def lexical_terms(prompt: str) -> list[str]:
@@ -465,6 +497,7 @@ class VecStore:
         include_category: Optional[str] = None,
         exclude_categories: Optional[Iterable[str]] = None,
         overfetch_multiplier: int = 5,
+        prune: bool = True,
     ) -> list[LexHit]:
         """The lexical lane (v4.21): BM25 over the stored text.
 
@@ -477,7 +510,11 @@ class VecStore:
         include must equal, exclude drops, NULL is never excluded — and
         over-fetches the same way so a filtered lane still fills.
         """
-        terms = self.prune_common_terms(terms)
+        # prune=False for terms already known rare (the exact pass): the
+        # prune's COUNT(*) over the vec0 table was 97% of a single-term
+        # seek's cost in review (2.9 ms of 3.0 on 17k rows).
+        if prune:
+            terms = self.prune_common_terms(terms)
         if not terms:
             return []
         # FTS5 escapes a quote inside a phrase by doubling it; the tokenizer
@@ -520,19 +557,25 @@ class VecStore:
                 break
         return hits
 
+    def term_doc_count(self, term: str) -> int:
+        """How many memories contain `term` (one FTS5 vocab seek; 0 if none)."""
+        row = self._conn.execute(
+            "SELECT doc FROM vec_lex_vocab WHERE term = ?", (term,)).fetchone()
+        return int(row["doc"]) if row else 0
+
+    def exact_terms(self, terms: list[str]) -> list[str]:
+        """The identifier-shaped terms among `terms` (see is_identifier_shaped)
+        present in 1..LEX_EXACT_MAX_DF memories."""
+        return [t for t in terms
+                if is_identifier_shaped(t) and 1 <= self.term_doc_count(t) <= LEX_EXACT_MAX_DF]
+
     def prune_common_terms(self, terms: list[str]) -> list[str]:
         """Drop the terms whose document count exceeds LEX_COMMON_FRACTION of
         the store (past the LEX_COMMON_MIN floor). One index seek per term."""
         if not terms:
             return []
         ceiling = max(LEX_COMMON_MIN, LEX_COMMON_FRACTION * self.count())
-        kept = []
-        for t in terms:
-            row = self._conn.execute(
-                "SELECT doc FROM vec_lex_vocab WHERE term = ?", (t,)).fetchone()
-            if row is None or row["doc"] <= ceiling:
-                kept.append(t)
-        return kept
+        return [t for t in terms if self.term_doc_count(t) <= ceiling]
 
     def newest(
         self,

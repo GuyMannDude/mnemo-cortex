@@ -262,3 +262,30 @@ def order_revisions(chunks: list) -> list:
         if not moved:
             break
     return out
+
+
+# ── Exact identifiers first (4.21.1) ────────────────────────────────────────
+# A prompt that names a rare identifier — a commit hash, an advisory id, a
+# CVE — has already picked its answer; ranking it by meaning is answering a
+# different question. The lexical lane marks the chunks that hold such a
+# term (vec.exact_terms) and this puts them ahead of everything else, in
+# their scored order. Applied in focus (composite ranking on) and recent
+# modes; explore keeps its serendipity.
+# The pin re-orders the window, it never owns it: a prompt that pastes five
+# hashes beside a real question would otherwise fill a five-slot window
+# with the hashes' session logs and evict the answer (review, 2026-09-10 —
+# the raw bound is LEX_MAX_TERMS × LEX_EXACT_MAX_DF pinned chunks, not "a
+# handful"). At most `limit` pinned chunks lead; the rest of the pinned
+# chunks keep their scored place among the others.
+
+
+def exact_first(chunks: list, limit: Optional[int] = None) -> list:
+    """Move up to `limit` chunks flagged `exact` (all of them when limit is
+    None) to the front, order preserved within both groups. Same chunks
+    in, same chunks out."""
+    pinned = [c for c in chunks if getattr(c, "exact", False)]
+    if not pinned:
+        return list(chunks)
+    lead = pinned if limit is None else pinned[:max(0, limit)]
+    lead_ids = set(map(id, lead))
+    return lead + [c for c in chunks if id(c) not in lead_ids]

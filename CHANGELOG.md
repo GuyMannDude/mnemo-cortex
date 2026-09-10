@@ -1,5 +1,73 @@
 # Changelog
 
+## v4.21.1 — Exact identifiers first (2026-09-10)
+
+Problem: the first live smoke of the lexical lane on the production `cc`
+tenant (17,646 memories) asked "what happened with commit 379f571". The
+lane had built and fired (server log: `lexical lane built over 17646
+row(s)`), the one memory holding that hash was in the pool as a LEX
+chunk — and twenty vector chunks about other commits were served ahead of
+it. The harness worlds could not show this: their memories are one
+sentence, so the identifier memory's cosine sat inside the pool's band
+and a 0.10 bonus was enough. A real session-end memory is 2,000
+characters of unrelated detail; its cosine to a seven-word prompt sits
+far below the pool's top, the pool-anchored similarity term reads 0, and
+no honest lexical weight lifts it (0.20 already broke a paraphrase query
+on the E2 world).
+
+Fix: a rule, not a bigger weight. A prompt that names a rare identifier
+has already picked its answer; ranking that memory by meaning answers a
+different question. `vec.exact_terms` marks the prompt's identifier-
+shaped terms — letters and digits mixed at 4+ chars (`379f571`, `7q2x`),
+or digits only at 5+ (`50001`, `40412`) — that appear in 1–25 memories
+(`LEX_EXACT_MAX_DF`): a commit hash, an advisory id, a CVE. Never a year
+or a port everyone mentions (hundreds of memories); the cap is 25 rather
+than 5 because auto-capture echoes every query and bus receipt that
+mentions a hash, and a discussed identifier is still the thing the prompt
+named. The lane runs one bounded seek per exact term (no pruning pass:
+the term is known rare), pools every memory holding it even when the
+OR-query's own top_k cut it — the live case, rank 19 of 15 — and flags
+them `exact`; `ranking.exact_first` serves flagged chunks ahead of the
+scored order in focus mode (composite ranking on) and recent mode, where
+a pinned chunk also passes the band gate. **Pins re-order the window,
+they never own it:** at most half of `max_results` slots lead with pins
+(the rest of the pinned chunks keep their scored place), because a prompt
+that pastes five hashes beside a real question would otherwise fill a
+five-slot window with the hashes' session logs and evict the answer —
+the raw bound is 12 terms × 25 memories, not "a handful". Explore keeps
+its serendipity.
+
+Stated limits: alpha-only identifiers (`ECONNREFUSED`, `ledger.torn`) get
+the ordinary lexical bonus, not the pin — a rare word is not always a
+name. Version strings never pin: `4.20.2` tokenises to `4` `20` `2`, all
+too short — a version lookup still rides the 0.10 bonus, which the live
+smoke showed is not enough on a 17k-row tenant (follow-up: phrase-match
+dotted number runs). Bare 4-digit numbers (`9137`, a year, "2000 words")
+never pin — a bare number pinned an unrelated memory in review, and the
+4-digit ports go with it.
+
+Reviewed (code-reviewer pass, 2026-09-10, five findings, all applied):
+the unbounded pin (now capped at half the window); the bare 4-digit pin
+(now the shape rule); a length rule no test exercised (now seeded so the
+df rule cannot mask it); a recent-mode test the date sort satisfied
+without the pin (now a newer decoy); the exact seeks paying a redundant
+COUNT(*) per term (now `prune=False`, 3 ms → 0.1 ms per term).
+
+Verified: 7 new tests (844 passed, 1 skipped) — the antipodal identifier memory is served first
+and the unpinned word-match world still puts meaning first; five pasted
+hashes beside a real question take two of four slots and the answer is
+served; a bare 4-digit number pins nothing in focus or recent; a term in
+more than 25 memories is a topic, not a pin; recent pins past a newer
+decoy, explore does not; exact_terms accepts the hash and the 5-digit
+port and rejects the year, the short, the bare 4-digit and the unknown
+with each present in the store; exact_first is a stable partition with
+the cap. Honest note on the gates: the identifier world was already at
+MRR 1.000 after 4.21.0 (it can catch a regression here, not an
+improvement) and the E2 world yields exact terms on 0 of 35 queries — the
+proof of this change is the live tenant, not a harness, and the harnesses
+are unchanged (identifier world 1.000 / 0.848 control; E2 1.000 / 0.901 /
+hard 0.505).
+
 ## v4.21.0 — The lexical lane: exact identifiers stop getting lost in similarity (2026-09-10)
 
 Problem: recall was vector-only. An embedding knows what a memory is
