@@ -82,6 +82,17 @@ not no yes any all some each every much many more most very just also
 than too again ever never now still yet only even
 """.split())
 _LEX_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+# 4.21.3: a dotted number run — a version ('4.20.2', '2026.9.7', an
+# optional 'v' in front) or a dotted address. The tokenizer splits it on
+# the dots on BOTH sides of the match, so the run is searched as an FTS5
+# PHRASE (its tokens adjacent, in order) rather than OR-ed as '20' and
+# '2': before, '4.20.2' contributed one common token and the memory
+# holding it sat at lexical rank 19 (CC2 diagnostic, 2026-09-10).
+# Guards: not glued to a word on either side, and not entered mid-word
+# after a dot ('rev4.20.2' yields no run rather than the junk '20.2';
+# '4.20.2v' yields none rather than a backtracked '4.20' — review,
+# 2026-09-10). Glued spellings are the stated limit.
+_LEX_DOTTED = re.compile(r"(?<![^\W_])(?<![^\W_]\.)v?\d+(?:\.\d+)+(?!\.?[^\W_])", re.UNICODE)
 LEX_MAX_TERMS = 12
 LEX_SCHEMA = 1  # bump to force every index to rebuild its lexical table on next open
 # Pruning (2026-09-10): a term present in most of the store is what makes
@@ -118,12 +129,21 @@ LEX_EXACT_MIN_LEN = 4        # letters + digits
 LEX_EXACT_MIN_LEN_DIGITS = 5  # digits only
 
 
+def is_phrase(term: str) -> bool:
+    """A lexical term that is more than one FTS5 token — a dotted run from
+    lexical_terms(). Searched and counted as a phrase, never a vocab seek."""
+    return _LEX_TOKEN.fullmatch(term) is None
+
+
 def is_identifier_shaped(term: str) -> bool:
     """Letters and digits mixed at LEX_EXACT_MIN_LEN+, or digits only at
-    LEX_EXACT_MIN_LEN_DIGITS+. A version string never qualifies: '4.20.2'
-    tokenises to '4' '20' '2' (stated limit, 4.21.1)."""
+    LEX_EXACT_MIN_LEN_DIGITS+, or (4.21.3) a dotted run of three or more
+    parts: '4.20.2' and '2026.9.7' pin, '3.12' and '1.5' stay topics — a
+    two-part number is a Python or a page size as often as a release."""
     if not any(ch.isdigit() for ch in term):
         return False
+    if is_phrase(term):
+        return term.count(".") >= 2
     if term.isdigit():
         return len(term) >= LEX_EXACT_MIN_LEN_DIGITS
     return len(term) >= LEX_EXACT_MIN_LEN
@@ -135,9 +155,10 @@ def lexical_terms(prompt: str) -> list[str]:
 
     Tokenises the way FTS5's default unicode61 tokenizer does (runs of
     letters/digits; `-`, `.`, `_`, `/` all split) so "GHSA-8cw4-87c7-c6xx"
-    becomes the same four tokens on both sides of the match. Drops
-    stopwords and short filler (alpha < 3 chars; digit-bearing tokens keep
-    from 2 chars so the "2" of "4.20.2" is dropped but "c6xx" stays). Terms are
+    becomes the same four tokens on both sides of the match. A dotted
+    number run ("4.20.2", "v2026.9.7") is lifted out whole as a PHRASE
+    term (4.21.3). Drops stopwords and short filler (alpha < 3 chars;
+    digit-bearing tokens keep from 2 chars so "c6xx" stays).
     Digit-bearing tokens (ids, hashes, ports, versions) go first: they are
     the identifiers the lane exists for, and the term cap trims from the
     tail. VecStore.lexical_search turns the list into a MATCH expression —
@@ -147,7 +168,25 @@ def lexical_terms(prompt: str) -> list[str]:
     seen: set[str] = set()
     ids: list[str] = []
     words: list[str] = []
-    for tok in _LEX_TOKEN.findall(prompt.lower()):
+    lowered = prompt.lower()
+    # 4.21.3: dotted runs first, as phrases. A three-part run (the shape
+    # that pins) goes in BOTH spellings — the store writes 'v4.20.2' and
+    # '4.20.2' about equally (changelog vs bus), and a phrase matches only
+    # its own tokens, adjacent and in order. Other shapes (an address, a
+    # price, a clock time, a four-part build) get one spelling: the 'v'
+    # form of 192.0.2.7 is a guaranteed miss that still costs a term slot
+    # and two doc counts (review, 2026-09-10). The run's own digits never
+    # reach the token loop below: '20' alone is filler.
+    for run in _LEX_DOTTED.findall(lowered):
+        spellings = [run]
+        if run.count(".") == 2:
+            spellings.append(run[1:] if run.startswith("v") else "v" + run)
+        for spelling in spellings:
+            if spelling not in seen:
+                seen.add(spelling)
+                ids.append(spelling)
+    lowered = _LEX_DOTTED.sub(" ", lowered)
+    for tok in _LEX_TOKEN.findall(lowered):
         if tok in seen or tok in _LEX_STOPWORDS:
             continue
         has_digit = any(ch.isdigit() for ch in tok)
@@ -558,7 +597,17 @@ class VecStore:
         return hits
 
     def term_doc_count(self, term: str) -> int:
-        """How many memories contain `term` (one FTS5 vocab seek; 0 if none)."""
+        """How many memories contain `term` (one FTS5 vocab seek; 0 if none).
+        A phrase term (4.21.3) has no vocab row: it is counted by a MATCH
+        over the phrase — under 1 ms on a 17k-row tenant for a version,
+        up to ~8 ms when every token of the phrase is in nearly every row
+        (spike + review, 2026-09-10); the positional check is the cheap
+        part, the posting-list walk is the cost."""
+        if is_phrase(term):
+            row = self._conn.execute(
+                "SELECT count(*) AS doc FROM vec_lex WHERE vec_lex MATCH ?",
+                ('"' + term.replace('"', '""') + '"',)).fetchone()
+            return int(row["doc"])
         row = self._conn.execute(
             "SELECT doc FROM vec_lex_vocab WHERE term = ?", (term,)).fetchone()
         return int(row["doc"]) if row else 0

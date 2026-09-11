@@ -1,5 +1,61 @@
 # Changelog
 
+## v4.21.3 — Dotted versions pin, pins hold still (2026-09-10)
+
+Problem 1: 4.21.1 stated its own limit — a version string never pinned,
+because FTS5's tokenizer splits `4.20.2` into `4`, `20`, `2` and the
+lane OR-ed the one survivor (`20`) in with the words. CC2's diagnostic
+on the production `cc` tenant put the memory holding `4.20.2` at
+lexical rank 19, cut before the ranker saw it. A version is the
+identifier the fleet names most often.
+
+Fix: the tokenizer is unchanged (no index rebuild, `LEX_SCHEMA` stays
+1). `lexical_terms` lifts each dotted number run out of the prompt whole
+and searches it as an FTS5 PHRASE — the same tokens, adjacent, in order
+— a three-part run in both spellings, `4.20.2` and `v4.20.2`, because
+the store writes them about equally (changelog vs bus receipt) and a
+phrase matches its tokens adjacent and in order, so each spelling has
+to be asked for. Other shapes (an address, a price, a four-part build)
+get one spelling: the `v` form of `192.0.2.7` is a guaranteed miss
+that still costs a term slot and two doc counts (review). The run's
+own digits never reach the word loop, and a run glued to letters
+(`rev4.20.2`, `python3.12.1`) yields no run at all — the stated limit.
+A phrase has no vocab row, so `term_doc_count` counts it with a MATCH:
+under 1 ms on a 17k-row tenant for a version, up to ~8 ms when every
+token of the phrase is in nearly every row (spike + review,
+2026-09-10). Three or more parts is identifier-shaped (`4.20.2`,
+`2026.9.7`) and pins under the same 1–25 document cap; two parts
+(`3.12`, `1.5`) stays a topic — as often a Python or a page size as a
+release. Text holding `4 … 20 … 2` non-adjacent does not match;
+`4.20.1` does not match `4.20.2`. Known: a prompt listing six versions
+fills the 12-term cap with numbers and starves its words — it is asking
+about versions.
+
+Problem 2: pins flickered. Two hash-bearing memories at composite 0.515
+and 0.519 swapped order between two calls a minute apart (CC2, #3356):
+the first call's access bump moved the second call's score. Every pin
+already holds the identifier the prompt named, so the composite has
+nothing honest to add between them.
+
+Fix: `ranking.exact_first` orders the pinned group newest first,
+`memory_id` as the tie-break; the cap takes from the front of that
+order and the unpinned chunks keep their scored place. `created_at`
+changes only when a memory is written, so the same prompt serves the
+same order until the store does.
+
+Stated, not fixed — release-note contamination: CC's own "4.21.1
+shipped, smoke with 379f571" memory holds the hash and now leads the
+pins as the newest one; the deploy memory the question meant sits
+second. Newest-first, composite and single-term BM25 all favour the
+short new note over the long old answer on that specimen, so no cheap
+ordering rule beats it and none is pretended to. The window still holds
+both when `max_results` allows two pins.
+
+Tests: dotted runs as phrases in both spellings (unit), phrase counting
+and search on a store where the same tokens sit non-adjacent, pin order
+by date and id with the cap, and the end-to-end pin of a `v4.20.2`
+memory from a bare `4.20.2` prompt beside a `3.12` that stays a topic.
+
 ## v4.21.2 — Durable writes and travelling history (2026-09-10)
 
 Two findings from the Memory Challenge harness, both boring, both real.

@@ -27,6 +27,7 @@ stays accessible).
 from __future__ import annotations
 
 import math
+import time
 from typing import Optional
 
 from agentb.config import RankingConfig
@@ -279,11 +280,30 @@ def order_revisions(chunks: list) -> list:
 # chunks keep their scored place among the others.
 
 
+# Pins order newest first, memory_id as the tie-break (4.21.3). Every pin
+# holds the identifier the prompt named, so the composite has nothing to
+# add between them — and it flickered: two pins at 0.515 / 0.519 swapped
+# between two calls a minute apart because the first call's access bump
+# moved the second's score (CC2, #3356). A memory's date only changes when
+# it is written; the same prompt now serves the same order until the store
+# does. The date is read the way server._age reads it: `age_days` first
+# (VEC and LEX chunks carry it; _chunk_from_vec_hit leaves `created_at`
+# unset), then `created_at`. Undated pins go last.
+
+
+def _pin_key(c) -> tuple:
+    age = getattr(c, "age_days", None)
+    if age is None and getattr(c, "created_at", None):
+        age = (time.time() - float(c.created_at)) / 86400.0
+    return (float(age) if age is not None else float("inf"),
+            getattr(c, "memory_id", None) or "")
+
+
 def exact_first(chunks: list, limit: Optional[int] = None) -> list:
     """Move up to `limit` chunks flagged `exact` (all of them when limit is
-    None) to the front, order preserved within both groups. Same chunks
-    in, same chunks out."""
-    pinned = [c for c in chunks if getattr(c, "exact", False)]
+    None) to the front, newest first (_pin_key); the rest keep their order.
+    Same chunks in, same chunks out."""
+    pinned = sorted((c for c in chunks if getattr(c, "exact", False)), key=_pin_key)
     if not pinned:
         return list(chunks)
     lead = pinned if limit is None else pinned[:max(0, limit)]

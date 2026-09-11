@@ -525,7 +525,7 @@ def test_newest_filters_in_sql_before_the_limit(tmp_path: Path):
 
 # ── v4.21: the lexical lane ─────────────────────────────────────────────────
 
-from agentb.vec import LexHit, LEX_COMMON_MIN, LEX_EXACT_MAX_DF, LEX_MAX_TERMS, lexical_terms  # noqa: E402
+from agentb.vec import LexHit, LEX_COMMON_MIN, LEX_EXACT_MAX_DF, LEX_MAX_TERMS, lexical_terms, is_identifier_shaped, is_phrase  # noqa: E402
 
 
 def _lex_rows(store: VecStore) -> dict[str, str]:
@@ -547,6 +547,46 @@ def test_lexical_terms_empty_when_nothing_is_worth_matching():
     assert lexical_terms("what is it") == []
     assert lexical_terms("") == []
     assert lexical_terms("!!! --- ???") == []
+
+
+def test_lexical_terms_lift_dotted_runs_out_as_phrases():
+    t = lexical_terms("what changed in 4.20.2 and v2026.9.7 on python 3.12")
+    # each run whole, before the words; three parts in both spellings, two in one
+    assert t[:5] == ["4.20.2", "v4.20.2", "v2026.9.7", "2026.9.7", "3.12"]
+    # the run's own digits are not filler tokens on the side
+    assert not {"4", "20", "2", "2026", "9", "7", "12"} & set(t)
+    assert {"changed", "python"} <= set(t)
+    # an address, a price, a four-part build: one spelling each, no 'v' miss
+    assert lexical_terms("ssh to 192.0.2.7 costs $19.99 on 153.0.8010.36")[:3] == [
+        "192.0.2.7", "19.99", "153.0.8010.36"]
+    # glued to letters or entered after a dot: no run at all (stated limit)
+    assert not any("." in x for x in lexical_terms("rev4.20.2 and python3.12.1 and 4.20.2v"))
+    # trailing punctuation is not glue
+    assert lexical_terms("was it 4.20.2? yes, 4.20.2.")[:2] == ["4.20.2", "v4.20.2"]
+
+
+def test_dotted_runs_pin_at_three_parts_and_are_topics_at_two():
+    assert is_identifier_shaped("4.20.2") and is_identifier_shaped("v2026.9.7")
+    assert not is_identifier_shaped("3.12") and not is_identifier_shaped("v1.5")
+    assert is_phrase("4.20.2") and not is_phrase("379f571")
+
+
+def test_phrase_terms_are_counted_and_searched_as_phrases(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("rel", "mnemo v4.20.2 shipped the seal fix", _vec_along(0), category="decision")
+    store.upsert("bare", "mnemo 4.20.2 is live on the workstation", _vec_along(1), category="decision")
+    # the same three tokens, not adjacent: a phrase must not match them
+    store.upsert("scatter", "4 tenants, 20 rows, 2 restarts", _vec_along(2), category="decision")
+    store.upsert("prev", "mnemo 4.20.1 is the previous release", _vec_along(3), category="decision")
+    # 'v4.20.2' tokenises to v4/20/2, so each spelling counts only its own
+    assert store.term_doc_count("4.20.2") == 1
+    assert store.term_doc_count("v4.20.2") == 1
+    assert store.term_doc_count("2026.9.7") == 0
+    terms = lexical_terms("what changed in 4.20.2")
+    assert store.exact_terms(terms) == ["4.20.2", "v4.20.2"]
+    hits = store.lexical_search(terms, top_k=5)
+    assert {h.memory_id for h in hits} == {"rel", "bare"}
+    store.close()
 
 
 def test_lexical_terms_cap_and_keep_identifiers_first():

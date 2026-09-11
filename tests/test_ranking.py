@@ -431,3 +431,24 @@ def test_exact_first_is_a_stable_partition():
     assert [x.name for x in exact_first(e, limit=1)] == ["p1", "s1", "p2", "s2", "p3"]
     assert [x.name for x in exact_first(e, limit=2)] == ["p1", "p2", "s1", "s2", "p3"]
     assert [x.name for x in exact_first(e, limit=0)] == ["p1", "s1", "p2", "s2", "p3"]
+
+
+def test_pins_lead_newest_first_with_a_fixed_tie_break():
+    class C:
+        # VEC/LEX chunks carry age_days, never created_at (server seam);
+        # a chunk with created_at is honoured too
+        def __init__(self, name, exact=False, age_days=None, created_at=None):
+            self.name, self.exact, self.memory_id = name, exact, name
+            self.age_days, self.created_at = age_days, created_at
+    old, new, undated, s = C("old", True, 30.0), C("new", True, 1.0), C("undated", True), C("s")
+    # the scored order put `old` first; pins order by date, not by score
+    assert [x.name for x in exact_first([old, s, new, undated])] == ["new", "old", "undated", "s"]
+    # created_at is read when present, on the same axis as age_days
+    dated = C("dated", True, created_at=time.time() - 10 * 86400)
+    assert [x.name for x in exact_first([old, dated, new])] == ["new", "dated", "old"]
+    # same date: memory_id decides, so two calls agree without a score
+    x_b, x_a = C("b", True, 5.0), C("a", True, 5.0)
+    assert [x.name for x in exact_first([x_b, x_a])] == ["a", "b"]
+    assert [x.name for x in exact_first([x_a, x_b])] == ["a", "b"]
+    # the cap takes from the front of the pin order; the rest keep their place
+    assert [x.name for x in exact_first([old, s, new], limit=1)] == ["new", "old", "s"]

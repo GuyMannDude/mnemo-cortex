@@ -61,11 +61,11 @@ def _client(tmp_path, ranking=None):
         return TestClient(create_app(cfg))
 
 
-def _seed(tmp_path, memory_id, summary, vec):
+def _seed(tmp_path, memory_id, summary, vec, age_days=1.0):
     base = tmp_path / "agents" / "default"
     mem_dir = base / "memory"
     mem_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.time() - 86400
+    ts = time.time() - age_days * 86400
     (mem_dir / f"{memory_id}.json").write_text(json.dumps({
         "id": memory_id, "summary": summary, "key_facts": [],
         "category": "decision", "source": "user", "created_at": ts,
@@ -148,6 +148,39 @@ def test_pins_never_own_the_window(tmp_path):
     # may follow on its own score — the fillers are equally irrelevant here
     assert all(m.startswith("log-") for m in served[:2]), served
     assert served[2] == "near", served
+
+
+def test_a_dotted_version_pins_and_a_two_part_number_does_not(tmp_path):
+    """4.21.1's stated limit: '4.20.2' tokenised into filler and the memory
+    holding it sat at lexical rank 19. 4.21.3: the run is a phrase term in
+    both spellings, and three parts is identifier-shaped."""
+    _seed_world(tmp_path)
+    _seed(tmp_path, "release", "mnemo v4.20.2 shipped the seal fix", _axis(0, -1.0))
+    _seed(tmp_path, "runtime", "python 3.12 is the interpreter on the laptop", _axis(0, -1.0))
+    with _client(tmp_path) as client:
+        version = _context(client, "what changed in 4.20.2")
+        two_part = _context(client, "which python 3.12 runs on the laptop")
+    # the store spells it 'v4.20.2'; the prompt's bare spelling still pins it
+    assert version["chunks"][0]["memory_id"] == "release", version
+    assert version["chunks"][0]["cache_tier"] == "LEX"
+    # two parts is a topic: cosine 1.0 keeps slot 1
+    assert two_part["chunks"][0]["memory_id"] == "near", two_part
+
+
+def test_pins_order_newest_first_through_the_served_window(tmp_path):
+    """Two memories hold the hash. The OLDER one sits on the query (cosine
+    1.0, the composite's favourite); the newer one is at the antipode.
+    Pins order by date, not score: newer first — and the order is the
+    same on a second call, after the first call's access bump."""
+    _seed_world(tmp_path)
+    _seed(tmp_path, "older", "commit 4b1d9e2 planned for the memory server", _axis(0), age_days=30.0)
+    _seed(tmp_path, "newer", "commit 4b1d9e2 landed and sealed", _axis(0, -1.0), age_days=2.0)
+    # a window of 4 lets two pins lead (the cap is half the window)
+    with _client(tmp_path) as client:
+        first = _context(client, "what happened with commit 4b1d9e2", max_results=4)
+        second = _context(client, "what happened with commit 4b1d9e2", max_results=4)
+    assert [c["memory_id"] for c in first["chunks"]][:2] == ["newer", "older"], first
+    assert [c["memory_id"] for c in second["chunks"]][:2] == ["newer", "older"], second
 
 
 def test_a_bare_four_digit_number_does_not_pin(tmp_path):
