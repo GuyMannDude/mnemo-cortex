@@ -1,5 +1,43 @@
 # Changelog
 
+## v4.21.5 — Late-arriving history is not tonight's news (2026-09-12)
+
+Problem: the 2026-09-12 boot brief opened with a run of bus messages from
+April — "Bus received a ping-notification-loop message from CC to Tester
+· 2026-04-22" and twenty more — inside a window that claimed to cover
+one day. Mechanism: the `bus` tenant has been dormant since its watcher
+retired on 04-22, so its April hot sessions were never archived; the
+first time the tenant was loaded again (the ledger seal walks every
+tenant) the maintenance loop archived them all, writing 22 fresh
+session_log memories stamped with the ARCHIVAL time. The dreamer's
+harvest gates on file mtime only, so months-old events arrived as the
+night's news. Same shape for `bw`, `ollama-igor2`, `lmstudio-igor2`,
+`guy-prof` and `pocket`, and for any import that lands old material in
+one go.
+
+Fix, two halves:
+- `agentb/server.py`: an archived-session memory's `timestamp` is now the
+  session's `last_exchange`, not `archived_at` — when it happened, not
+  when the janitor got to it. (`created_at` is unchanged: recall decay
+  still counts from the write.)
+- `mnemo-dream.py`: `harvest_agentb` adds a second gate — a memory whose
+  own `timestamp` predates the window by more than one hour of
+  write-latency grace is skipped and counted in the log. Missing or
+  unparseable timestamps keep the mtime verdict (fail open). The window
+  now means "events in the window", not "files that landed in it".
+
+Stated limit: a memory stamped more than an hour before the window but
+written inside it is dropped from this brief and never revisited — the
+window is never re-examined. The skip log names each tenant's count so a
+recurrence says where it came from.
+
+Tests: `tests/test_dream_window.py` (predicate + harvest, the April
+specimen pinned) and a server test that an archived session's memory
+carries the exchange time in a form the dreamer's gate can parse.
+
+Deploy: the dreamer half runs from the IGOR-2 checkout on the next 03:15
+run after a pull; the server half needs the usual restart.
+
 ## v4.21.4 — Dreamer keeps the lesson, drops the blame (2026-09-12)
 
 Problem: the nightly dream brief is injected into every agent's boot.

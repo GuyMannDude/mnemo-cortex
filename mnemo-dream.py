@@ -309,14 +309,44 @@ log = logging.getLogger("mnemo-dream")
 # Harvest: AgentB writebacks (one directory per agent)
 # ---------------------------------------------------------------------------
 
+# Writers batch (jsonl-sync flushes every 60 s), so a memory stamped just
+# before the cutoff can land on disk just after it. One hour of grace keeps
+# that memory; months-late archival is still months late.
+LATE_ARRIVAL_GRACE = timedelta(hours=1)
+
+
+def _predates_window(timestamp, since: datetime) -> bool:
+    """True when a memory's own timestamp is older than the window by more
+    than the grace period. Missing or unparseable → False (mtime decides)."""
+    if not timestamp:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts < since - LATE_ARRIVAL_GRACE
+
+
 def harvest_agentb(since: datetime) -> list[dict]:
     """Read AgentB writeback JSONs newer than `since` for AGENTB_AGENTS only.
 
     Post-2026-05-16 v2.10.0 cutover layout: memory files live at
     ~/.agentb/agents/<agent>/memory/*.json. Pre-cutover scripts looked at
     ~/.agentb/memory/<agent>/ — that path is empty post-cutover.
+
+    Two gates, both must pass: the file LANDED in the window (mtime) and the
+    memory is ABOUT the window (its own `timestamp`). The 2026-09-12 brief
+    specimen: the dormant `bus` tenant was loaded for the first time in
+    months, the maintenance loop archived its April hot sessions, and 22
+    fresh session_log files about April events were dreamed as tonight's
+    news. A memory whose timestamp predates the window is late-arriving
+    history, not news — skipped and counted. Unparseable timestamps keep
+    the mtime verdict (fail open).
     """
     memories = []
+    stale: dict = {}
 
     for agent_id in AGENTB_AGENTS:
         if agent_id == "dreamer":
@@ -332,6 +362,9 @@ def harvest_agentb(since: datetime) -> list[dict]:
                 if mtime < since:
                     continue
                 data = json.loads(f.read_text(encoding="utf-8"))
+                if _predates_window(data.get("timestamp"), since):
+                    stale[agent_id] = stale.get(agent_id, 0) + 1
+                    continue
                 memories.append({
                     "source": "agentb",
                     "agent_id": agent_id,
@@ -345,6 +378,11 @@ def harvest_agentb(since: datetime) -> list[dict]:
             except (json.JSONDecodeError, KeyError) as e:
                 log.warning(f"Skipping {f}: {e}")
 
+    if stale:
+        total = sum(stale.values())
+        per_agent = ", ".join(f"{a}={n}" for a, n in sorted(stale.items()))
+        log.info(f"  Skipped {total} late-arriving memor{'y' if total == 1 else 'ies'} "
+                 f"about events before {since.isoformat()} ({per_agent})")
     return memories
 
 

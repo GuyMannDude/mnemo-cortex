@@ -2444,6 +2444,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         mid = hashlib.sha256(
                             f"archived:{arch['session_id']}".encode()
                         ).hexdigest()[:16]
+                        if not arch.get("last_exchange"):
+                            log.warning(
+                                f"Archived session {arch['session_id']} for '{tenant_key}' "
+                                "has no exchange timestamp; memory falls back to archival time")
                         entry = {
                             "id": mid,
                             "session_id": arch["session_id"],
@@ -2452,7 +2456,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             "key_facts": arch.get("key_facts", []),
                             "projects_referenced": [],
                             "decisions_made": [],
-                            "timestamp": arch.get("archived_at", ""),
+                            # The session's own time, not the archival time:
+                            # a dormant tenant's hot sessions are archived on
+                            # its first load, which can be months later. The
+                            # dreamer reads this field to keep a late-archived
+                            # session out of "tonight's" brief (v4.21.5).
+                            "timestamp": arch.get("last_exchange") or arch.get("archived_at", ""),
                             "created_at": time.time(),
                             "source": "tool",
                             "category": "session_log",

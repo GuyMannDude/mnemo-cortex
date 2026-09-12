@@ -13,6 +13,8 @@ M5: /preflight redacts prompt/draft before they reach the reasoner, and
 (M6 — the passport evidence-list cap — is tested in tests/passport/test_api.py.)
 """
 import asyncio
+import json
+import time
 
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -285,3 +287,50 @@ def test_preflight_enforces_scoped_token_pin(tmp_path):
         own = c.post("/preflight", json={"prompt": "hi", "draft_response": "x",
                                          "agent_id": "cc"}, headers=_auth(SCOPED))
         assert own.status_code == 200
+
+
+# ── v4.21.5: an archived session's memory is dated by the session, not the janitor ──
+
+def test_archived_session_memory_carries_exchange_time_not_archival_time(tmp_path):
+    """The 2026-09-12 brief specimen: a dormant tenant's months-old hot
+    sessions get archived on its first load, and the session_log memory
+    used to carry the ARCHIVAL time — so the dreamer read April events as
+    last night's. The memory's timestamp must be the session's own
+    last_exchange; created_at still marks the write for recall decay."""
+    app = make_app(tmp_path, reasoner=VerdictReasoning(reply="cc talked about anvils"))
+    with TestClient(app) as c:
+        r = c.post("/ingest", json={"agent_id": "cc", "prompt": "hello", "response": "world"},
+                   headers=_auth(MASTER))
+        assert r.status_code == 200, r.text
+        tenant = app.state.tenants._tenants["cc"]
+        sm = tenant["sessions"]
+        sm.config.hot_days = 0            # expire the session immediately
+        sm._current_session_id = None     # and stop it counting as the live one
+        sm._current_session_file = None
+        time.sleep(0.05)
+        asyncio.run(app.state.maintenance_cycle(1))
+
+        warm = [json.loads(p.read_text(encoding="utf-8")) for p in sm.warm_dir.glob("*.json")]
+        assert len(warm) == 1, "session was not archived"
+        mems = [json.loads(p.read_text(encoding="utf-8"))
+                for p in tenant["memory_dir"].glob("*.json")]
+        mems = [m for m in mems if "archived-session" in m.get("additional_tags", [])]
+        assert len(mems) == 1, "archived session did not become a session_log memory"
+        assert mems[0]["timestamp"] == warm[0]["last_exchange"]
+        assert mems[0]["timestamp"] != warm[0]["archived_at"]
+        assert mems[0]["created_at"] > 0
+
+        # The contract with the other half of the fix: the dreamer's gate
+        # fails OPEN on a format it cannot parse, so a drift here would leave
+        # both suites green and production back on the old behaviour.
+        import importlib.util
+        from datetime import datetime, timedelta, timezone
+        from pathlib import Path as _P
+        spec = importlib.util.spec_from_file_location(
+            "mnemo_dream_contract", _P(__file__).resolve().parent.parent / "mnemo-dream.py")
+        dream = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dream)
+        ts = mems[0]["timestamp"]
+        now = datetime.now(timezone.utc)
+        assert dream._predates_window(ts, now + timedelta(days=2)), "server timestamp not parsed by the dreamer gate"
+        assert not dream._predates_window(ts, now - timedelta(days=2))
