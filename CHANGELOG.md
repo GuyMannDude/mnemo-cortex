@@ -1,5 +1,30 @@
 # Changelog
 
+## v4.21.4 — Dreamer keeps the lesson, drops the blame (2026-09-12)
+
+Problem: the nightly dream brief is injected into every agent's boot.
+Its "Lessons learned" item asked the model for "failures, workarounds,
+doctrines reinforced", and the model obliged: session notes written in
+the heat of a bad night (who missed what, "again", "should have") were
+carried whole into the next morning's brief for every agent. A lesson
+needs its specimen — the concrete trap is what makes it stick — but it
+does not need the story of fault, and replaying that story each boot
+is a cost with no return.
+
+Fix: the Lessons-learned item in all three prompts (`DREAM_SYSTEM_PROMPT`,
+`PER_AGENT_SYSTEM_PROMPT`, `ROLLUP_SYSTEM_PROMPT`) now asks for one
+specimen and one rule per line: what exactly happened, then what to do
+next time. Keep the specimen; drop the story of fault. No blame, no
+shame, no "again", no "should have". Prompt wording only: the stated-line
+grammar, the validator, the section headers and the budget cap are
+unchanged.
+
+Idea credited to Merlin ("burn the trauma, keep the lesson"), from Guy's
+memory-methods thread; the wording is ours.
+
+Tests: one new test pins the tone contract across all three prompts and
+asserts the old phrasing is gone.
+
 ## v4.21.3 — Dotted versions pin, pins hold still (2026-09-10)
 
 Problem 1: 4.21.1 stated its own limit — a version string never pinned,

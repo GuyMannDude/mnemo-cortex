@@ -459,7 +459,7 @@ Your job: produce a synthesis brief that answers:
 2. **What was decided** — choices made, directions set, approaches validated or rejected
 3. **What's blocked or pending** — open issues, next steps, dependencies on people or external systems
 4. **Cross-agent connections** — things one agent did that another should know about
-5. **Lessons learned** — failures, workarounds, doctrines reinforced
+5. **Lessons learned** — one specimen and one rule per line: what exactly happened, then what to do next time. Keep the specimen (the concrete trap is what makes the lesson stick); drop the story of fault. No blame, no shame, no "again", no "should have", no emotional residue about who missed what
 
 Be specific. Names, paths, versions, error messages. No fluff, no filler. Every sentence should carry information.
 
@@ -472,7 +472,7 @@ You'll be given that agent's writebacks in chronological order. Produce a dense,
 1. **Built/shipped** — deliverables with file paths, commits, versions
 2. **Decided** — choices made, approaches validated or rejected
 3. **Blocked or pending** — open issues, next steps
-4. **Lessons learned** — failures, doctrines reinforced
+4. **Lessons learned** — one specimen and one rule per line: what exactly happened, then what to do next time. Keep the specimen; drop the story of fault. No blame, no shame, no "again", no "should have"
 
 Be specific. Names, paths, versions, error messages. No fluff. Lead with the agent's name as a markdown header.
 
@@ -488,7 +488,7 @@ You'll be given per-agent daily briefs from a multi-agent workspace. Produce one
 2. **What was decided** — workspace-level choices
 3. **What's blocked or pending** — open work, dependencies
 4. **Cross-agent connections** — work one agent did that another should know about
-5. **Lessons learned** — failures, workarounds, doctrines reinforced
+5. **Lessons learned** — one specimen and one rule per line: what exactly happened, then what to do next time. Keep the specimen (the concrete trap is what makes the lesson stick); drop the story of fault. No blame, no shame, no "again", no "should have", no emotional residue about who missed what
 
 Be specific. Names, paths, versions, error messages. No fluff. Use the markdown section headers above.
 

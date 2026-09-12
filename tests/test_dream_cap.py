@@ -30,6 +30,19 @@ dream = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dream)
 
 
+def test_dream_prompts_lessons_keep_specimen_drop_blame():
+    # Merlin steal (Clapton method): "burn the trauma, keep the lesson".
+    # The old heading asked for "failures, workarounds, doctrines reinforced"
+    # and pulled the agents' shame-cloud into every boot. The lesson keeps
+    # its specimen (the concrete trap) and its rule; the story of fault goes.
+    for prompt in (dream.DREAM_SYSTEM_PROMPT, dream.PER_AGENT_SYSTEM_PROMPT, dream.ROLLUP_SYSTEM_PROMPT):
+        assert "one specimen and one rule per line" in prompt
+        assert "drop the story of fault" in prompt
+        assert "No blame" in prompt
+        assert "failures, workarounds, doctrines reinforced" not in prompt
+        assert "failures, doctrines reinforced" not in prompt
+
+
 def test_dream_prompts_require_stated_line_grammar():
     for prompt in (dream.PER_AGENT_SYSTEM_PROMPT, dream.ROLLUP_SYSTEM_PROMPT):
         assert "explicit subject" in prompt
