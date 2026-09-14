@@ -1,5 +1,23 @@
 # Changelog
 
+## v4.22.2 — A name search is not a word search (2026-09-14)
+
+Problem: the 4.22.1 live proof passed on the surface (a never-typed
+misspelling found the photographer's memory) but the raw phon lane told a
+different story: the surname's key is also the key of "fresh", "fresh" sits
+in ~1,000 memories of the cc tenant, and the name's phonetic evidence
+ranked 428th of 1,005 — the top hit had come from the vector lane. Every
+word of every memory was keyed, so any name that sounds like an everyday
+word was drowned by that word.
+
+Fix (Guy's ruling: names and words are different searches with different
+criteria): only name-shaped words — capitalised in the memory, not
+all-caps, letters only — enter the phon column. "fresh" contributes
+nothing; "Fershaw", "Ferchau", "Eleanor", "Williston" do. The query side is
+unchanged: an unseen word still asks by sound. LEX_SCHEMA 3 → 4 rebuilds
+each tenant's phon column on first open (~7 s per big tenant). Test: 200
+"fresh" memories cannot bury "Andre Fershaw" for the query "fershow".
+
 ## v4.22.1 — "ch" is a sound, not two letters (2026-09-14)
 
 Problem: the 4.22.0 live proof used the wrong name. The photographer the

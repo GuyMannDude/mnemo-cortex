@@ -778,6 +778,24 @@ def test_misspelled_name_is_found_by_sound_only_when_the_spelling_is_unseen(tmp_
     assert [h.memory_id for h in store.lexical_search(["msg"], top_k=5, prune=False, phonetic=False)] == ["real"]
     # and a stored key never counts as a word for the fallback's own guard
     assert store.term_doc_count(phonetic_key("fershaw")) == 0
+
+
+def test_only_name_shaped_words_key_so_an_everyday_word_cannot_drown_a_surname(tmp_path: Path):
+    # 4.22.2 (Guy): a name search and a word search are different searches.
+    # "fresh" keys like the surname Fershaw; on the live cc tenant ~1,000
+    # "fresh" memories buried the name at rank 428 in the phon lane.
+    from agentb.vec import phonetic_keys, is_name_shaped
+    assert phonetic_key("fresh") == phonetic_key("fershaw")
+    assert phonetic_keys("a fresh install on a fresh box") == ""
+    assert phonetic_keys("Andre Fershaw is a photographer in Williston") == " ".join(
+        sorted({phonetic_key("andre"), phonetic_key("fershaw"), phonetic_key("williston")}))
+    assert is_name_shaped("Fershaw") and not is_name_shaped("fresh") and not is_name_shaped("ECONNRESET")
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("m1", "Andre Fershaw is a photographer in Williston", _vec_along(0))
+    for i in range(200):
+        store.upsert(f"fresh{i}", f"a fresh install on box number {i}", _vec_along(i % EMBED_DIM))
+    assert store.phonetic_fallback(["fershow"]) == [phonetic_key("fershow")]
+    assert [h.memory_id for h in store.lexical_search(["fershow"], top_k=5)] == ["m1"]
     from agentb.config import RankingConfig
     assert RankingConfig().phonetic_enabled is True
 

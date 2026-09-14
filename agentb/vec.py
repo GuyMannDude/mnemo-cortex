@@ -95,11 +95,13 @@ _LEX_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 # 2026-09-10). Glued spellings are the stated limit.
 _LEX_DOTTED = re.compile(r"(?<![^\W_])(?<![^\W_]\.)v?\d+(?:\.\d+)+(?!\.?[^\W_])", re.UNICODE)
 LEX_MAX_TERMS = 12
-LEX_SCHEMA = 3  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0; 3: ch->x keys, 4.22.1)
+LEX_SCHEMA = 4  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0; 3: ch->x keys, 4.22.1; 4: names-only keys, 4.22.2)
 # 4.22.0 — the phonetic fallback. A name-shaped word the store has never
 # seen ("Elenore", "Fershow") gets its phonetic key OR-ed into the MATCH
 # against the `phon` column, so the memory that spells it "Eleanor" /
-# "Fershaw" is still a lexical candidate. Only words of PHON_MIN_LEN+
+# "Fershaw" is still a lexical candidate. 4.22.2: the column holds keys of
+# NAME-shaped words only (capitalised in the memory) — a name search, not a
+# sound-alike lane for every word. Only words of PHON_MIN_LEN+
 # letters with a key of PHON_MIN_KEY+ characters take part: a three-letter
 # name has no skeleton to match on ("guy" and "gay" would fold), and only
 # when the word's own document count is ZERO — a correctly spelled name
@@ -187,12 +189,25 @@ def phonetic_key(word: str) -> str:
     return key if len(key) >= PHON_MIN_KEY else ""
 
 
+def is_name_shaped(tok: str) -> bool:
+    """A proper-name-shaped token as it appears in the memory: capitalised
+    initial, not shouted (ECONNRESET is an identifier), letters only."""
+    return tok[0].isupper() and not tok.isupper() and tok.isalpha()
+
+
 def phonetic_keys(text: str) -> str:
-    """The distinct phonetic keys of a memory's words, space-joined for the
-    `phon` column (stopwords and short words contribute nothing)."""
+    """The distinct phonetic keys of a memory's NAME-shaped words, space-
+    joined for the `phon` column (stopwords and short words contribute
+    nothing). 4.22.2 (Guy, 2026-09-14): a name search and a word search are
+    different searches with different criteria — a name is matched by
+    sound, a word by its spelling — so everyday words never enter the
+    column. Before this every word keyed: "fresh" keyed the same as the
+    surname Fershaw and sat in ~1,000 memories of a working tenant, so the
+    name's phonetic evidence ranked 428th of 1,005 (CC2, 4.22.1 live proof).
+    A sentence-initial common word still keys; that noise is rare."""
     keys: set[str] = set()
-    for tok in _LEX_TOKEN.findall(text.lower()):
-        if tok in _LEX_STOPWORDS:
+    for tok in _LEX_TOKEN.findall(text):
+        if not is_name_shaped(tok) or tok.lower() in _LEX_STOPWORDS:
             continue
         key = phonetic_key(tok)
         if key:
