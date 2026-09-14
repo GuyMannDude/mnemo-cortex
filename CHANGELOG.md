@@ -1,5 +1,22 @@
 # Changelog
 
+## v4.22.1 — "ch" is a sound, not two letters (2026-09-14)
+
+Problem: the 4.22.0 live proof used the wrong name. The photographer the
+brain had carried as "Fershaw" since the AL-export dig is spelt Ferchau —
+Guy's own early misspelling, corrected by Guy on the deploy night — and
+the phonetic key did not fold the two: "ch" was left as a hard c, so
+"ferchau" keyed frk while "fershaw" keyed frx. The exact case the feature
+was built for was the one it could not do.
+
+Fix: "ch" now folds to the sh-symbol, Metaphone's rule, with Metaphone's
+two hard-k exceptions kept: "sch" → sk (school) and "chr" → kr (Christina
+= Kristina, an existing test pair that a plain fold broke). "anchor" and
+"Michael" key as x — the stated trade. LEX_SCHEMA 2 → 3 so every tenant
+rebuilds its phon column on first open after the restart (~7 s per big
+tenant, same as 4.22.0). Tests: Ferchau/Fershaw and Michelle/Mishelle
+join the fold list; 877 passed / 1 skipped on IGOR.
+
 ## v4.22.0 — A misspelled name still finds its person (2026-09-13)
 
 Problem: Guy had Opie search a family line for "Elenore"; the records

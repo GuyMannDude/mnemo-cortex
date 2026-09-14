@@ -735,7 +735,8 @@ def test_exact_terms_are_rare_identifier_shaped_terms(tmp_path: Path):
 
 def test_phonetic_key_folds_spelling_variants_and_keeps_names_apart():
     for a, b in [("Elenore", "Eleanor"), ("Eleanore", "Eleanor"), ("Elinor", "Eleanor"),
-                 ("Fershow", "Fershaw"), ("Sipes", "Sypes"), ("Hutchins", "Hutchens"),
+                 ("Fershow", "Fershaw"), ("Ferchau", "Fershaw"), ("Michelle", "Mishelle"),
+                 ("Sipes", "Sypes"), ("Hutchins", "Hutchens"),
                  ("Steinberger", "Stienberger"), ("Lozier", "Losier"), ("Knightly", "Nightly"),
                  ("Catherine", "Katherine"), ("Christina", "Kristina")]:
         assert phonetic_key(a) == phonetic_key(b) != "", (a, b)

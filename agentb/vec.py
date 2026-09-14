@@ -95,7 +95,7 @@ _LEX_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 # 2026-09-10). Glued spellings are the stated limit.
 _LEX_DOTTED = re.compile(r"(?<![^\W_])(?<![^\W_]\.)v?\d+(?:\.\d+)+(?!\.?[^\W_])", re.UNICODE)
 LEX_MAX_TERMS = 12
-LEX_SCHEMA = 2  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0)
+LEX_SCHEMA = 3  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0; 3: ch->x keys, 4.22.1)
 # 4.22.0 — the phonetic fallback. A name-shaped word the store has never
 # seen ("Elenore", "Fershow") gets its phonetic key OR-ed into the MATCH
 # against the `phon` column, so the memory that spells it "Eleanor" /
@@ -142,7 +142,12 @@ LEX_EXACT_MIN_LEN_DIGITS = 5  # digits only
 
 
 _PHON_INITIAL_SILENT = ("kn", "gn", "pn", "wr")
-_PHON_DIGRAPHS = (("sch", "sk"), ("ph", "f"), ("ck", "k"), ("sh", "x"), ("th", "0"))
+# 4.22.1: "ch" folds to the sh-sound, Metaphone's rule — Guy's friend is
+# spelt Ferchau and said "Fershaw"; before this the two keyed apart (frk /
+# frx). Metaphone's two exceptions keep the hard k: "sch" -> sk (school)
+# and "chr" -> kr (Christina = Kristina). "anchor"/"Michael" still key as
+# x: the stated trade.
+_PHON_DIGRAPHS = (("sch", "sk"), ("chr", "kr"), ("ch", "x"), ("ph", "f"), ("ck", "k"), ("sh", "x"), ("th", "0"))
 _PHON_SILENT_GH = re.compile(r"(?<=[a-z])gh")
 _PHON_SOFT_C = re.compile(r"c(?=[eiy])")
 _PHON_DROP = re.compile(r"[aeiouyhw]")
@@ -158,11 +163,11 @@ def phonetic_key(word: str) -> str:
     "andre"/"andrea" all collide); this key keeps the first letter and
     the consonant skeleton after common English spellings are normalised:
     initial silent clusters dropped (knight -> night), ph->f, ck->k, sch->sk,
-    sh and th to one symbol each, silent gh after a letter dropped, soft c
+    sh, ch and th to one symbol each, silent gh after a letter dropped, soft c
     -> s, hard c and q -> k, z -> s, vowels and h/w/y dropped after the first
     letter, letter runs collapsed ("misisipi" and "mississippi" agree).
     "elenore", "eleanor", "elinor" -> "elnr";
-    "fershow"/"fershaw" -> "frx"; "hutchins" != "hutchinson". Lower-case
+    "fershow"/"fershaw"/"ferchau" -> "frx"; "hutchins" != "hutchinson". Lower-case
     letters and the digit 0 only, so the key is one unicode61 token on
     both sides of the match."""
     w = word.lower()
