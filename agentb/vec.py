@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import functools
 import re
 import sqlite3
 import time
@@ -94,7 +95,18 @@ _LEX_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 # 2026-09-10). Glued spellings are the stated limit.
 _LEX_DOTTED = re.compile(r"(?<![^\W_])(?<![^\W_]\.)v?\d+(?:\.\d+)+(?!\.?[^\W_])", re.UNICODE)
 LEX_MAX_TERMS = 12
-LEX_SCHEMA = 1  # bump to force every index to rebuild its lexical table on next open
+LEX_SCHEMA = 2  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0)
+# 4.22.0 — the phonetic fallback. A name-shaped word the store has never
+# seen ("Elenore", "Fershow") gets its phonetic key OR-ed into the MATCH
+# against the `phon` column, so the memory that spells it "Eleanor" /
+# "Fershaw" is still a lexical candidate. Only words of PHON_MIN_LEN+
+# letters with a key of PHON_MIN_KEY+ characters take part: a three-letter
+# name has no skeleton to match on ("guy" and "gay" would fold), and only
+# when the word's own document count is ZERO — a correctly spelled name
+# never picks up its sound-alikes. At most PHON_MAX_QUERY_KEYS per query.
+PHON_MIN_LEN = 4
+PHON_MIN_KEY = 3
+PHON_MAX_QUERY_KEYS = 4
 # Pruning (2026-09-10): a term present in most of the store is what makes
 # the FTS5 MATCH slow (every matching row is BM25-scored, LIMIT does not
 # bound the work — 87 ms for eight common words on a 17k-row tenant vs
@@ -127,6 +139,60 @@ LEX_COMMON_MIN = 50
 LEX_EXACT_MAX_DF = 25
 LEX_EXACT_MIN_LEN = 4        # letters + digits
 LEX_EXACT_MIN_LEN_DIGITS = 5  # digits only
+
+
+_PHON_INITIAL_SILENT = ("kn", "gn", "pn", "wr")
+_PHON_DIGRAPHS = (("sch", "sk"), ("ph", "f"), ("ck", "k"), ("sh", "x"), ("th", "0"))
+_PHON_SILENT_GH = re.compile(r"(?<=[a-z])gh")
+_PHON_SOFT_C = re.compile(r"c(?=[eiy])")
+_PHON_DROP = re.compile(r"[aeiouyhw]")
+_PHON_DOUBLE = re.compile(r"(.)\1+")
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def phonetic_key(word: str) -> str:
+    """A consonant-skeleton key for a name-shaped word, "" when the word is
+    too short to have one. Built from zero for the misspelled-name case
+    (Guy, 2026-09-13: Opie searched "Elenore", the records say "Eleanor").
+    Soundex was tried first and folds too much ("guy"/"gay", "rocky"/"ricky",
+    "andre"/"andrea" all collide); this key keeps the first letter and
+    the consonant skeleton after common English spellings are normalised:
+    initial silent clusters dropped (knight -> night), ph->f, ck->k, sch->sk,
+    sh and th to one symbol each, silent gh after a letter dropped, soft c
+    -> s, hard c and q -> k, z -> s, vowels and h/w/y dropped after the first
+    letter, letter runs collapsed ("misisipi" and "mississippi" agree).
+    "elenore", "eleanor", "elinor" -> "elnr";
+    "fershow"/"fershaw" -> "frx"; "hutchins" != "hutchinson". Lower-case
+    letters and the digit 0 only, so the key is one unicode61 token on
+    both sides of the match."""
+    w = word.lower()
+    if len(w) < PHON_MIN_LEN or not w.isalpha() or not w.isascii():
+        return ""
+    for pre in _PHON_INITIAL_SILENT:
+        if w.startswith(pre):
+            w = w[1:]
+            break
+    for src, dst in _PHON_DIGRAPHS:
+        w = w.replace(src, dst)
+    w = _PHON_SILENT_GH.sub("", w)
+    w = _PHON_SOFT_C.sub("s", w)
+    w = w.replace("c", "k").replace("q", "k").replace("z", "s")
+    key = w[0] + _PHON_DROP.sub("", w[1:])
+    key = _PHON_DOUBLE.sub(r"\1", key)
+    return key if len(key) >= PHON_MIN_KEY else ""
+
+
+def phonetic_keys(text: str) -> str:
+    """The distinct phonetic keys of a memory's words, space-joined for the
+    `phon` column (stopwords and short words contribute nothing)."""
+    keys: set[str] = set()
+    for tok in _LEX_TOKEN.findall(text.lower()):
+        if tok in _LEX_STOPWORDS:
+            continue
+        key = phonetic_key(tok)
+        if key:
+            keys.add(key)
+    return " ".join(sorted(keys))
 
 
 def is_phrase(term: str) -> bool:
@@ -310,12 +376,15 @@ class VecStore:
             -- text is short and stored twice on purpose.
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_lex USING fts5(
                 memory_id UNINDEXED,
-                text
+                text,
+                phon
             );
             -- per-term document counts over vec_lex (an FTS5 index seek per
             -- lookup): lexical_search prunes the terms that match most of
             -- the store before running the MATCH — see LEX_COMMON_FRACTION.
-            CREATE VIRTUAL TABLE IF NOT EXISTS vec_lex_vocab USING fts5vocab('vec_lex', 'row');
+            -- 4.22.0: 'col' mode, so a document count can be asked of the
+            -- text column alone — the phon column's keys are not words.
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_lex_vocab USING fts5vocab('vec_lex', 'col');
         """)
         # v4.21: an index created before the lexical table has rows in
         # vec_sources and none in vec_lex; rebuild the lexical side from the
@@ -328,12 +397,34 @@ class VecStore:
         # writes vec_sources without vec_lex — memories written under the
         # old binary lack lexical evidence until the key is cleared; they
         # are still found by the vectors (disclosed in the 4.21.0 notes).
+        # 4.22.0 migration: a 4.21 index carries a two-column vec_lex and a
+        # 'row'-mode vocab. CREATE IF NOT EXISTS cannot reshape either, so
+        # both are dropped and re-made in the new shape (the data is the
+        # source text, rebuilt below); clearing the stamp forces that rebuild.
+        lex_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(vec_lex)")}
+        vocab_row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'vec_lex_vocab'").fetchone()
+        vocab_sql = (vocab_row["sql"] if vocab_row and vocab_row["sql"] else "")
+        if "phon" not in lex_cols or "'col'" not in vocab_sql:
+            self._conn.executescript("""
+                DROP TABLE IF EXISTS vec_lex_vocab;
+                DROP TABLE IF EXISTS vec_lex;
+                CREATE VIRTUAL TABLE vec_lex USING fts5(memory_id UNINDEXED, text, phon);
+                CREATE VIRTUAL TABLE vec_lex_vocab USING fts5vocab('vec_lex', 'col');
+                DELETE FROM vec_meta WHERE key = 'lex_schema';
+            """)
+            log.info(f"vec index {self.db_path}: lexical table re-made in the 4.22 shape (text + phon)")
         stamp = self._conn.execute(
             "SELECT value FROM vec_meta WHERE key = 'lex_schema'").fetchone()
         if stamp is None or stamp["value"] != str(LEX_SCHEMA):
             n_src = self._conn.execute("SELECT COUNT(*) AS n FROM vec_sources").fetchone()["n"]
             self._conn.execute("DELETE FROM vec_lex")
-            self._conn.execute("INSERT INTO vec_lex(memory_id, text) SELECT memory_id, text FROM vec_sources")
+            # 4.22.0: the phon column is computed in Python, so the rebuild
+            # walks the rows (one pass; the key function is a few regexes).
+            src_rows = self._conn.execute("SELECT memory_id, text FROM vec_sources")
+            self._conn.executemany(
+                "INSERT INTO vec_lex(memory_id, text, phon) VALUES (?, ?, ?)",
+                ((r["memory_id"], r["text"], phonetic_keys(r["text"])) for r in src_rows))
             self._conn.execute(
                 "INSERT OR REPLACE INTO vec_meta(key, value) VALUES ('lex_schema', ?)", (str(LEX_SCHEMA),))
             log.info(f"vec index {self.db_path}: lexical lane built over {n_src} row(s) (lex_schema {LEX_SCHEMA})")
@@ -400,7 +491,8 @@ class VecStore:
                 (memory_id, text, source_file, ts, category),
             )
             self._conn.execute("DELETE FROM vec_lex WHERE memory_id = ?", (memory_id,))
-            self._conn.execute("INSERT INTO vec_lex(memory_id, text) VALUES (?, ?)", (memory_id, text))
+            self._conn.execute("INSERT INTO vec_lex(memory_id, text, phon) VALUES (?, ?, ?)",
+                               (memory_id, text, phonetic_keys(text)))
             self._conn.execute(
                 "DELETE FROM vec_embeddings WHERE memory_id = ?",
                 (memory_id,),
@@ -537,6 +629,7 @@ class VecStore:
         exclude_categories: Optional[Iterable[str]] = None,
         overfetch_multiplier: int = 5,
         prune: bool = True,
+        phonetic: bool = True,
     ) -> list[LexHit]:
         """The lexical lane (v4.21): BM25 over the stored text.
 
@@ -559,7 +652,16 @@ class VecStore:
         # FTS5 escapes a quote inside a phrase by doubling it; the tokenizer
         # never emits one, but a caller handing terms in raw still gets a
         # string the parser cannot read as syntax.
-        match = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        # every lexical term is qualified to the text column: an unqualified
+        # FTS5 term matches EVERY column, and 130 dictionary words ("msg",
+        # "url", "err", "ids") are some other word's phonetic key (review
+        # 2026-09-13) — only the fallback below may touch phon.
+        match = " OR ".join('text:"' + t.replace('"', '""') + '"' for t in terms)
+        # 4.22.0: an unseen name-shaped word searches by sound as well
+        if phonetic:
+            keys = self.phonetic_fallback(terms)
+            if keys:
+                match += "".join(f' OR phon:"{k}"' for k in keys)
         exclude = set(exclude_categories or ())
         filtering = bool(include_category) or bool(exclude)
         k = top_k * overfetch_multiplier if filtering else top_k
@@ -596,6 +698,25 @@ class VecStore:
                 break
         return hits
 
+    def phonetic_fallback(self, terms: list[str]) -> list[str]:
+        """The phonetic keys to add for `terms` (4.22.0): only a plain word
+        of PHON_MIN_LEN+ letters that NO memory contains (one vocab seek
+        each) contributes its key; a word the store spells the same way is
+        matched exactly and never widened to its sound-alikes. Capped at
+        PHON_MAX_QUERY_KEYS, first come."""
+        keys: list[str] = []
+        for t in terms:
+            if is_phrase(t) or not t.isalpha() or len(t) < PHON_MIN_LEN:
+                continue
+            if self.term_doc_count(t) > 0:
+                continue
+            key = phonetic_key(t)
+            if key and key not in keys:
+                keys.append(key)
+                if len(keys) >= PHON_MAX_QUERY_KEYS:
+                    break
+        return keys
+
     def term_doc_count(self, term: str) -> int:
         """How many memories contain `term` (one FTS5 vocab seek; 0 if none).
         A phrase term (4.21.3) has no vocab row: it is counted by a MATCH
@@ -606,10 +727,10 @@ class VecStore:
         if is_phrase(term):
             row = self._conn.execute(
                 "SELECT count(*) AS doc FROM vec_lex WHERE vec_lex MATCH ?",
-                ('"' + term.replace('"', '""') + '"',)).fetchone()
+                ('text:"' + term.replace('"', '""') + '"',)).fetchone()
             return int(row["doc"])
         row = self._conn.execute(
-            "SELECT doc FROM vec_lex_vocab WHERE term = ?", (term,)).fetchone()
+            "SELECT doc FROM vec_lex_vocab WHERE term = ? AND col = 'text'", (term,)).fetchone()
         return int(row["doc"]) if row else 0
 
     def exact_terms(self, terms: list[str]) -> list[str]:

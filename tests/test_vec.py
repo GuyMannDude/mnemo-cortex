@@ -12,6 +12,9 @@ import httpx
 
 from agentb.vec import (
     EMBED_DIM,
+    LEX_SCHEMA,
+    phonetic_key,
+    phonetic_keys,
     MAX_EMBED_INPUT_CHARS,
     VecDimMismatch,
     VecStore,
@@ -726,3 +729,84 @@ def test_exact_terms_are_rare_identifier_shaped_terms(tmp_path: Path):
     assert not is_identifier_shaped("2000") and not is_identifier_shaped("9137")   # bare 4 digits
     assert not is_identifier_shaped("v4") and not is_identifier_shaped("55")
     assert not is_identifier_shaped("commit") and not is_identifier_shaped("20")
+
+
+# ── v4.22.0: the phonetic fallback — a misspelled name still finds its person ──
+
+def test_phonetic_key_folds_spelling_variants_and_keeps_names_apart():
+    for a, b in [("Elenore", "Eleanor"), ("Eleanore", "Eleanor"), ("Elinor", "Eleanor"),
+                 ("Fershow", "Fershaw"), ("Sipes", "Sypes"), ("Hutchins", "Hutchens"),
+                 ("Steinberger", "Stienberger"), ("Lozier", "Losier"), ("Knightly", "Nightly"),
+                 ("Catherine", "Katherine"), ("Christina", "Kristina")]:
+        assert phonetic_key(a) == phonetic_key(b) != "", (a, b)
+    assert phonetic_key("Hutchins") != phonetic_key("Hutchinson")
+    assert phonetic_key("Geoffrey") != phonetic_key("Jeffrey")          # first letter is kept: a stated limit
+    assert phonetic_key("misisipi") == phonetic_key("mississippi") != ""   # letter runs collapse
+    assert phonetic_key("Knight") == "" and phonetic_key("Night") == ""  # a two-consonant skeleton is too generic to search
+    assert phonetic_key("Guy") == "" and phonetic_key("Gay") == ""        # too short to have a skeleton
+    assert phonetic_key("9137") == "" and phonetic_key("c6xx") == ""      # identifiers are the exact lane's
+    assert phonetic_keys("the Eleanor of Williston, ND") == " ".join(sorted({phonetic_key("eleanor"), phonetic_key("williston")}))
+
+
+def test_misspelled_name_is_found_by_sound_only_when_the_spelling_is_unseen(tmp_path: Path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("m1", "Andre Fershaw is a photographer in Williston", _vec_along(0))
+    store.upsert("m2", "the seal step failed with ECONNRESET on port 9137", _vec_along(1))
+    # the misspelling matches nothing exactly, so its key is searched
+    assert store.phonetic_fallback(lexical_terms("who is Andre Fershow")) == [phonetic_key("fershow")]
+    assert [h.memory_id for h in store.lexical_search(lexical_terms("who is Andre Fershow"), top_k=5)] == ["m1"]
+    # the correct spelling matches exactly and adds no keys
+    assert store.phonetic_fallback(lexical_terms("who is Andre Fershaw")) == []
+    # a word the store DOES contain is never widened to its sound-alikes
+    store.upsert("m3", "Eleanor kept the ledger", _vec_along(2))
+    store.upsert("m4", "Elenore kept a different ledger", _vec_along(3))
+    assert [h.memory_id for h in store.lexical_search(["elenore"], top_k=5)] == ["m4"]
+    assert {h.memory_id for h in store.lexical_search(["elinor"], top_k=5)} == {"m3", "m4"}
+    # the switch, and the identifier lane's exact pass, stay purely lexical
+    assert store.lexical_search(["fershow"], top_k=5, phonetic=False) == []
+    assert store.lexical_search(["fershow"], top_k=5, prune=False, phonetic=False) == []
+    # a plain word that happens to BE some other word's key never reads the
+    # phon column: "msg" is the key of "message" (review 2026-09-13)
+    assert phonetic_key("message") == "msg"
+    for i in range(200):
+        store.upsert(f"noise{i}", f"a message about restart number {i}", _vec_along(i % EMBED_DIM))
+    store.upsert("real", "the msg queue drained", _vec_along(5))
+    assert store.term_doc_count("msg") == 1
+    assert store.prune_common_terms(["msg"]) == ["msg"]
+    assert [h.memory_id for h in store.lexical_search(["msg"], top_k=5)] == ["real"]
+    assert [h.memory_id for h in store.lexical_search(["msg"], top_k=5, prune=False, phonetic=False)] == ["real"]
+    # and a stored key never counts as a word for the fallback's own guard
+    assert store.term_doc_count(phonetic_key("fershaw")) == 0
+    from agentb.config import RankingConfig
+    assert RankingConfig().phonetic_enabled is True
+
+
+def test_a_real_4_21_index_is_migrated_to_the_phon_shape(tmp_path: Path):
+    """The upgrade path the first draft missed (review 2026-09-13): CREATE IF
+    NOT EXISTS cannot add a column, so a genuine 4.21 index — two-column
+    vec_lex, 'row' vocab, stamp 1 — must be dropped and re-made, then rebuilt."""
+    path = tmp_path / "vec.sqlite"
+    store = VecStore(path)
+    store.upsert("m1", "Andre Fershaw is a photographer", _vec_along(0))
+    store.upsert("m2", "the seal step failed on port 9137", _vec_along(1))
+    store._conn.executescript("""
+        DROP TABLE vec_lex_vocab;
+        DROP TABLE vec_lex;
+        CREATE VIRTUAL TABLE vec_lex USING fts5(memory_id UNINDEXED, text);
+        CREATE VIRTUAL TABLE vec_lex_vocab USING fts5vocab('vec_lex', 'row');
+        INSERT INTO vec_lex(memory_id, text) SELECT memory_id, text FROM vec_sources;
+        INSERT OR REPLACE INTO vec_meta(key, value) VALUES ('lex_schema', '1');
+    """)
+    store._conn.close()
+    reopened = VecStore(path)   # must not raise
+    cols = {r["name"] for r in reopened._conn.execute("PRAGMA table_info(vec_lex)")}
+    assert "phon" in cols
+    assert "'col'" in reopened._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'vec_lex_vocab'").fetchone()["sql"]
+    assert [h.memory_id for h in reopened.lexical_search(["fershow"], top_k=5)] == ["m1"]
+    assert [h.memory_id for h in reopened.lexical_search(["9137"], top_k=5)] == ["m2"]
+    assert reopened._conn.execute("SELECT value FROM vec_meta WHERE key = 'lex_schema'").fetchone()["value"] == str(LEX_SCHEMA)
+    # a second open is a no-op (no drop, no rebuild): the stamp holds
+    reopened._conn.close()
+    again = VecStore(path)
+    assert [h.memory_id for h in again.lexical_search(["fershow"], top_k=5)] == ["m1"]

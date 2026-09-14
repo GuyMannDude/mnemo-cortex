@@ -1,5 +1,56 @@
 # Changelog
 
+## v4.22.0 — A misspelled name still finds its person (2026-09-13)
+
+Problem: Guy had Opie search a family line for "Elenore"; the records
+spell her "Eleanor". Mnemo has the same blind spot. The lexical lane
+(4.21) matches exact tokens, so a misspelled proper name matches nothing;
+the vectors know what a memory is about, not how a name is spelled; and
+the Thesaurus Loop rewords the meaning of a question, never its spelling.
+Probed live: "Fershow" finds Andre Fershaw's memory only when the rest of
+the prompt carries it, and alone returns noise at the relevance floor.
+
+Fix: a phonetic column beside the words. `vec_lex` gains `phon`, the
+distinct consonant-skeleton keys of each memory's words (`phonetic_key`,
+built from zero — Soundex was tried and folds "guy"/"gay", "rocky"/"ricky",
+"andre"/"andrea"; this key keeps the first letter and the consonant
+skeleton after ph/ck/sch/sh/th/gh, soft c, q and z are normalised, letter
+runs collapse, and "elenore"/"eleanor"/"elinor" agree while "hutchins"
+and "hutchinson" do not). At query time a plain word of four or more
+letters that NO memory contains (one vocab seek) adds `phon:"<key>"` to
+the MATCH — so a correctly spelled name never picks up its sound-alikes,
+and an identifier never takes part (the exact pass runs with the fallback
+off). At most four keys per query. Off switch: `ranking.phonetic_enabled`.
+
+What the reviewer caught in the first draft, all fixed: (1) `CREATE IF NOT
+EXISTS` cannot add a column, so a real 4.21 index raised on open — the
+table and its vocab are now dropped and re-made in the new shape, then
+rebuilt (one tenant, one time; the test builds a genuine 4.21-shaped index).
+(2) An unqualified FTS5 term matches every column, and 130 dictionary
+words ("msg", "url", "err", "ids") are some other word's key — every
+lexical term is now `text:`-qualified. (3) The `'row'` vocab counted keys
+as words, inflating document counts and silently pruning real rare terms —
+the vocab is `'col'` mode and every count reads the text column alone.
+
+Cost, measured on a synthetic 4.21-shaped index of 17k rows averaging
+5.2 KB over a 6,000-word Zipf vocabulary: migrate + rebuild 7.4 s, once
+per tenant, inside the first open after the upgrade (so the first request
+to a big tenant waits that long; the ledger seal that follows every
+restart touches each tenant and pays it there). Keys are memoised per
+distinct word (23k misses, 9.5M hits on that corpus); the first draft
+without the cache measured 23 s on a 50-word vocabulary and the reviewer
+saw 104 s on a vocabulary-dense one. Second open: 9 ms. Phonetic-only
+query 2.3 ms; a mixed prompt 0.4 ms. The phon column adds ~4% to the
+lexical table.
+
+Limits, stated: the key is tuned for English-spelled names; the first
+letter is kept, so "Geoffrey"/"Jeffrey" do not fold (ph/ck/sch/sh/th and
+soft/hard c are normalised, so "Catherine"/"Katherine" do); a word whose
+skeleton is under three characters ("Knight"/"Night" -> "nt") is too generic
+to search and never takes part; a misspelling the store also contains is
+treated as its own word by design; a key can look identifier-shaped
+("birthday" -> "br0d") but keys never enter the exact pass.
+
 ## v4.21.5 — Late-arriving history is not tonight's news (2026-09-12)
 
 Problem: the 2026-09-12 boot brief opened with a run of bus messages from

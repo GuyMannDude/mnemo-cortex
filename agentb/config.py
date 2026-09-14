@@ -158,6 +158,10 @@ class RankingConfig:
     # score the same; 0.05 costs MRR, 0.20 loses a query) — the lightest
     # weight that buys the whole gain (sweep 2026-09-10, CHANGELOG 4.21.0).
     lexical_enabled: bool = True
+    # 4.22.0: the phonetic fallback inside the lane — an unseen name-shaped
+    # word also matches by sound (Elenore finds Eleanor). Off = 4.21
+    # behaviour exactly; the phon column is stored regardless.
+    phonetic_enabled: bool = True
     w_lexical: float = 0.10
 
 

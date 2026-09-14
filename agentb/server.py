@@ -1281,6 +1281,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         include_category=req.category,
                         exclude_categories=effective_exclude,
                         overfetch_multiplier=config.cache.vec_category_overfetch_multiplier,
+                        phonetic=config.ranking.phonetic_enabled,
                     )
                 except sqlite3.Error as e:
                     # the vector lane already served; a broken lexical lane
@@ -1300,7 +1301,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                 [term], top_k=LEX_EXACT_MAX_DF,
                                 include_category=req.category,
                                 exclude_categories=effective_exclude,
-                                prune=False):
+                                prune=False, phonetic=False):
                             exact_ids.add(eh.memory_id)
                             if eh.memory_id not in {h.memory_id for h in lex_hits}:
                                 lex_hits.append(eh)
