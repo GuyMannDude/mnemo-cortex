@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+
+from agentb.vec import prompt_words   # one tokeniser, both lanes (4.24.0)
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
@@ -504,7 +506,10 @@ class FactsStore:
             if not evidence_allowed(authority, evidence_source or ""):
                 # the proposal carries the reason whatever the evidence — Guy
                 # resolves it reading this row, not the history table
-                es = f"{(evidence_source or '').strip() or f'agent:{changed_by or 'unknown'}'} — demote: {reason.strip()}"
+                # 4.24.0: no f-string nested inside an f-string with the same
+                # quotes — legal on 3.12+ (PEP 701), a SyntaxError on 3.11 (CI red x2)
+                who = (evidence_source or "").strip() or f"agent:{changed_by or 'unknown'}"
+                es = f"{who} — demote: {reason.strip()}"
                 pid, seen = self._propose(conn, existing, e, a, existing["value"], "false",
                                           es[:200], changed_by, authority, now)
                 conn.commit()
@@ -742,7 +747,12 @@ class FactsStore:
         """Locked (probe/declared) facts whose entity the prompt names as a
         whole word, newest first. The read half of authority tiers: a hard
         fact about a named entity speaks before any soft memory."""
-        text = (prompt or "").lower()
+        # 4.24.0: the prompt is read the way the lexical lane reads it — a
+        # media extension is a format, not a word of the entity's name, and a
+        # CamelCase run is its words — so "where is RockLobster.mp3" names
+        # the entity "rock lobster". Separators (-._/) become spaces on both
+        # sides: "IGOR-2" and "igor 2" are one name.
+        text = prompt_words(prompt)
         if not text.strip():
             return []
         limit = max(1, min(int(limit), 20))
@@ -756,7 +766,7 @@ class FactsStore:
             conn.close()
         out: list[Fact] = []
         for row in rows:
-            pattern = r"(?<![a-z0-9])" + re.escape(row["entity"]) + r"(?![a-z0-9])"
+            pattern = r"(?<![a-z0-9])" + re.escape(prompt_words(row["entity"])) + r"(?![a-z0-9])"
             if re.search(pattern, text):
                 out.append(self._row_to_fact(row))
                 if len(out) >= limit:

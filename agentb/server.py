@@ -62,7 +62,7 @@ from agentb.ranking import composite_score, pool_similarities, explore_score, or
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
-    VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, unit_vector,
+    VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
 from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
@@ -1115,6 +1115,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # caller's prompt (expansion variants are paraphrases; the exact
         # identifiers the lane exists for live in the original wording).
         lex_terms = lexical_terms(req.prompt) if config.ranking.lexical_enabled else []
+        # 4.24.0: the media classes the prompt's file names belong to
+        lex_media = media_classes(req.prompt) if config.ranking.lexical_enabled else []
 
         # v4.1: tiers no longer fill a sequential budget. Each tier contributes
         # its filtered candidates to a pool; the pool is re-ranked by the
@@ -1283,7 +1285,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # the recall; a LEX cosine over a truncating zip would serve
             # fabricated relevance AND fill the pool past the L3 gate
             # (review, 2026-09-10).
-            if lex_terms and vec_store.count() > 0 and len(query_embedding) == EMBED_DIM:
+            if (lex_terms or lex_media) and vec_store.count() > 0 and len(query_embedding) == EMBED_DIM:
                 query_unit = unit_vector(query_embedding)
                 try:
                     lex_hits = vec_store.lexical_search(
@@ -1293,6 +1295,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         exclude_categories=effective_exclude,
                         overfetch_multiplier=config.cache.vec_category_overfetch_multiplier,
                         phonetic=config.ranking.phonetic_enabled,
+                        media=lex_media,
                     )
                 except sqlite3.Error as e:
                     # the vector lane already served; a broken lexical lane

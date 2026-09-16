@@ -13,6 +13,7 @@ import httpx
 from agentb.vec import (
     EMBED_DIM,
     LEX_SCHEMA,
+    media_classes,
     phonetic_key,
     phonetic_keys,
     MAX_EMBED_INPUT_CHARS,
@@ -829,3 +830,68 @@ def test_a_real_4_21_index_is_migrated_to_the_phon_shape(tmp_path: Path):
     reopened._conn.close()
     again = VecStore(path)
     assert [h.memory_id for h in again.lexical_search(["fershow"], top_k=5)] == ["m1"]
+
+
+def test_media_extension_is_a_format_not_a_word(tmp_path: Path):
+    """4.24.0 (Guy, 2026-09-15): he asks for "RockLobster.mp3"; the disk holds
+    "rock-lobster-alert.ogg"; the only memory the bare token "mp3" picked out
+    was the one that had learned the wrong extension from his words. The
+    extension keys to a media CLASS on both sides and never becomes a term;
+    the CamelCase name contributes its words."""
+    assert lexical_terms("RockLobster.mp3 alert") == ["rocklobster", "alert", "rock", "lobster"]
+    assert media_classes("RockLobster.mp3 alert") == ["audio"]
+    assert media_classes("rock-lobster-alert.ogg") == ["audio"] == media_classes("07 - Rock Lobster.OGG")
+    assert media_classes("screenshot.png and demo.mp4, the part.stl") == ["image", "model", "video"]
+    assert media_classes("see the file.Step 3, claude.opus, self.obj") == []   # word-shaped: not extensions
+    assert "step" in lexical_terms("see the file.Step 3")
+    assert media_classes("mp3 audio settings") == []            # no dot: a word, not an extension
+    assert media_classes("v4.20.2 and 192.0.2.7") == []
+    assert "mp3" in lexical_terms("mp3 audio settings") and "mp3" not in lexical_terms("a.mp3")
+    assert lexical_terms("OpenClaw restart") == ["openclaw", "restart", "open", "claw"]   # glued form kept, parts after
+
+    store = VecStore(tmp_path / "vec.sqlite")
+    store.upsert("ogg", "the live alert clip is ~/.sparks/sounds/rock-lobster-alert.ogg", _vec_along(0))
+    store.upsert("mp3", "Guy prefers Rock Lobster.mp3 as his alarm notification", _vec_along(1))
+    store.upsert("png", "a screenshot.png of the HUD after the restart", _vec_along(2))
+    store.upsert("claw", "OpenClaw on the workstation restarted clean", _vec_along(3))
+    q = "RockLobster.mp3 alert"
+    hits = [h.memory_id for h in store.lexical_search(lexical_terms(q), top_k=5, media=media_classes(q))]
+    assert set(hits) == {"ogg", "mp3"}, hits          # both audio memories, the .ogg no longer invisible
+    # a class is a co-signal: with no surviving text term it picks nothing out
+    assert store.lexical_search([], top_k=5, media=["image"]) == []
+    assert [h.memory_id for h in store.lexical_search(["hud"], top_k=5, media=["image"])] == ["png"]
+    # two classes OR (review 2026-09-15: a missing separator was an implicit AND)
+    store.upsert("both", "the restart demo.mp4 and its screenshot.png", _vec_along(4))
+    assert {h.memory_id for h in store.lexical_search(["restart"], top_k=5, media=["image", "video"])} == {"png", "both"}   # AND would give only "both"
+    assert store.lexical_search([], top_k=5) == []
+    assert store.term_doc_count("audio", col="media") == 2 and store.term_doc_count("audio") == 0
+    assert [h.memory_id for h in store.lexical_search(lexical_terms("OpenClaw restart"), top_k=5)][0] == "claw"
+    # a class most of the store carries is pruned like a common word
+    for i in range(200):
+        store.upsert(f"shot{i}", f"screenshot{i}.png of run {i}", _vec_along(i % EMBED_DIM))
+    assert [h.memory_id for h in store.lexical_search(["hud"], top_k=5, media=["image"])] == ["png"]
+    assert len(store.lexical_search(["hud"], top_k=5, media=["image"], prune=False)) == 5
+    assert {h.memory_id for h in store.lexical_search(["alarm"], top_k=5, media=["audio"])} == {"mp3", "ogg"}
+
+
+def test_a_4_22_index_is_migrated_to_the_media_shape(tmp_path: Path):
+    """A 4.22/4.23 index carries a three-column vec_lex; 4.24.0 re-makes it
+    with the media column and rebuilds from the source text."""
+    path = tmp_path / "vec.sqlite"
+    store = VecStore(path)
+    store.upsert("m1", "the alert clip is rock-lobster-alert.ogg", _vec_along(0))
+    store.upsert("m2", "the seal step failed on port 9137", _vec_along(1))
+    store._conn.executescript("""
+        DROP TABLE vec_lex_vocab;
+        DROP TABLE vec_lex;
+        CREATE VIRTUAL TABLE vec_lex USING fts5(memory_id UNINDEXED, text, phon);
+        CREATE VIRTUAL TABLE vec_lex_vocab USING fts5vocab('vec_lex', 'col');
+        INSERT INTO vec_lex(memory_id, text, phon) SELECT memory_id, text, '' FROM vec_sources;
+        INSERT OR REPLACE INTO vec_meta(key, value) VALUES ('lex_schema', '4');
+    """)
+    store._conn.close()
+    reopened = VecStore(path)
+    assert "media" in {r["name"] for r in reopened._conn.execute("PRAGMA table_info(vec_lex)")}
+    assert [h.memory_id for h in reopened.lexical_search(["clip"], top_k=5, media=["audio"])] == ["m1"]
+    assert [h.memory_id for h in reopened.lexical_search(["9137"], top_k=5)] == ["m2"]
+    assert reopened._conn.execute("SELECT value FROM vec_meta WHERE key = 'lex_schema'").fetchone()["value"] == str(LEX_SCHEMA)

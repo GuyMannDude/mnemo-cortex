@@ -1,5 +1,54 @@
 # Changelog
 
+## v4.24.0 — Media association: a file's extension is a format, not its name (2026-09-15)
+
+**Problem.** Guy has asked "where is RockLobster.mp3" more than once; every
+time an agent went hunting the disk, found nothing, and reported the miss. The
+file has always been `.ogg`. The store HELD the truth (the `.ogg` path, ranked
+second), but the lexical lane read his words as `rocklobster` + `mp3`: the
+glued CamelCase name matched nothing (the store spells it "Rock Lobster" /
+"rock-lobster"), and `mp3` was a rare token that picked out exactly one
+memory — the one that had learned the wrong extension from his own words.
+Recall then agreed with the mistake instead of correcting it. Guy's framing
+(S339): "the association between .mp3 and .ogg should stand out screaming —
+media — associate."
+
+**Fix.**
+- `vec_lex` gains a `media` column (LEX_SCHEMA 4 → 5; every tenant's
+  lexical table is re-made and rebuilt on first open, the 4.22 path). It
+  holds the media CLASSES of the file extensions in the memory text —
+  `audio` / `image` / `video` / `model` (the 3D-print formats) — from a
+  fixed table of extensions (`MEDIA_CLASSES`). `media_classes(text)`.
+- Query side: a media extension is removed from the prompt before
+  tokenising (`mp3` is never a text term) and its class is OR-ed as
+  `media:"audio"` — so a prompt naming any audio file is lexical evidence
+  for every memory naming one. A class most of the store carries is pruned
+  like a common word (same ceiling). A bare word (`mp3` with no dot) is
+  still a word.
+- A CamelCase run (`RockLobster`, `OpenClaw`) contributes its words after
+  the prompt; the glued token is kept, because the store writes `OpenClaw`
+  glued.
+- `FactsStore.locked_for_prompt` reads the prompt the same way (extension
+  dropped, CamelCase split, `-._/` → space on both sides), so a declared
+  fact about `rock lobster` answers "where is RockLobster.mp3", and
+  `igor-2` matches `igor 2`.
+- `lexical_search(media=...)`, `term_doc_count(col=...)`. `/context` passes
+  the prompt's classes. Off-switch is `ranking.lexical_enabled` as before.
+
+**Store repair (live, same session).** The false memory (`9e4dca88…`, "prefers
+Rock Lobster.mp3") superseded by the probed truth (source `user`); fact
+`rock lobster alert.file_igor` saved verified from a disk probe. Locking it
+is Guy's gate (first locked rows).
+
+**Also: CI red on Python 3.11 (two runs, 4.23.0).** `facts_store.demote` nested
+an f-string inside an f-string with the same quotes — legal on 3.12+ (PEP 701),
+a SyntaxError on 3.11, which the CI matrix runs and neither machine does. Split
+into two statements; the tree compiles under 3.11 again.
+
+**Tests.** `test_media_extension_is_a_format_not_a_word`,
+`test_a_4_22_index_is_migrated_to_the_media_shape`, and the locked-prompt
+cases in `test_facts_authority`. 903 passed / 1 skipped.
+
 ## v4.23.0 — Authority tiers: a fact's tier says who may change it (2026-09-15)
 
 **Problem.** On 2026-09-15 an agent said in chat that Tailscale was the only

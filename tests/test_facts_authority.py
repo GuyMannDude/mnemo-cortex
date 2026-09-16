@@ -166,6 +166,15 @@ def test_locked_for_prompt_matches_whole_entity_words(store):
     assert store.locked_for_prompt("where does guy live") == []
     assert store.locked_for_prompt("igor-20 role") and store.locked_for_prompt("igor-20 role")[0].entity == "igor-20"
     assert store.locked_for_prompt("") == []
+    # 4.24.0: the prompt is read the way the lexical lane reads it — the
+    # extension is a format, a CamelCase run is its words (Guy: RockLobster.mp3)
+    store.save("rock lobster", "file_igor", "~/.sparks/sounds/rock-lobster-alert.ogg", "verified",
+               "statement:guy", source_agent="cc")
+    store.set_authority("rock lobster", "file_igor", "declared", "statement:guy")
+    assert [f.entity for f in store.locked_for_prompt("where is RockLobster.mp3")] == ["rock lobster"]
+    assert [f.entity for f in store.locked_for_prompt("play rock-lobster.ogg")] == ["rock lobster"]
+    assert store.locked_for_prompt("the rock, the lobster") == []
+    assert [f.entity for f in store.locked_for_prompt("igor 2 rdp")] == ["igor-2"]
     # a demoted (false) locked fact does not speak — the demote itself needs
     # the slot's own evidence (review #1); a bare demote would be a proposal
     r = store.demote("igor-2", "access_paths_from_igor", "port closed", evidence_source="tool:nc -z -> closed")

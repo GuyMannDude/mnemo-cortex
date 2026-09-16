@@ -95,7 +95,7 @@ _LEX_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 # 2026-09-10). Glued spellings are the stated limit.
 _LEX_DOTTED = re.compile(r"(?<![^\W_])(?<![^\W_]\.)v?\d+(?:\.\d+)+(?!\.?[^\W_])", re.UNICODE)
 LEX_MAX_TERMS = 12
-LEX_SCHEMA = 4  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0; 3: ch->x keys, 4.22.1; 4: names-only keys, 4.22.2)
+LEX_SCHEMA = 5  # bump to force every index to rebuild its lexical table on next open (2: phon column, 4.22.0; 3: ch->x keys, 4.22.1; 4: names-only keys, 4.22.2; 5: media column, 4.24.0)
 # 4.22.0 — the phonetic fallback. A name-shaped word the store has never
 # seen ("Elenore", "Fershow") gets its phonetic key OR-ed into the MATCH
 # against the `phon` column, so the memory that spells it "Eleanor" /
@@ -109,6 +109,33 @@ LEX_SCHEMA = 4  # bump to force every index to rebuild its lexical table on next
 PHON_MIN_LEN = 4
 PHON_MIN_KEY = 3
 PHON_MAX_QUERY_KEYS = 4
+# 4.24.0 — media association (Guy, 2026-09-15: "the association between
+# .mp3 and .ogg should stand out screaming ... media ... associate"). A
+# file's extension is a FORMAT, not part of its name: Guy asks for
+# "RockLobster.mp3", the disk holds "rock-lobster-alert.ogg", and the only
+# memory the bare token "mp3" picked out was the one that had learned the
+# wrong extension from his words. Both sides now key the extension to a
+# media CLASS in the `media` column — mp3, ogg and wav all say "audio" —
+# and the extension itself never becomes a text term. Four classes, chosen
+# for this fleet: audio, image, video, and model (the 3D-print formats of
+# Project Sparks). An extension outside the table is an ordinary token.
+MEDIA_CLASSES: dict[str, str] = {
+    **{e: "audio" for e in ("mp3", "ogg", "oga", "wav", "flac", "m4a", "aac", "wma", "aiff", "aif")},
+    **{e: "image" for e in ("png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "tif", "heic")},
+    **{e: "video" for e in ("mp4", "mkv", "mov", "avi", "webm", "m4v")},
+    **{e: "model" for e in ("stl", "3mf", "glb", "gltf", "fbx")},
+}
+# Not in the table (review 2026-09-15): extensions that are English words or
+# code idioms — step, stp, opus, blend, obj ("file.Step 3", "claude.opus",
+# "self.obj") — would delete a real term and add a false class.
+# a media extension: after a dot, not glued to a following word character
+_LEX_MEDIA_EXT = re.compile(r"\.(" + "|".join(sorted(MEDIA_CLASSES, key=len, reverse=True)) + r")(?![^\W_])", re.IGNORECASE)
+# a CamelCase run ("RockLobster", "OpenClaw"): the lower->upper seam. The
+# unicode61 tokenizer keeps it as one token, so a query's "RockLobster"
+# never met the store's "Rock Lobster". The glued token is KEPT (the store
+# writes "OpenClaw" glued) and the parts are added after it.
+_LEX_CAMEL = re.compile(r"[^\W\d_]*[a-z][A-Z][^\W\d_]*")
+_LEX_CAMEL_SEAM = re.compile(r"(?<=[a-z])(?=[A-Z])")
 # Pruning (2026-09-10): a term present in most of the store is what makes
 # the FTS5 MATCH slow (every matching row is BM25-scored, LIMIT does not
 # bound the work — 87 ms for eight common words on a 17k-row tenant vs
@@ -215,6 +242,32 @@ def phonetic_keys(text: str) -> str:
     return " ".join(sorted(keys))
 
 
+def media_classes(text: str) -> list[str]:
+    """The distinct media classes of the file extensions in `text`, sorted
+    (4.24.0). "RockLobster.mp3" -> ["audio"]; "rock-lobster-alert.ogg" ->
+    ["audio"]; "screenshot.png and demo.mp4" -> ["image", "video"]. Used
+    on both sides: space-joined into the `media` column at index time, and
+    OR-ed as media:"<class>" terms at query time. A bare word ("audio",
+    "mp3" with no dot) is not an extension and adds nothing."""
+    return sorted({MEDIA_CLASSES[m.group(1).lower()] for m in _LEX_MEDIA_EXT.finditer(text)})
+
+
+def prompt_words(text: str) -> str:
+    """Lower-cased words of `text` for whole-name matching (4.24.0, the facts
+    store's locked_for_prompt): CamelCase split, media extensions dropped,
+    every non-alphanumeric run one space — "where is RockLobster.mp3" ->
+    "where is rocklobster rock lobster", "IGOR-2" -> "igor 2"."""
+    t = _split_camel(_LEX_MEDIA_EXT.sub(" ", text or ""))
+    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+
+
+def _split_camel(prompt: str) -> str:
+    """Append the words of every CamelCase run to the prompt, keeping the
+    run itself in place (4.24.0)."""
+    parts = [_LEX_CAMEL_SEAM.sub(" ", m.group(0)) for m in _LEX_CAMEL.finditer(prompt)]
+    return prompt + (" " + " ".join(parts) if parts else "")
+
+
 def is_phrase(term: str) -> bool:
     """A lexical term that is more than one FTS5 token — a dotted run from
     lexical_terms(). Searched and counted as a phrase, never a vocab seek."""
@@ -254,7 +307,10 @@ def lexical_terms(prompt: str) -> list[str]:
     seen: set[str] = set()
     ids: list[str] = []
     words: list[str] = []
-    lowered = prompt.lower()
+    # 4.24.0: a media extension is a format, not a word — it is keyed by
+    # class (media_classes) and removed here so "mp3" never becomes a term;
+    # a CamelCase run also contributes its words (see _LEX_CAMEL).
+    lowered = _split_camel(_LEX_MEDIA_EXT.sub(" ", prompt)).lower()
     # 4.21.3: dotted runs first, as phrases. A three-part run (the shape
     # that pins) goes in BOTH spellings — the store writes 'v4.20.2' and
     # '4.20.2' about equally (changelog vs bus), and a phrase matches only
@@ -394,10 +450,13 @@ class VecStore:
             -- standalone table (not external-content over vec_sources: that
             -- table's rowid is implicit and VACUUM may renumber it); the
             -- text is short and stored twice on purpose.
+            -- 4.24.0: 'media' holds the media CLASSES of the file extensions
+            -- in the text (audio/image/video/model) — see media_classes().
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_lex USING fts5(
                 memory_id UNINDEXED,
                 text,
-                phon
+                phon,
+                media
             );
             -- per-term document counts over vec_lex (an FTS5 index seek per
             -- lookup): lexical_search prunes the terms that match most of
@@ -425,15 +484,17 @@ class VecStore:
         vocab_row = self._conn.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'vec_lex_vocab'").fetchone()
         vocab_sql = (vocab_row["sql"] if vocab_row and vocab_row["sql"] else "")
-        if "phon" not in lex_cols or "'col'" not in vocab_sql:
+        # 4.24.0: same path adds the media column — a 4.22/4.23 index is
+        # re-made in the four-column shape and rebuilt below.
+        if "phon" not in lex_cols or "media" not in lex_cols or "'col'" not in vocab_sql:
             self._conn.executescript("""
                 DROP TABLE IF EXISTS vec_lex_vocab;
                 DROP TABLE IF EXISTS vec_lex;
-                CREATE VIRTUAL TABLE vec_lex USING fts5(memory_id UNINDEXED, text, phon);
+                CREATE VIRTUAL TABLE vec_lex USING fts5(memory_id UNINDEXED, text, phon, media);
                 CREATE VIRTUAL TABLE vec_lex_vocab USING fts5vocab('vec_lex', 'col');
                 DELETE FROM vec_meta WHERE key = 'lex_schema';
             """)
-            log.info(f"vec index {self.db_path}: lexical table re-made in the 4.22 shape (text + phon)")
+            log.info(f"vec index {self.db_path}: lexical table re-made in the 4.24 shape (text + phon + media)")
         stamp = self._conn.execute(
             "SELECT value FROM vec_meta WHERE key = 'lex_schema'").fetchone()
         if stamp is None or stamp["value"] != str(LEX_SCHEMA):
@@ -443,8 +504,9 @@ class VecStore:
             # walks the rows (one pass; the key function is a few regexes).
             src_rows = self._conn.execute("SELECT memory_id, text FROM vec_sources")
             self._conn.executemany(
-                "INSERT INTO vec_lex(memory_id, text, phon) VALUES (?, ?, ?)",
-                ((r["memory_id"], r["text"], phonetic_keys(r["text"])) for r in src_rows))
+                "INSERT INTO vec_lex(memory_id, text, phon, media) VALUES (?, ?, ?, ?)",
+                ((r["memory_id"], r["text"], phonetic_keys(r["text"]), " ".join(media_classes(r["text"])))
+                 for r in src_rows))
             self._conn.execute(
                 "INSERT OR REPLACE INTO vec_meta(key, value) VALUES ('lex_schema', ?)", (str(LEX_SCHEMA),))
             log.info(f"vec index {self.db_path}: lexical lane built over {n_src} row(s) (lex_schema {LEX_SCHEMA})")
@@ -511,8 +573,8 @@ class VecStore:
                 (memory_id, text, source_file, ts, category),
             )
             self._conn.execute("DELETE FROM vec_lex WHERE memory_id = ?", (memory_id,))
-            self._conn.execute("INSERT INTO vec_lex(memory_id, text, phon) VALUES (?, ?, ?)",
-                               (memory_id, text, phonetic_keys(text)))
+            self._conn.execute("INSERT INTO vec_lex(memory_id, text, phon, media) VALUES (?, ?, ?, ?)",
+                               (memory_id, text, phonetic_keys(text), " ".join(media_classes(text))))
             self._conn.execute(
                 "DELETE FROM vec_embeddings WHERE memory_id = ?",
                 (memory_id,),
@@ -650,8 +712,18 @@ class VecStore:
         overfetch_multiplier: int = 5,
         prune: bool = True,
         phonetic: bool = True,
+        media: Optional[list[str]] = None,
     ) -> list[LexHit]:
         """The lexical lane (v4.21): BM25 over the stored text.
+
+        `media` (4.24.0) are the classes from media_classes(prompt); each is
+        OR-ed against the `media` column, so a prompt naming any audio file
+        is lexical evidence for every memory that names one. A class is a
+        CO-SIGNAL: it joins only when at least one text term survived
+        pruning — "the .png" alone picks nothing out, "RockLobster.mp3"
+        picks out rock + lobster and the class ranks the audio memories
+        among them. A class most of the store carries is pruned like a
+        common word (same ceiling, computed once).
 
         `terms` come from lexical_terms(); terms that match most of the
         store are pruned first (LEX_COMMON_FRACTION), the rest are quoted
@@ -669,6 +741,10 @@ class VecStore:
             terms = self.prune_common_terms(terms)
         if not terms:
             return []
+        media = list(media or ())
+        if media and prune:
+            ceiling = self._common_ceiling()
+            media = [m for m in media if self.term_doc_count(m, col="media") <= ceiling]
         # FTS5 escapes a quote inside a phrase by doubling it; the tokenizer
         # never emits one, but a caller handing terms in raw still gets a
         # string the parser cannot read as syntax.
@@ -676,7 +752,9 @@ class VecStore:
         # FTS5 term matches EVERY column, and 130 dictionary words ("msg",
         # "url", "err", "ids") are some other word's phonetic key (review
         # 2026-09-13) — only the fallback below may touch phon.
-        match = " OR ".join('text:"' + t.replace('"', '""') + '"' for t in terms)
+        clauses = ['text:"' + t.replace('"', '""') + '"' for t in terms]
+        clauses += [f'media:"{m}"' for m in media]
+        match = " OR ".join(clauses)
         # 4.22.0: an unseen name-shaped word searches by sound as well
         if phonetic:
             keys = self.phonetic_fallback(terms)
@@ -737,7 +815,7 @@ class VecStore:
                     break
         return keys
 
-    def term_doc_count(self, term: str) -> int:
+    def term_doc_count(self, term: str, col: str = "text") -> int:
         """How many memories contain `term` (one FTS5 vocab seek; 0 if none).
         A phrase term (4.21.3) has no vocab row: it is counted by a MATCH
         over the phrase — under 1 ms on a 17k-row tenant for a version,
@@ -750,7 +828,7 @@ class VecStore:
                 ('text:"' + term.replace('"', '""') + '"',)).fetchone()
             return int(row["doc"])
         row = self._conn.execute(
-            "SELECT doc FROM vec_lex_vocab WHERE term = ? AND col = 'text'", (term,)).fetchone()
+            "SELECT doc FROM vec_lex_vocab WHERE term = ? AND col = ?", (term, col)).fetchone()
         return int(row["doc"]) if row else 0
 
     def exact_terms(self, terms: list[str]) -> list[str]:
@@ -764,8 +842,11 @@ class VecStore:
         the store (past the LEX_COMMON_MIN floor). One index seek per term."""
         if not terms:
             return []
-        ceiling = max(LEX_COMMON_MIN, LEX_COMMON_FRACTION * self.count())
+        ceiling = self._common_ceiling()
         return [t for t in terms if self.term_doc_count(t) <= ceiling]
+
+    def _common_ceiling(self) -> float:
+        return max(LEX_COMMON_MIN, LEX_COMMON_FRACTION * self.count())
 
     def newest(
         self,
