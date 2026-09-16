@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -162,6 +163,7 @@ def test_classify_reclassify_write_is_atomic(tmp_path, monkeypatch):
 
 # ── 4.21.2: durable past a power cut, not just a process crash ──
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot open a directory fd, so there is no dir fsync to observe (CC2 #3542: assert ('fsync','dir') in [])")
 def test_atomic_write_text_fsyncs_file_before_replace_and_dir_after(tmp_path, monkeypatch):
     """S06 finding: tmp + os.replace alone is process-crash durable only.
     Order matters — the file's bytes must reach the medium BEFORE the rename

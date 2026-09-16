@@ -840,6 +840,7 @@ def test_notify_desktop_noop_without_binaries(monkeypatch):
     cli._notify_desktop("title", "body")  # must not raise
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux branch: on Windows notify_desktop calls powershell, not notify-send (CC2 #3542)")
 def test_notify_desktop_uses_notify_send_and_sanitizes(monkeypatch):
     import shutil
     import subprocess
@@ -916,6 +917,7 @@ def _fake_report(**kw):
     return r
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux path (findmnt/udisksctl); the test builds PosixPath fixtures, which cannot instantiate on Windows (CC2 #3542)")
 def test_eject_stick_linux_udisksctl_and_verifies_gone(monkeypatch, tmp_path):
     """Linux path: findmnt → device, udisksctl unmount -b <dev>, and success
     is the mount being GONE, not the command's exit code."""
@@ -951,6 +953,7 @@ def test_eject_stick_linux_udisksctl_and_verifies_gone(monkeypatch, tmp_path):
     assert calls[1] == ["udisksctl", "unmount", "-b", "/dev/sdz1"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="test builds PosixPath fixtures, which cannot instantiate on Windows (CC2 #3542)")
 def test_eject_stick_refuses_mount_outside_stick_roots(monkeypatch, tmp_path):
     """The walk-up must have a floor: a stick dir on the internal disk walks
     up to `/` (always a mount) and without the floor the command would
@@ -976,6 +979,7 @@ def test_eject_stick_refuses_mount_outside_stick_roots(monkeypatch, tmp_path):
     assert ok is False and calls == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="test builds PosixPath fixtures, which cannot instantiate on Windows (CC2 #3542)")
 def test_eject_stick_reports_failure_never_raises(monkeypatch, tmp_path):
     import shutil
     import subprocess
