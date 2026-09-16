@@ -235,6 +235,9 @@ function formatChunks(chunks, showAgent) {
     // v3 provenance / decay surfacing — keep concise; full structured
     // data is still in the JSON tool result for programmatic callers.
     const provBits = [];
+    // 2.26.0: the id is what mnemo_save(supersedes=[...]) and any demotion
+    // need; without it a wrong memory can be overridden but never retired.
+    if (c.memory_id) provBits.push(`id=${c.memory_id}`);
     if (c.category) provBits.push(`category=${c.category}`);
     if (c.provenance_source) provBits.push(`source=${c.provenance_source}`);
     if (typeof c.age_days === "number") {

@@ -1,5 +1,19 @@
 # Changelog
 
+## mcp-bridge 2.26.0 — recall headers carry the memory id (2026-09-15)
+
+**Problem.** `mnemo_recall` / `mnemo_search` rendered every chunk as
+`[VEC] (relevance: 0.61) category=topology source=inferred age=0d`. The server
+sends `memory_id` on the wire; the bridge dropped it. `mnemo_save(supersedes=[…])`
+and every demotion path take ids, so from the bridge an agent could override a
+wrong memory but never retire it. Found when an agent's own loose sentence about
+network topology was auto-captured as a fact and the demotion had to be done
+server-side by hand.
+
+**Fix.** The header now reads `[VEC] (relevance: 0.61) id=<memory_id>
+category=topology …` whenever the chunk carries `memory_id`. Rendering only; the
+JSON tool result was already complete. Inert until each MCP client restarts.
+
 ## v4.22.2 — A name search is not a word search (2026-09-14)
 
 Problem: the 4.22.1 live proof passed on the surface (a never-typed
