@@ -1,5 +1,59 @@
 # Changelog
 
+## v4.23.0 — Authority tiers: a fact's tier says who may change it (2026-09-15)
+
+**Problem.** On 2026-09-15 an agent said in chat that Tailscale was the only
+path to IGOR-2. It was false; SSH and RDP were open on the LAN too. Ambient
+capture filed the sentence as `topology`/`inferred`, and the next recall served
+it above the verified correction. Root cause, read from the code: the category
+was right and the dreamer never touches it — `composite_score` ranks by
+similarity, recency, category, access and lexical overlap and never reads
+`source`; the analyst's only write gate is a ≥0.90 near-duplicate check, which
+a contradiction (similar-but-different) sails through; the facts store had a
+confidence ladder, demote and contradiction detection, but `/context` never
+asked it and nothing distinguished "a machine answered" from "someone said".
+Guy's framing (S337): "real" objects — hardware, firmware, important settings —
+and "I have to decide" switches must not be rewritable by an agent's sentence.
+
+**Fix.**
+- `facts.authority` ∈ `open` (default; every existing row, unchanged rules) ·
+  `probe` (only `probe:`/`tool:` evidence writes; carries `probe_cmd` +
+  `probe_host`) · `declared` (only `statement:guy…` evidence writes). Locking or
+  unlocking needs `statement:guy` evidence itself. `POST /facts/authority`,
+  bridge `mnemo_fact_authority`. Existing databases get the columns on first
+  open (idempotent ALTER).
+- A write that does not match a locked slot's tier lands in `fact_proposals`
+  — `written=false, reason="locked:<tier>", proposal_id` — never the value,
+  never an error. Same value, wrong evidence: quiet, nothing proposed. The
+  dreamer's `dream:` and the seed script's `file:` writes become proposals
+  automatically. `GET /facts/proposals`, `POST /facts/proposals/{id}/resolve`
+  (accept = Guy's word relayed: verified, evidence names the proposal, tier
+  stays; reject = closes it), bridge `mnemo_fact_proposals`. Proposals also
+  show in `/facts/contradictions`.
+- `/context`: locked facts whose entity the prompt names (whole word) lead the
+  window as `[FACT:<tier>] entity.attribute = value` chunks, `cache_tier=FACT`,
+  at most `max(1, max_results // 2)` and never more than 3 — the same
+  "pin leads, never owns" contract as exact identifiers. Soft memories are
+  neither filtered nor reclassified.
+- `POST /memories/demote {memory_id, reason, by, agent_id}` (bridge
+  `mnemo_memory_demote`): `superseded_by="demoted:<by>:<ts>"`, vector removed,
+  JSON + ledger entry kept. The route #3533 had to fake with a supersedes-save.
+- Dreamer: a "Pending proposals to locked facts" section in every brief; zero
+  says zero, an unreachable facts store says UNKNOWN.
+- Tests: `tests/test_facts_authority.py` (11) + `tests/test_context_authority.py` (5).
+
+**Not in 4.23.0 (named so nobody assumes):** running `probe_cmd`; routing the
+capture analyst's topology notes about locked entities into proposals (the
+read-side pin makes it non-load-bearing); a CLI for proposals (HTTP + bridge
+cover it); any ranking-weight change; locking vector memories.
+
+## mcp-bridge 2.27.0 — authority tiers + memory demote (2026-09-15)
+
+`mnemo_fact_authority`, `mnemo_fact_proposals` (list / accept / reject),
+`mnemo_memory_demote`. `mnemo_fact_save` now reports a held write as
+"HELD by authority tier … recorded as proposal #n" and does not flag it as an
+error — the hold is the tier working.
+
 ## mcp-bridge 2.26.0 — recall headers carry the memory id (2026-09-15)
 
 **Problem.** `mnemo_recall` / `mnemo_search` rendered every chunk as

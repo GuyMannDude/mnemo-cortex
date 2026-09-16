@@ -24,7 +24,7 @@
   "tagline": "Cognitive coprocessor with active memory for AI agents — local-first, decay-aware, cross-agent dreaming.",
   "summary": "Cognitive coprocessor with active memory that gives AI agents persistent recall across sessions. Local SQLite + FTS5 working memory plus a structured Facts table (entity/attribute/value triples with a three-state confidence ladder) for the lookups semantic search gets wrong. Every memory record carries provenance (source + category) and decays on a category-aware schedule — topology facts age fast, doctrine stays perpetual, and recall returns a structured stale_warning when a fact is past its threshold so the agent verifies before acting. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.",
   "backstory": "Guy Hutchins started exploring AI memory with ChatGPT 3.5 using basic text files. When OpenClaw launched and needed better memory, he gave Opie (Claude) a simple prompt: \"If you were a ClawdBot and your user wanted you to have the best memory you could build yourself, what would it look like?\" Opie was on extended thinking and just built it — no clarifying questions, no spec, just shipped a working memory system. Guy gave the same prompt to AL (ChatGPT), who built his own version independently. AL saw Opie's and said it was more in depth. Opie saw AL's and said it had ideas worth blending. The two versions merged. When it came time to name it, the first two suggestions were \"Mnemo\" and \"Cortex.\" Guy picked both. Mnemo Cortex.",
-  "version": "4.22.2",
+  "version": "4.23.0",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/mnemo-cortex",
   "source": "https://github.com/GuyMannDude/mnemo-cortex",
@@ -85,6 +85,10 @@
         {"path": "/facts/demote", "method": "POST", "purpose": "Mark a fact false without supplying a replacement value (escape hatch when the correct value isn't known yet)."},
         {"path": "/facts/history/{entity}/{attribute}", "method": "GET", "purpose": "Read the append-only audit log of every change to a fact pair."},
         {"path": "/facts/contradictions", "method": "GET", "purpose": "List per-run conflicts where Stage 0.5 extracted a fact that disagreed with an existing verified fact."},
+        {"path": "/facts/authority", "method": "POST", "purpose": "v4.23 — set a slot's authority tier: open (anyone), probe (only probe:/tool: evidence; carries probe_cmd), declared (only statement:guy evidence). Locking is itself a declared act."},
+        {"path": "/facts/proposals", "method": "GET", "purpose": "v4.23 — writes a locked slot held (pending / accepted / rejected / all)."},
+        {"path": "/facts/proposals/{id}/resolve", "method": "POST", "purpose": "v4.23 — accept (Guy's word: proposed value lands verified, tier stays) or reject a proposal."},
+        {"path": "/memories/demote", "method": "POST", "purpose": "v4.23 — demote one memory by id: out of recall, JSON + ledger entry kept. Requires a reason."},
         {"path": "/mcp", "method": "POST", "purpose": "MCP Streamable HTTP facade (OAuth 2.1 Resource Server mode for remote clients)."},
         {"path": "/chat", "method": "POST", "purpose": "Pocket Mnemo: one turn = recall -> reason -> save inside one tenant (message, history, session_id, save, max_memories). Scopable; a scoped token may omit agent_id — the pin is the identity. save_status reports archived / held / paused / skipped / failed."},
         {"path": "/app/", "method": "GET", "purpose": "Pocket Mnemo phone web app (static shell, no auth, no secrets; token entered on the phone). Tailnet / LAN only by design."},
@@ -101,6 +105,9 @@
       {"name": "mnemo_fact_query", "purpose": "Filtered fact list by entity / attribute / value_contains / confidence."},
       {"name": "mnemo_fact_save", "purpose": "Assert a fact triple. Promotion ladder enforced (verified > high_probability > false); contradictions with an existing verified fact emit a bus + Discord notification."},
       {"name": "mnemo_fact_demote", "purpose": "Mark a fact false without supplying a replacement — the escape hatch for the verified → false transition when the correct value isn't yet known."},
+      {"name": "mnemo_fact_authority", "purpose": "v4.23 — lock or unlock a fact slot (open / probe / declared). Only the user's word may change a tier."},
+      {"name": "mnemo_fact_proposals", "purpose": "v4.23 — list the writes a locked slot held, or resolve one (accept / reject) on the user's ruling."},
+      {"name": "mnemo_memory_demote", "purpose": "v4.23 — retire a wrong memory by id: leaves recall, keeps its JSON and ledger entry."},
       {"name": "agent_startup", "purpose": "Neutral session-boot tool (BRAIN_DIR gated) — loads the calling agent's lane file + cross-agent docs + recent memories + last dream brief."},
       {"name": "opie_startup", "purpose": "Legacy alias of agent_startup pinned to Opie's lane. Behaves identically except for the identity-header text and the lane filename it loads."},
       {"name": "session_end", "purpose": "Drains auto-capture, saves a summary, commits the agent's brain lane. Tags as source=user, category=current_state."},
@@ -298,6 +305,7 @@
 
   // Recent releases. An AI reads this when a user asks "what's new?"
   "changelog": [
+    {"version": "4.23.0", "date": "2026-09-15", "changes": ["Authority tiers: a fact's tier says WHO may change it, not what it is about. probe slots answer only to probe:/tool: evidence (and carry the command that re-asks them), declared slots only to the user's word, open slots keep the confidence ladder. Any other write to a locked slot is recorded as a proposal, never the value, never an error; the dreamer's and the seed file's writes become proposals automatically. On recall, a locked fact about an entity the prompt names is served first as a [FACT:<tier>] chunk ahead of every soft memory. POST /memories/demote retires a wrong memory by id, JSON and ledger kept. Specimen: an agent's loose 'Tailscale is the only path' sentence auto-captured and served as topology (2026-09-15)."]},
     {"version": "4.22.2", "date": "2026-09-14", "changes": ["A name search is not a word search. Only name-shaped words (capitalised in the memory, not all-caps, letters only) enter the phonetic column; everyday words never do, so a surname that sounds like a common word (Fershaw / fresh) is no longer drowned by it. LEX_SCHEMA 4: each tenant's lexical table is re-made and rebuilt once on next open."]},
     {"version": "4.22.1", "date": "2026-09-14", "changes": ["'ch' is a sound, not two letters. The phonetic key folds ch to the sh-symbol per Metaphone, with the hard-k exceptions sch (school) and chr (Christina = Kristina) kept, so Ferchau finds Fershaw \u2014 the very name the 4.22.0 proof used, misspelled in our own records. LEX_SCHEMA 3: each tenant's lexical table is re-made and rebuilt once on next open."]},
     {"version": "4.22.0", "date": "2026-09-13", "changes": ["A misspelled name still finds its person. The lexical lane gains a phonetic column: each memory stores consonant-skeleton keys of its words, and a query word of four or more letters that no memory contains adds its key to the match, so Elenore finds Eleanor and Fershow finds Fershaw while a correctly spelled name never picks up sound-alikes. LEX_SCHEMA 2: each tenant's lexical table is re-made and rebuilt once on next open. Off switch ranking.phonetic_enabled."]},

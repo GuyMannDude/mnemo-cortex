@@ -1498,6 +1498,26 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # first — the stale truth still serves, after the new one. Membership
         # is the score's decision; this only orders (ranking.order_revisions).
         selected = order_revisions(all_chunks[: req.max_results])
+
+        # v4.23 authority tiers: a locked fact (probe/declared) about an
+        # entity the prompt names speaks first. Same contract as exact_first —
+        # the pin leads the window, it never owns it: at most half the slots,
+        # the rest stay the score's decision. Soft memories are not filtered
+        # or reclassified by this; the hard fact simply goes first.
+        fact_chunks: list[ContextChunk] = []
+        try:
+            for f in facts.locked_for_prompt(req.prompt, limit=min(3, max(1, req.max_results // 2))):
+                fact_chunks.append(ContextChunk(
+                    f"[FACT:{f.authority}] {f.entity}.{f.attribute} = {f.value}",
+                    f"fact:{f.entity}.{f.attribute}", 1.0, "FACT",
+                    provenance_source="tool" if f.authority == "probe" else "user",
+                    additional_tags=[f"authority:{f.authority}", f"confidence:{f.confidence}"],
+                    age_days=round((time.time() - float(f.last_updated)) / 86400.0, 1),
+                ))
+        except Exception as e:
+            log.error(f"locked-fact pin failed (agent={req.agent_id}): {e}")
+        if fact_chunks:
+            selected = fact_chunks + selected[: max(0, req.max_results - len(fact_chunks))]
         for c in selected:
             cache_hits[c.cache_tier] = cache_hits.get(c.cache_tier, 0) + 1
 
@@ -2306,6 +2326,27 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         reason: str
         changed_by: Optional[str] = None
 
+    # v4.23 authority tiers
+    class FactAuthorityRequest(BaseModel):
+        entity: str
+        attribute: str
+        authority: str
+        evidence_source: str
+        changed_by: Optional[str] = None
+        probe_cmd: Optional[str] = None
+        probe_host: Optional[str] = None
+
+    class ProposalResolveRequest(BaseModel):
+        action: str
+        by: str
+        reason: str = ""
+
+    class MemoryDemoteRequest(BaseModel):
+        memory_id: str
+        reason: str
+        by: Optional[str] = None
+        agent_id: Optional[str] = None
+
     @app.get("/facts/{entity}/{attribute}")
     async def facts_get(entity: str, attribute: str, include_false: bool = False):
         fact = facts.get(entity, attribute, include_false=include_false)
@@ -2346,6 +2387,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "previous_value": result.previous_value,
             "previous_confidence": result.previous_confidence,
             "reason": result.reason,
+            # v4.23 authority tiers
+            "authority": result.authority,
+            "proposal_id": result.proposal_id,
         }
 
     @app.post("/facts/demote")
@@ -2368,6 +2412,76 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     @app.get("/facts/contradictions")
     async def facts_contradictions(since: Optional[float] = None, limit: int = 100):
         return {"contradictions": facts.contradictions(since=since, limit=limit)}
+
+    # ── v4.23 authority tiers: lock a slot, list + resolve proposals ──
+    @app.post("/facts/authority")
+    async def facts_authority(req: FactAuthorityRequest):
+        try:
+            result = facts.set_authority(
+                req.entity, req.attribute, req.authority, req.evidence_source,
+                changed_by=req.changed_by, probe_cmd=req.probe_cmd, probe_host=req.probe_host,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {
+            "written": result.written,
+            "authority": result.authority,
+            "previous_value": result.previous_value,
+            "previous_confidence": result.previous_confidence,
+            "reason": result.reason,
+        }
+
+    @app.get("/facts/proposals")
+    async def facts_proposals(status: Optional[str] = "pending", limit: int = 50):
+        if status in ("", "all"):
+            status = None
+        if status is not None and status not in ("pending", "accepted", "rejected"):
+            raise HTTPException(400, "status must be pending, accepted, rejected or all")
+        rows = facts.proposals(status=status, limit=limit)
+        return {"proposals": rows, "count": len(rows), "status": status or "all"}
+
+    @app.post("/facts/proposals/{proposal_id}/resolve")
+    async def facts_proposal_resolve(proposal_id: int, req: ProposalResolveRequest):
+        try:
+            result = facts.resolve_proposal(proposal_id, req.action, req.by, reason=req.reason)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {
+            "written": result.written,
+            "was_contradiction": result.was_contradiction,
+            "previous_value": result.previous_value,
+            "previous_confidence": result.previous_confidence,
+            "reason": result.reason,
+            "authority": result.authority,
+            "proposal_id": result.proposal_id,
+        }
+
+    # ── v4.23: demote a memory by id (the route #3533 had to fake with a
+    # supersedes-save). Filing change, not testimony: the JSON stays, the
+    # ledger hash is untouched, only the vector leaves the index. ──
+    @app.post("/memories/demote")
+    async def memories_demote(req: MemoryDemoteRequest, request: Request):
+        _enforce_scope(request, req.agent_id)
+        if not req.reason.strip():
+            raise HTTPException(400, "reason is required")
+        tenant = tenants.get(req.agent_id)
+        memory_dir = tenant["memory_dir"]
+        vec_store: VecStore = tenant["vec"]
+        path = memory_dir / f"{req.memory_id}.json"
+        if not path.exists():
+            raise HTTPException(404, f"no memory {req.memory_id} for agent {req.agent_id or 'default'}")
+        mem = json.loads(path.read_text(encoding="utf-8"))
+        if mem.get("superseded_by"):
+            return {"demoted": False, "memory_id": req.memory_id,
+                    "reason": f"already superseded by {mem['superseded_by']}"}
+        stamp = f"demoted:{req.by or 'unknown'}:{int(time.time())}"
+        mem["superseded_by"] = stamp
+        mem["superseded_at"] = time.time()
+        mem["demote_reason"] = req.reason.strip()
+        await asyncio.to_thread(_atomic_write_text, path, json.dumps(mem, indent=2, default=str))
+        vec_store.delete(req.memory_id)
+        log.info(f"Memory demoted: {req.memory_id} (agent: {req.agent_id or 'default'}, by={req.by}, reason={req.reason.strip()[:80]})")
+        return {"demoted": True, "memory_id": req.memory_id, "superseded_by": stamp}
 
     # ── Background: precache + session archival ──
     async def maintenance_cycle(cycle: int):

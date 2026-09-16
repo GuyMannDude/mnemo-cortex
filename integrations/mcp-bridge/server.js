@@ -2342,14 +2342,20 @@ server.registerTool(
         source_memory_id: source_memory_id || null,
         source_agent: AGENT_ID,
       });
+      const locked = typeof data.reason === "string" && data.reason.startsWith("locked:");
       const lines = [
-        data.written ? `Fact saved (${data.reason})` : `Fact REJECTED (${data.reason})`,
+        data.written ? `Fact saved (${data.reason})`
+          : locked ? `Fact HELD by authority tier (${data.reason})` : `Fact REJECTED (${data.reason})`,
         `  ${entity} . ${attribute} = ${value}  [${confidence}]`,
       ];
       if (data.was_contradiction) {
         lines.push(`  contradiction with previous: ${data.previous_value} [${data.previous_confidence}]`);
       }
-      return { content: [{ type: "text", text: lines.join("\n") }], isError: !data.written };
+      if (data.proposal_id) {
+        lines.push(`  recorded as proposal #${data.proposal_id} — this slot is ${data.authority}; only its own kind of evidence writes it. Guy's word resolves it (mnemo_fact_proposals).`);
+      }
+      // A held write is the tier working, not an error.
+      return { content: [{ type: "text", text: lines.join("\n") }], isError: !data.written && !locked };
     } catch (err) {
       return { content: [{ type: "text", text: `Fact save error: ${err.message}` }], isError: true };
     }
@@ -2379,6 +2385,114 @@ server.registerTool(
       };
     } catch (err) {
       return { content: [{ type: "text", text: `Fact demote error: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+// ── Tools: authority tiers (v4.23) ─────────────────────────────
+// A fact's tier says WHO may change it: `probe` answers to a machine
+// (evidence probe:/tool:), `declared` to Guy (statement:guy…), `open` to
+// anyone. Any other write to a locked slot becomes a proposal.
+server.registerTool(
+  "mnemo_fact_authority",
+  {
+    description: "Set a fact slot's authority tier: 'open' (anyone, default), 'probe' (only a machine may change it — evidence must start with probe: or tool:; needs probe_cmd, the command that re-asks it), or 'declared' (only Guy's word — evidence statement:guy…). Locking or unlocking is itself Guy's act: evidence_source must start with statement:guy, and you must be relaying his actual ruling (cite the turn or ping). Writes that do not match a locked slot's tier land as proposals, never as the value.",
+    inputSchema: {
+      entity: z.string().describe("Thing the fact is about."),
+      attribute: z.string().describe("Property to lock or unlock."),
+      authority: z.enum(["open", "probe", "declared"]).describe("open = confidence ladder only. probe = machine-owned. declared = Guy-owned."),
+      evidence_source: z.string().describe("Must start with statement:guy — name the ruling (e.g. 'statement:guy S337 chat')."),
+      probe_cmd: z.string().optional().describe("probe tier only, required: the command that re-verifies the value (dmidecode -t 2, nc -z host 22, curl /health)."),
+      probe_host: z.string().optional().describe("probe tier: which machine can run probe_cmd."),
+    },
+    annotations: { "title": "Set Fact Authority", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true },
+  },
+  async ({ entity, attribute, authority, evidence_source, probe_cmd, probe_host }) => {
+    captureCall("mnemo_fact_authority", `${entity}/${attribute}=${authority}`);
+    try {
+      const data = await mnemoRequest("POST", "/facts/authority", {
+        entity, attribute, authority, evidence_source,
+        probe_cmd: probe_cmd || null, probe_host: probe_host || null, changed_by: AGENT_ID,
+      });
+      const text = data.written
+        ? `Authority set: ${entity}.${attribute} is now ${data.authority} (${data.reason})`
+        : `Authority NOT changed: ${data.reason}`;
+      return { content: [{ type: "text", text }], isError: !data.written };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Fact authority error: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+server.registerTool(
+  "mnemo_fact_proposals",
+  {
+    description: "List proposals against locked (probe/declared) fact slots, or resolve one. A proposal is a write that a lock held: the value some agent, the dreamer, or a seed script tried to put on a slot it may not write. Listing is safe. Resolving is Guy's word relayed by you: 'accept' writes the proposed value as verified (past the lock, evidence names the proposal), 'reject' closes it and leaves the slot alone. Only resolve with an actual ruling from Guy — cite it in reason.",
+    inputSchema: {
+      status: z.enum(["pending", "accepted", "rejected", "all"]).optional().describe("Which proposals to list (default pending)."),
+      limit: z.number().int().min(1).max(200).optional().describe("Max rows (default 50)."),
+      resolve_id: z.number().int().optional().describe("Proposal id to resolve. Omit to list."),
+      action: z.enum(["accept", "reject"]).optional().describe("Required with resolve_id."),
+      reason: z.string().optional().describe("Why — cite Guy's ruling. Logged to fact history."),
+    },
+    annotations: { "title": "Fact Proposals", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
+  },
+  async ({ status, limit, resolve_id, action, reason }) => {
+    captureCall("mnemo_fact_proposals", resolve_id ? `${action} #${resolve_id}` : `list ${status || "pending"}`);
+    try {
+      if (resolve_id) {
+        if (!action) return { content: [{ type: "text", text: "action (accept|reject) is required with resolve_id" }], isError: true };
+        const data = await mnemoRequest("POST", `/facts/proposals/${resolve_id}/resolve`, {
+          action, by: AGENT_ID, reason: reason || "",
+        });
+        const lines = [`Proposal #${resolve_id}: ${data.reason}`];
+        if (data.written) lines.push(`  slot now = proposed value [verified], was: ${data.previous_value} [${data.previous_confidence}]; tier stays ${data.authority}`);
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+      const qs = new URLSearchParams();
+      if (status) qs.set("status", status);
+      if (limit) qs.set("limit", String(limit));
+      const q = qs.toString();
+      const data = await mnemoRequest("GET", `/facts/proposals${q ? "?" + q : ""}`);
+      if (!data.count) return { content: [{ type: "text", text: `No ${data.status} proposals.` }] };
+      const lines = [`${data.count} ${data.status} proposal(s):`];
+      for (const p of data.proposals) {
+        const when = p.created_at ? new Date(p.created_at * 1000).toISOString().slice(0, 16) : "?";
+        lines.push(`  #${p.id} [${p.status}] ${p.entity}.${p.attribute} (${p.authority}) ${when} by ${p.source_agent || "?"}`);
+        lines.push(`      proposed: ${p.proposed_value}`);
+        lines.push(`      current:  ${p.current_value}`);
+        lines.push(`      evidence: ${p.evidence_source}`);
+        if (p.resolved_by) lines.push(`      resolved by ${p.resolved_by}: ${p.resolution_reason || ""}`);
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Fact proposals error: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+server.registerTool(
+  "mnemo_memory_demote",
+  {
+    description: "Demote one memory by id: it leaves recall (vector removed) but its JSON and ledger entry stay as history. Use for a memory that is WRONG (e.g. an auto-captured sentence that stated a falsehood as fact). Requires a reason. Not for tidying — a merely old or duplicate memory is not wrong. This is the route a supersedes-save used to be faked for.",
+    inputSchema: {
+      memory_id: z.string().describe("The memory id (shown as id=… in recall headers)."),
+      reason: z.string().describe("Why it is wrong. Required, stored on the record."),
+    },
+    annotations: { "title": "Demote Memory", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": true },
+  },
+  async ({ memory_id, reason }) => {
+    captureCall("mnemo_memory_demote", memory_id);
+    try {
+      const data = await mnemoRequest("POST", "/memories/demote", {
+        memory_id, reason, by: AGENT_ID, agent_id: AGENT_ID,
+      });
+      const text = data.demoted
+        ? `Demoted ${memory_id} (superseded_by=${data.superseded_by}) — JSON kept, out of recall. Reason: ${reason}`
+        : `Not demoted: ${data.reason}`;
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Memory demote error: ${err.message}` }], isError: true };
     }
   }
 );

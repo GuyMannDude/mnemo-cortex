@@ -1296,6 +1296,33 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     return all_valid
 
 
+def proposals_block(limit: int = 10) -> str:
+    """v4.23 authority tiers: the writes a locked slot held this window,
+    as a brief section so every agent boots knowing a slot is contested.
+    Zero says zero — a block that only appears when non-empty is not a
+    check. Log-don't-raise: the brief must not die on a facts hiccup."""
+    heading = "### Pending proposals to locked facts"
+    try:
+        resp = httpx.get(f"{MNEMO_URL}/facts/proposals",
+                         params={"status": "pending", "limit": limit},
+                         headers=MNEMO_AUTH_HEADERS, timeout=10.0)
+        if resp.status_code != 200:
+            return f"{heading}\nUNKNOWN — /facts/proposals returned {resp.status_code}"
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001 — unattended nightly job
+        return f"{heading}\nUNKNOWN — /facts/proposals unreachable ({e.__class__.__name__})"
+    rows = data.get("proposals") or []
+    count = int(data.get("count") or 0)
+    if not rows:
+        return f"{heading}\n0 pending. Every write to a probe/declared slot this window came from its own kind of evidence."
+    lines = [f"{heading}", f"{count} pending — a lock held these writes; Guy's word resolves them (mnemo_fact_proposals)."]
+    for r in rows:
+        lines.append(f"#{r.get('id')} {r.get('entity')}.{r.get('attribute')} ({r.get('authority')}) "
+                     f"by {r.get('source_agent') or '?'} · proposed: {str(r.get('proposed_value'))[:120]} "
+                     f"· current: {str(r.get('current_value'))[:120]} · evidence: {str(r.get('evidence_source'))[:80]}")
+    return "\n".join(lines)
+
+
 def post_facts(extracted: list[dict], source_agent: str) -> list[dict]:
     """POST each extracted fact to /facts. Returns the verified-vs-extracted
     contradictions (the cases the spec's notification flow needs to surface).
@@ -2089,6 +2116,12 @@ def main():
     # Synthesize
     log.info(f"Sending to {DREAM_MODEL} for synthesis...")
     dream_text = synthesize(all_memories, dry_run=args.dry_run)
+
+    # v4.23 authority tiers: what the locks held this window rides in the
+    # brief itself, so a contested slot is known at boot, not found later.
+    block = proposals_block()
+    log.info(block)
+    dream_text = dream_text.rstrip() + "\n\n" + block + "\n"
 
     if args.dry_run:
         print(dream_text)
