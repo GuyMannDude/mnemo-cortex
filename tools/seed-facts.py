@@ -181,8 +181,12 @@ def main() -> int:
             if not args.dry_run:
                 try:
                     result = save_fact(client, fact)
-                    if result.get("was_contradiction"):
+                    if result.get("proposal_id") is not None:
+                        print(f"             → HELD by lock ({result.get('authority')}): {result.get('reason')}")
+                    elif result.get("was_contradiction") and result.get("written"):
                         print(f"             → overwrote {result.get('previous_value')!r} ({result.get('previous_confidence')})")
+                    elif result.get("was_contradiction"):
+                        print(f"             → rejected: {result.get('reason')}")
                 except httpx.HTTPError as e:
                     print(f"  [ERROR save] {eid}: {e}")
                     counts["ERROR"] += 1

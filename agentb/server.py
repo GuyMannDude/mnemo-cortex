@@ -859,6 +859,17 @@ def _pocket_prompt(memories: list, history: list, message: str) -> str:
     return "\n".join(lines)
 
 
+# v4.23 review #5: a memory id becomes a filename (`memory_dir / f"{id}.json"`)
+# on /memories/demote and on the writeback `supersedes` join. Every id we mint
+# is hex, or `<word>-<word>-<digits/hex>` (pocket-…, cc-jsonl-…, dave-auto-…).
+# No dot, no slash: `../x` can never leave the tenant's directory.
+_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _bad_memory_ids(ids) -> list[str]:
+    return [i for i in ids if not isinstance(i, str) or not _MEMORY_ID_RE.match(i)]
+
+
 def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     if config is None:
         config = load_config()
@@ -1504,9 +1515,17 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # the pin leads the window, it never owns it: at most half the slots,
         # the rest stay the score's decision. Soft memories are not filtered
         # or reclassified by this; the hard fact simply goes first.
+        # Two edges (review 2026-09-15): a SCOPED token gets no pin — the facts
+        # store is global and the tenant is not, so a partner token would read
+        # Guy's declared facts; under-share is the only allowed failure (see
+        # SCOPABLE_ENDPOINTS in config.py). A ONE-slot window gets the fact:
+        # max(1, n // 2) is the same floor exact_first uses two blocks up, and
+        # a hard fact about the named entity is the best single answer.
         fact_chunks: list[ContextChunk] = []
+        scoped_caller = getattr(request.state, "scoped_agent_id", None) is not None
         try:
-            for f in facts.locked_for_prompt(req.prompt, limit=min(3, max(1, req.max_results // 2))):
+            for f in ([] if scoped_caller else
+                      facts.locked_for_prompt(req.prompt, limit=min(3, max(1, req.max_results // 2)))):
                 fact_chunks.append(ContextChunk(
                     f"[FACT:{f.authority}] {f.entity}.{f.attribute} = {f.value}",
                     f"fact:{f.entity}.{f.attribute}", 1.0, "FACT",
@@ -1619,6 +1638,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     @app.post("/writeback", response_model=WritebackResponse)
     async def writeback(req: WritebackRequest, request: Request):
         _enforce_scope(request, req.agent_id)
+        if bad := _bad_memory_ids(req.supersedes):
+            raise HTTPException(400, f"invalid memory id in supersedes: {bad[0]!r}")
         # Check read-only
         if req.agent_id and req.agent_id in config.agents:
             if config.agents[req.agent_id].read_only:
@@ -2325,6 +2346,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         attribute: str
         reason: str
         changed_by: Optional[str] = None
+        # v4.23: a demote on a locked slot needs the slot's own kind of
+        # evidence (probe:/tool: or statement:guy); otherwise it is a proposal.
+        evidence_source: Optional[str] = None
 
     # v4.23 authority tiers
     class FactAuthorityRequest(BaseModel):
@@ -2395,14 +2419,18 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     @app.post("/facts/demote")
     async def facts_demote(req: FactDemoteRequest):
         try:
-            result = facts.demote(req.entity, req.attribute, req.reason, changed_by=req.changed_by)
+            result = facts.demote(req.entity, req.attribute, req.reason, changed_by=req.changed_by,
+                                  evidence_source=req.evidence_source)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {
             "written": result.written,
+            "was_contradiction": result.was_contradiction,
             "previous_value": result.previous_value,
             "previous_confidence": result.previous_confidence,
             "reason": result.reason,
+            "authority": result.authority,
+            "proposal_id": result.proposal_id,
         }
 
     @app.get("/facts/history/{entity}/{attribute}")
@@ -2464,6 +2492,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         _enforce_scope(request, req.agent_id)
         if not req.reason.strip():
             raise HTTPException(400, "reason is required")
+        if _bad_memory_ids([req.memory_id]):
+            raise HTTPException(400, f"invalid memory_id {req.memory_id!r}")
         tenant = tenants.get(req.agent_id)
         memory_dir = tenant["memory_dir"]
         vec_store: VecStore = tenant["vec"]

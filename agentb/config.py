@@ -271,6 +271,9 @@ SCOPABLE_ENDPOINTS = frozenset({
     # v4.20: the ledger endpoints take agent_id and enforce the pin.
     "/ledger/verify", "/ledger/seal",
 })
+# The facts store (/facts/*) is GLOBAL, not per tenant, so no /facts route is
+# scopable — and /context skips the locked-fact pin for a scoped caller: a
+# partner token must never read Guy's declared facts (v4.23 review #6).
 
 
 @dataclass

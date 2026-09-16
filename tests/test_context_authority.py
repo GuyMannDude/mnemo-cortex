@@ -187,3 +187,87 @@ def test_memory_demote_route(client):
     r = c.post("/memories/demote", json={"memory_id": mid, "reason": "again", "by": "cc"})
     assert r.status_code == 200 and r.json()["demoted"] is False
     assert "already superseded" in r.json()["reason"]
+
+
+# ── review 2026-09-15 on 7fda6c4 ──────────────────────────────────────────
+
+def test_memory_ids_that_are_paths_are_refused(client):
+    """#5: `memory_dir / f"{id}.json"` must never leave the tenant directory."""
+    c, tmp_path = client
+    mid = _writeback(c, "a real memory about igor-2")
+    for bad in ("../x", "..", "a/b", "a\\b", ".hidden", "", "x" * 129, "id.json"):
+        r = c.post("/memories/demote", json={"memory_id": bad, "reason": "x", "by": "cc"})
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+        r = c.post("/writeback", json={"session_id": "s-bad", "summary": "new truth", "key_facts": [],
+                                       "category": "topology", "force": True, "supersedes": [mid, bad]})
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+        assert "supersedes" in r.text
+    # the real id still works on both routes
+    new = _writeback(c, "the corrected memory", session="s-good")
+    r = c.post("/writeback", json={"session_id": "s-sup", "summary": "supersedes the first", "key_facts": [],
+                                   "category": "topology", "force": True, "supersedes": [mid]})
+    assert r.status_code == 200, r.text
+    assert c.post("/memories/demote", json={"memory_id": new, "reason": "x", "by": "cc"}).status_code == 200
+
+
+def test_fact_demote_route_reports_a_hold(client):
+    """#1 over HTTP: the route carries evidence and names the proposal."""
+    c, _ = client
+    _lock_igor2(c)
+    r = c.post("/facts/demote", json={"entity": "igor-2", "attribute": "access_paths_from_igor",
+                                      "reason": "loose sentence", "changed_by": "rocky"})
+    assert r.status_code == 200
+    assert r.json()["written"] is False and r.json()["proposal_id"] == 1 and r.json()["authority"] == "probe"
+    assert c.get("/facts/igor-2/access_paths_from_igor").json()["confidence"] == "verified"
+    assert c.get("/facts/proposals").json()["proposals"][0]["confidence"] == "false"
+    r = c.post("/facts/demote", json={"entity": "igor-2", "attribute": "access_paths_from_igor",
+                                      "reason": "port closed", "evidence_source": "tool:nc -z -> closed"})
+    assert r.json()["written"] is True and r.json()["proposal_id"] is None
+
+
+@pytest.fixture
+def scoped_client(tmp_path):
+    from agentb.config import ScopedToken
+    cfg = AgentBConfig(
+        reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="x")),
+        embedding=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="nomic-embed-text")),
+        cache=CacheConfig(),
+        server=ServerConfig(host="127.0.0.1", port=50098, auth_token="master-token",
+                            scoped_tokens=[ScopedToken(token="partner-token", agent_id="cc",
+                                                       endpoints=["/context", "/writeback"])]),
+        data_dir=str(tmp_path),
+        classification=ClassificationConfig(enabled=False),
+        personas=dict(DEFAULT_PERSONAS),
+    )
+    with patch("agentb.server.create_resilient_embedding", return_value=FakeEmbedding()), \
+         patch("agentb.server.create_resilient_reasoning", return_value=FakeReasoning()):
+        from agentb.server import create_app
+        with TestClient(create_app(cfg)) as c:
+            yield c
+
+
+def test_scoped_token_gets_no_locked_fact_pin(scoped_client):
+    """#6: the facts store is global, the tenant is not — a partner token must
+    never read Guy's declared facts. Under-share is the only allowed failure."""
+    c = scoped_client
+    master = {"X-API-KEY": "master-token"}
+    partner = {"X-API-KEY": "partner-token"}
+    r = c.post("/writeback", json={"session_id": "s1", "summary": "igor-2 has a nice case", "key_facts": [],
+                                   "category": "topology", "source": "inferred", "force": True, "agent_id": "cc"},
+               headers=master)
+    assert r.status_code == 200, r.text
+    r = c.post("/facts", json={"entity": "igor-2", "attribute": "access_paths_from_igor", "value": "SSH+RDP both IPs",
+                               "confidence": "verified", "evidence_source": "statement:guy"}, headers=master)
+    assert r.status_code == 200 and r.json()["written"]
+    r = c.post("/facts/authority", json={"entity": "igor-2", "attribute": "access_paths_from_igor",
+                                         "authority": "declared", "evidence_source": "statement:guy"}, headers=master)
+    assert r.status_code == 200 and r.json()["written"]
+    # /facts is not scopable at all
+    assert c.post("/facts", json={"entity": "x", "attribute": "y", "value": "z", "confidence": "verified",
+                                  "evidence_source": "statement:guy"}, headers=partner).status_code == 403
+
+    body = {"prompt": "how do I reach igor-2", "max_results": 4, "agent_id": "cc"}
+    tiers_master = [ch["cache_tier"] for ch in c.post("/context", json=body, headers=master).json()["chunks"]]
+    tiers_partner = [ch["cache_tier"] for ch in c.post("/context", json=body, headers=partner).json()["chunks"]]
+    assert tiers_master[0] == "FACT"
+    assert "FACT" not in tiers_partner and tiers_partner   # memories still served, no fact

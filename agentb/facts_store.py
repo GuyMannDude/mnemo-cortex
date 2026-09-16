@@ -124,7 +124,9 @@ class FactsStore:
         authority         TEXT NOT NULL,
         current_value     TEXT,
         status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
+        seen_count        INTEGER NOT NULL DEFAULT 1,
         created_at        REAL NOT NULL,
+        last_seen         REAL,
         resolved_at       REAL,
         resolved_by       TEXT,
         resolution_reason TEXT
@@ -136,17 +138,26 @@ class FactsStore:
     # ALTER is idempotent by inspection; two first-touch connections racing
     # the same ALTER raise OperationalError, which the retry in _connect
     # re-inspects and finds already done.
-    _NEW_COLUMNS = (
-        ("authority", "TEXT NOT NULL DEFAULT 'open'"),
-        ("probe_cmd", "TEXT"),
-        ("probe_host", "TEXT"),
-    )
+    _NEW_COLUMNS = {
+        "facts": (
+            ("authority", "TEXT NOT NULL DEFAULT 'open'"),
+            ("probe_cmd", "TEXT"),
+            ("probe_host", "TEXT"),
+        ),
+        # 4.23.0 pre-deploy review #4: dedupe columns. A 4.23.0-shaped table
+        # without them would 500 every held write (review round 2, #1).
+        "fact_proposals": (
+            ("seen_count", "INTEGER NOT NULL DEFAULT 1"),
+            ("last_seen", "REAL"),
+        ),
+    }
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
-        have = {row[1] for row in conn.execute("PRAGMA table_info(facts)").fetchall()}
-        for name, decl in self._NEW_COLUMNS:
-            if name not in have:
-                conn.execute(f"ALTER TABLE facts ADD COLUMN {name} {decl}")
+        for table, columns in self._NEW_COLUMNS.items():
+            have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, decl in columns:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
@@ -273,6 +284,47 @@ class FactsStore:
         finally:
             conn.close()
 
+    def _propose(self, conn: sqlite3.Connection, existing: sqlite3.Row, e: str, a: str,
+                 value: str, confidence: str, evidence_source: str,
+                 source_agent: Optional[str], authority: str, now: float) -> tuple[int, int]:
+        """Record a write the lock held. Returns (proposal_id, seen_count).
+
+        Identical pending proposals collapse onto one row with a bumped
+        seen_count (the dreamer re-extracts the same sentence nightly; thirty
+        rows a month would bury the brief's ten-row block). Only a NEW
+        proposal gets a fact_history row — a repeat is not a new event."""
+        dup = conn.execute(
+            "SELECT id, seen_count FROM fact_proposals WHERE entity=? AND attribute=? "
+            "AND proposed_value=? AND confidence=? AND status='pending'",
+            (e, a, value, confidence),
+        ).fetchone()
+        if dup is not None:
+            seen = int(dup["seen_count"]) + 1
+            # the row names the MOST RECENT asker and evidence; the count says
+            # how many there were (review round 2, #4)
+            conn.execute(
+                "UPDATE fact_proposals SET seen_count=?, last_seen=?, current_value=?, "
+                "evidence_source=?, source_agent=? WHERE id=?",
+                (seen, now, existing["value"], evidence_source, source_agent, dup["id"]),
+            )
+            return int(dup["id"]), seen
+        cur = conn.execute(
+            "INSERT INTO fact_proposals (entity, attribute, proposed_value, confidence, "
+            "evidence_source, source_agent, authority, current_value, created_at, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (e, a, value, confidence, evidence_source, source_agent, authority, existing["value"], now, now),
+        )
+        pid = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO fact_history (entity, attribute, old_value, new_value, "
+            "old_confidence, new_confidence, reason, changed_at, changed_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (e, a, existing["value"], value, existing["confidence"], confidence,
+             f"proposal #{pid} — locked:{authority}, this evidence may not write the slot",
+             now, source_agent),
+        )
+        return pid, 1
+
     def save(
         self,
         entity: str,
@@ -339,26 +391,14 @@ class FactsStore:
                         reason=f"locked:{authority} — value unchanged, nothing proposed",
                         authority=authority,
                     )
-                cur = conn.execute(
-                    "INSERT INTO fact_proposals (entity, attribute, proposed_value, confidence, "
-                    "evidence_source, source_agent, authority, current_value, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (e, a, value, confidence, evidence_source, source_agent, authority, existing["value"], now),
-                )
-                pid = cur.lastrowid
-                conn.execute(
-                    "INSERT INTO fact_history (entity, attribute, old_value, new_value, "
-                    "old_confidence, new_confidence, reason, changed_at, changed_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (e, a, existing["value"], value, existing["confidence"], confidence,
-                     f"proposal #{pid} — locked:{authority}, this evidence may not write the slot",
-                     now, source_agent),
-                )
+                pid, seen = self._propose(conn, existing, e, a, value, confidence,
+                                          evidence_source, source_agent, authority, now)
                 conn.commit()
                 return FactWriteResult(
                     written=False, was_contradiction=True,
                     previous_value=existing["value"], previous_confidence=existing["confidence"],
-                    reason=f"locked:{authority} — recorded as proposal #{pid}",
+                    reason=(f"locked:{authority} — recorded as proposal #{pid}" if seen == 1
+                            else f"locked:{authority} — already proposed as #{pid} (seen {seen}x)"),
                     proposal_id=pid, authority=authority,
                 )
 
@@ -424,12 +464,20 @@ class FactsStore:
         finally:
             conn.close()
 
-    def demote(self, entity: str, attribute: str, reason: str, changed_by: Optional[str] = None) -> FactWriteResult:
+    def demote(self, entity: str, attribute: str, reason: str, changed_by: Optional[str] = None,
+               evidence_source: Optional[str] = None) -> FactWriteResult:
         """Force a fact to confidence='false' without supplying a new value.
 
         Used when something is known wrong but the correct value isn't known yet.
         Required because the promotion ladder otherwise blocks verified→false
         transitions.
+
+        v4.23: a demote is a write. On a locked slot it answers to the same
+        evidence as any other write — a probe slot needs `probe:`/`tool:`
+        evidence (the machine said the value is gone), a declared slot needs
+        Guy's word. Anything else is recorded as a proposal to demote
+        (confidence 'false'), never applied. Without this the demote tool was
+        the one door around every lock (review finding #1, 2026-09-15).
         """
         if not reason.strip():
             raise ValueError("reason is required for demote")
@@ -446,10 +494,26 @@ class FactsStore:
             ).fetchone()
             if existing is None:
                 return FactWriteResult(written=False, was_contradiction=False, reason="no such fact")
+            authority = existing["authority"] or "open"
             if existing["confidence"] == "false":
                 return FactWriteResult(
                     written=False, was_contradiction=False,
-                    previous_confidence="false", reason="already false",
+                    previous_confidence="false", reason="already false", authority=authority,
+                )
+
+            if not evidence_allowed(authority, evidence_source or ""):
+                # the proposal carries the reason whatever the evidence — Guy
+                # resolves it reading this row, not the history table
+                es = f"{(evidence_source or '').strip() or f'agent:{changed_by or 'unknown'}'} — demote: {reason.strip()}"
+                pid, seen = self._propose(conn, existing, e, a, existing["value"], "false",
+                                          es[:200], changed_by, authority, now)
+                conn.commit()
+                return FactWriteResult(
+                    written=False, was_contradiction=True,
+                    previous_value=existing["value"], previous_confidence=existing["confidence"],
+                    reason=(f"locked:{authority} — demote recorded as proposal #{pid}" if seen == 1
+                            else f"locked:{authority} — demote already proposed as #{pid} (seen {seen}x)"),
+                    proposal_id=pid, authority=authority,
                 )
 
             conn.execute(
@@ -468,7 +532,7 @@ class FactsStore:
             return FactWriteResult(
                 written=True, was_contradiction=False,
                 previous_value=existing["value"], previous_confidence=existing["confidence"],
-                reason="demoted",
+                reason="demoted", authority=authority,
             )
         finally:
             conn.close()
@@ -645,21 +709,29 @@ class FactsStore:
                     reason=f"proposal #{p['id']} rejected", proposal_id=p["id"], authority=tier,
                 )
             evidence = f"statement:guy accepted proposal #{p['id']} via {by} <- {p['evidence_source']}"
+            # A demote proposal (confidence 'false') lands as false; every
+            # other accepted proposal lands as verified — it is Guy's word now.
+            # A demote proposal froze proposed_value at proposal time; its
+            # intent is "mark this slot false", so it lands on whatever the
+            # value is NOW — never reverting a correction made since.
+            is_demote = p["confidence"] == "false"
+            new_conf = "false" if is_demote else "verified"
+            new_value = existing["value"] if is_demote else p["proposed_value"]
             conn.execute(
-                "UPDATE facts SET value=?, confidence='verified', evidence_source=?, "
+                "UPDATE facts SET value=?, confidence=?, evidence_source=?, "
                 "source_agent=?, last_updated=? WHERE entity=? AND attribute=?",
-                (p["proposed_value"], evidence, p["source_agent"], now, e, a),
+                (new_value, new_conf, evidence, p["source_agent"], now, e, a),
             )
             conn.execute(
                 "INSERT INTO fact_history (entity, attribute, old_value, new_value, "
                 "old_confidence, new_confidence, reason, changed_at, changed_by) "
-                "VALUES (?, ?, ?, ?, ?, 'verified', ?, ?, ?)",
-                (e, a, existing["value"], p["proposed_value"], existing["confidence"],
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (e, a, existing["value"], new_value, existing["confidence"], new_conf,
                  f"proposal #{p['id']} accepted by {by}: {reason}", now, by),
             )
             conn.commit()
             return FactWriteResult(
-                written=True, was_contradiction=existing["value"] != p["proposed_value"],
+                written=True, was_contradiction=existing["value"] != new_value,
                 previous_value=existing["value"], previous_confidence=existing["confidence"],
                 reason=f"proposal #{p['id']} accepted", proposal_id=p["id"], authority=tier,
             )

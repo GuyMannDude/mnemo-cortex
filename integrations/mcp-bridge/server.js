@@ -2365,20 +2365,24 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_demote",
   {
-    description: "Force a fact to confidence='false' without supplying a new value. Use when you know something is wrong but don't yet know the correct answer. Required because the normal save path's promotion ladder blocks verified→false transitions that lack a replacement value.",
+    description: "Force a fact to confidence='false' without supplying a new value. Use when you know something is wrong but don't yet know the correct answer. Required because the normal save path's promotion ladder blocks verified→false transitions that lack a replacement value. On a LOCKED slot (probe/declared) a demote is a write like any other: pass evidence_source of the slot's own kind (probe:/tool: for probe, statement:guy for declared) or it is recorded as a proposal to demote, never applied.",
     inputSchema: {
       entity: z.string().describe("Thing the fact is about."),
       attribute: z.string().describe("Property to demote."),
       reason: z.string().describe("Why this fact is wrong. Required, logged to history."),
+      evidence_source: z.string().optional().describe("Provenance of the demote, e.g. 'tool:nc -z host 22 -> closed' or 'statement:guy S338'. Needed to write a locked slot."),
     },
     annotations: { "title": "Demote Fact", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": true },
   },
-  async ({ entity, attribute, reason }) => {
+  async ({ entity, attribute, reason, evidence_source }) => {
     captureCall("mnemo_fact_demote", `${entity}/${attribute}`);
     try {
       const data = await mnemoRequest("POST", "/facts/demote", {
-        entity, attribute, reason, changed_by: AGENT_ID,
+        entity, attribute, reason, changed_by: AGENT_ID, evidence_source: evidence_source || null,
       });
+      if (data.proposal_id) {
+        return { content: [{ type: "text", text: `Demote HELD — ${entity}.${attribute} is ${data.authority}; recorded as proposal #${data.proposal_id}. Guy's word resolves it (mnemo_fact_proposals).` }] };
+      }
       if (!data.written) return { content: [{ type: "text", text: `Demote: ${data.reason}` }] };
       return {
         content: [{ type: "text", text: `Demoted ${entity}.${attribute} (was ${data.previous_confidence}: ${data.previous_value}) — reason: ${reason}` }],
@@ -2457,8 +2461,9 @@ server.registerTool(
       if (!data.count) return { content: [{ type: "text", text: `No ${data.status} proposals.` }] };
       const lines = [`${data.count} ${data.status} proposal(s):`];
       for (const p of data.proposals) {
-        const when = p.created_at ? new Date(p.created_at * 1000).toISOString().slice(0, 16) : "?";
-        lines.push(`  #${p.id} [${p.status}] ${p.entity}.${p.attribute} (${p.authority}) ${when} by ${p.source_agent || "?"}`);
+        const ts = (p.seen_count > 1 && p.last_seen) ? p.last_seen : p.created_at;   // a repeat shows its latest date
+        const when = ts ? new Date(ts * 1000).toISOString().slice(0, 16) : "?";
+        lines.push(`  #${p.id}${p.seen_count > 1 ? ` x${p.seen_count}` : ""} [${p.status}] ${p.entity}.${p.attribute} (${p.authority}) ${when} by ${p.source_agent || "?"}`);
         lines.push(`      proposed: ${p.proposed_value}`);
         lines.push(`      current:  ${p.current_value}`);
         lines.push(`      evidence: ${p.evidence_source}`);

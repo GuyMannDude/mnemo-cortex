@@ -1317,9 +1317,12 @@ def proposals_block(limit: int = 10) -> str:
         return f"{heading}\n0 pending. Every write to a probe/declared slot this window came from its own kind of evidence."
     lines = [f"{heading}", f"{count} pending — a lock held these writes; Guy's word resolves them (mnemo_fact_proposals)."]
     for r in rows:
-        lines.append(f"#{r.get('id')} {r.get('entity')}.{r.get('attribute')} ({r.get('authority')}) "
+        seen = int(r.get("seen_count") or 1)
+        lines.append(f"#{r.get('id')}{f' x{seen}' if seen > 1 else ''} {r.get('entity')}.{r.get('attribute')} ({r.get('authority')}) "
                      f"by {r.get('source_agent') or '?'} · proposed: {str(r.get('proposed_value'))[:120]} "
-                     f"· current: {str(r.get('current_value'))[:120]} · evidence: {str(r.get('evidence_source'))[:80]}")
+                     f"· current: {str(r.get('current_value'))[:120]} · evidence: {str(r.get('evidence_source'))[:80]}"
+                     + (f" · last {time.strftime('%Y-%m-%d', time.gmtime(float(r['last_seen'])))}"
+                        if seen > 1 and r.get("last_seen") else ""))
     return "\n".join(lines)
 
 
@@ -1348,6 +1351,11 @@ def post_facts(extracted: list[dict], source_agent: str) -> list[dict]:
                 log.warning(f"  /facts POST {resp.status_code} for {fact['entity']}/{fact['attribute']}: {resp.text[:200]}")
                 continue
             data = resp.json()
+            # v4.23: a write a LOCK held (proposal_id set) is the system
+            # working — it is listed in the brief's proposals section, not
+            # screamed as a verified-vs-extracted contradiction (review #3).
+            if data.get("proposal_id") is not None:
+                continue
             if (not data.get("written")) and data.get("was_contradiction") and data.get("previous_confidence") == "verified":
                 contradictions.append({
                     "entity": fact["entity"],

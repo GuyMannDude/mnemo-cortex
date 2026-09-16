@@ -40,19 +40,68 @@ and "I have to decide" switches must not be rewritable by an agent's sentence.
   JSON + ledger entry kept. The route #3533 had to fake with a supersedes-save.
 - Dreamer: a "Pending proposals to locked facts" section in every brief; zero
   says zero, an unreachable facts store says UNKNOWN.
-- Tests: `tests/test_facts_authority.py` (11) + `tests/test_context_authority.py` (5).
+- Tests: `tests/test_facts_authority.py` (15) + `tests/test_context_authority.py` (8).
+
+**Pre-deploy review (same day, before first push) — seven findings, all fixed
+or ruled here.** The reviewer proved each one on a throwaway DB.
+1. `demote` walked around every lock: any agent could set a locked fact to
+   `false`, which silences it in `/context`. A demote is now a write — on a
+   locked slot it needs the slot's own evidence (`evidence_source` on
+   `/facts/demote` and the bridge tool) or it becomes a **proposal to demote**
+   (confidence `false`); accepting one lands `false`, not `verified`.
+2. **The lock is honor system.** `statement:guy` is a prefix any writer can
+   type, and `resolve(accept)` takes any `by`; every agent carries the master
+   token and `/facts/*` is not scopable. So in 4.23.0 a tier is an **audit
+   trail plus honor system**: every lock, accept and held write names who did
+   it and with what evidence, and the bridge descriptions say "relay Guy's
+   actual ruling, cite it". Real enforcement is a door only Guy can open —
+   accept/lock from the CLI on the Mnemo host, or a Guy-only token class; that
+   is the next step and this text is here so nobody reads "declared" as
+   "enforced" before it lands.
+3. Every held write returned `was_contradiction=True` against a `verified`
+   value, so the dreamer's `post_facts` raised the verified-vs-extracted
+   contradiction alarm (bus + Discord) for each proposal. A `proposal_id`
+   in the reply now means "held, listed in the brief" and is skipped there;
+   `tools/seed-facts.py` prints HELD instead of "overwrote".
+4. Identical held writes piled up (the dreamer re-extracts the same sentence
+   nightly: thirty rows a month, burying the brief's ten-row block). Pending
+   proposals dedupe on (slot, value, confidence): `seen_count` + `last_seen`
+   bump, one history row per proposal, brief and bridge print `x3`.
+5. `/memories/demote` built `memory_dir / f"{memory_id}.json"` from an
+   unvalidated id — `../x` read and rewrote any JSON. One regex for a memory
+   id (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, no dot, no slash) now guards
+   that route AND the pre-existing writeback `supersedes` join; a bad id is a
+   400 naming it, never a silent skip.
+6. The pin served the GLOBAL facts store on the tenant-scoped `/context`, so
+   a scoped partner token would read Guy's declared facts. A scoped caller
+   gets no pin (under-share is the only allowed failure); noted beside
+   `SCOPABLE_ENDPOINTS`.
+7. `max_results=1` gives the pin 100% of the window. Kept, documented: it is
+   the same `max(1, n // 2)` floor `exact_first` uses, and a hard fact about
+   the named entity is the best single answer.
+
+Second review pass on the fixes, five more, all in: `fact_proposals` gets its
+own column migration (a 4.23.0-shaped table would have 500'd every held
+write); accepting a demote proposal marks the slot's CURRENT value false
+instead of reverting to the value frozen at proposal time; a held demote always
+carries its reason in the proposal row (`<evidence> — demote: <reason>`); a
+deduped repeat refreshes the row to the latest asker and evidence, and the
+brief/bridge show the latest date; `demote`'s early returns name the tier.
 
 **Not in 4.23.0 (named so nobody assumes):** running `probe_cmd`; routing the
 capture analyst's topology notes about locked entities into proposals (the
-read-side pin makes it non-load-bearing); a CLI for proposals (HTTP + bridge
-cover it); any ranking-weight change; locking vector memories.
+read-side pin makes it non-load-bearing); **lock enforcement** (see review #2 —
+a host-CLI or Guy-only-token door, the next release); any ranking-weight
+change; locking vector memories.
 
 ## mcp-bridge 2.27.0 — authority tiers + memory demote (2026-09-15)
 
 `mnemo_fact_authority`, `mnemo_fact_proposals` (list / accept / reject),
 `mnemo_memory_demote`. `mnemo_fact_save` now reports a held write as
 "HELD by authority tier … recorded as proposal #n" and does not flag it as an
-error — the hold is the tier working.
+error — the hold is the tier working. Pre-deploy review: `mnemo_fact_demote`
+takes `evidence_source` and reports a hold the same way (a demote on a locked
+slot is a write); the proposals list shows `x3` for a write held three times.
 
 ## mcp-bridge 2.26.0 — recall headers carry the memory id (2026-09-15)
 

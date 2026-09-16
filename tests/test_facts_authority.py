@@ -166,8 +166,10 @@ def test_locked_for_prompt_matches_whole_entity_words(store):
     assert store.locked_for_prompt("where does guy live") == []
     assert store.locked_for_prompt("igor-20 role") and store.locked_for_prompt("igor-20 role")[0].entity == "igor-20"
     assert store.locked_for_prompt("") == []
-    # a demoted (false) locked fact does not speak
-    store.demote("igor-2", "access_paths_from_igor", "re-probing")
+    # a demoted (false) locked fact does not speak — the demote itself needs
+    # the slot's own evidence (review #1); a bare demote would be a proposal
+    r = store.demote("igor-2", "access_paths_from_igor", "port closed", evidence_source="tool:nc -z -> closed")
+    assert r.written, r.reason
     assert store.locked_for_prompt("reach igor-2") == []
 
 
@@ -192,3 +194,124 @@ def test_migration_adds_columns_to_a_pre_423_store(tmp_path):
     assert store.save("igor", "role", "launchpad", "verified", "dream:x").reason == "reasserted"
     # reopening is idempotent
     FactsStore(db).get("igor", "role")
+
+
+# ── review 2026-09-15 on 7fda6c4 ──────────────────────────────────────────
+
+def test_demote_on_a_locked_slot_is_a_write_like_any_other(store):
+    """#1: the demote tool was the one door around every lock."""
+    _seed_locked(store, "probe")
+    r = store.demote("igor-2", "access_paths_from_igor", "I think it's Tailscale only", changed_by="rocky")
+    assert r.written is False and r.was_contradiction is True and r.authority == "probe"
+    assert r.reason.startswith("locked:probe — demote recorded as proposal #")
+    pid = r.proposal_id
+    f = store.get("igor-2", "access_paths_from_igor")
+    assert f.confidence == "verified" and f.value == "SSH+RDP over Tailscale AND LAN"   # untouched
+    assert store.locked_for_prompt("reach igor-2")                                    # still speaks
+    p = store.proposals()[0]
+    assert (p["id"], p["confidence"], p["proposed_value"]) == (pid, "false", f.value)
+    assert p["evidence_source"] == "agent:rocky — demote: I think it's Tailscale only"
+    # wrong-KIND evidence still carries the reason — Guy resolves from this row
+    # same slot, same intent -> dedupes onto #1, and the row now names the latest asker
+    r2 = store.demote("igor-2", "access_paths_from_igor", "statusline red", changed_by="dave",
+                      evidence_source="memory:abc")
+    assert r2.proposal_id == pid and r2.reason.endswith("(seen 2x)")
+    p = store.proposals()[0]
+    assert (p["evidence_source"], p["source_agent"], p["seen_count"]) == ("memory:abc — demote: statusline red", "dave", 2)
+
+    # Guy's word on the demote proposal lands it as FALSE, not verified
+    r = store.resolve_proposal(pid, "accept", by="cc", reason="Guy: yes, drop it")
+    assert r.written is True and r.was_contradiction is False
+    assert store.get("igor-2", "access_paths_from_igor", include_false=True).confidence == "false"
+    assert store.locked_for_prompt("reach igor-2") == []
+    hist = store.history("igor-2", "access_paths_from_igor")
+    assert hist[0]["new_confidence"] == "false" and "accepted by cc" in hist[0]["reason"]
+    # early returns still name the tier
+    assert store.demote("igor-2", "access_paths_from_igor", "again", evidence_source="tool:x").authority == "probe"
+
+    # the machine may demote a probe slot directly; Guy may demote a declared one
+    store.save("igor-2", "bios_version", "1.2.3", "verified", "tool:dmidecode", source_agent="cc")
+    store.set_authority("igor-2", "bios_version", "probe", "statement:guy", probe_cmd="dmidecode")
+    assert store.demote("igor-2", "bios_version", "reflashed", evidence_source="tool:dmidecode -> 1.3.0").written
+    store.save("cc", "daily_model", "fable", "verified", "statement:guy", source_agent="cc")
+    store.set_authority("cc", "daily_model", "declared", "statement:guy")
+    assert store.demote("cc", "daily_model", "flipped", evidence_source="tool:statusline").written is False
+    assert store.demote("cc", "daily_model", "flipped", evidence_source="statement:guy S338").written
+    # open slots: unchanged behaviour, no evidence needed
+    store.save("guy", "city", "HMB", "verified", "memory:x", source_agent="cc")
+    assert store.demote("guy", "city", "moved").written
+
+
+def test_identical_held_writes_collapse_onto_one_proposal(store):
+    """#4: the dreamer re-extracts the same sentence nightly."""
+    _seed_locked(store, "probe")
+    r1 = store.save("igor-2", "access_paths_from_igor", "Tailscale only", "high_probability",
+                    "dream:2026-09-16", source_agent="dreamer")
+    r2 = store.save("igor-2", "access_paths_from_igor", "Tailscale only", "high_probability",
+                    "dream:2026-09-17", source_agent="dreamer")
+    r3 = store.save("igor-2", "access_paths_from_igor", "Tailscale only", "high_probability",
+                    "dream:2026-09-18", source_agent="dreamer")
+    assert r1.proposal_id == r2.proposal_id == r3.proposal_id == 1
+    assert r1.reason.endswith("recorded as proposal #1")
+    assert r3.reason.endswith("already proposed as #1 (seen 3x)")
+    pend = store.proposals()
+    assert len(pend) == 1 and pend[0]["seen_count"] == 3 and pend[0]["last_seen"] >= pend[0]["created_at"]
+    assert pend[0]["evidence_source"] == "dream:2026-09-18"     # the row names the LATEST asker
+    # one history row for the proposal, not three
+    assert sum(1 for h in store.history("igor-2", "access_paths_from_igor") if h["reason"].startswith("proposal #")) == 1
+    # a different value is a different proposal; a demote of the same slot is its own row too
+    assert store.save("igor-2", "access_paths_from_igor", "LAN only", "high_probability",
+                      "dream:x", source_agent="dreamer").proposal_id == 2
+    assert store.demote("igor-2", "access_paths_from_igor", "gone", changed_by="dreamer").proposal_id == 3
+    assert len(store.proposals()) == 3
+    # once resolved, the same write opens a NEW proposal (pending-only dedupe)
+    store.resolve_proposal(1, "reject", by="cc", reason="wrong")
+    assert store.save("igor-2", "access_paths_from_igor", "Tailscale only", "high_probability",
+                      "dream:2026-09-19", source_agent="dreamer").proposal_id == 4
+
+
+def test_accepting_a_stale_demote_proposal_never_reverts_a_correction(store):
+    """Round 2 #2: a demote proposal froze the value at proposal time."""
+    store.save("cc", "daily_model", "OLD VALUE", "verified", "statement:guy", source_agent="cc")
+    store.set_authority("cc", "daily_model", "declared", "statement:guy")
+    pid = store.demote("cc", "daily_model", "looks wrong", changed_by="rocky").proposal_id
+    assert store.save("cc", "daily_model", "NEW CORRECT VALUE", "verified", "statement:guy S338",
+                      source_agent="cc").written
+    r = store.resolve_proposal(pid, "accept", by="cc", reason="Guy: fine, drop it")
+    assert r.written and r.was_contradiction is False
+    f = store.get("cc", "daily_model", include_false=True)
+    assert (f.value, f.confidence) == ("NEW CORRECT VALUE", "false")   # marked false, not reverted
+    # and a rejected demote leaves the slot exactly as it was
+    store.save("cc", "daily_model", "NEWER", "verified", "statement:guy", source_agent="cc")
+    pid2 = store.demote("cc", "daily_model", "nope", changed_by="dave").proposal_id
+    store.resolve_proposal(pid2, "reject", by="cc", reason="Guy: keep it")
+    f = store.get("cc", "daily_model")
+    assert (f.value, f.confidence) == ("NEWER", "verified")
+
+
+def test_migration_adds_dedupe_columns_to_a_4230_proposals_table(tmp_path):
+    """Round 2 #1: a 4.23.0-shaped fact_proposals (no seen_count/last_seen)
+    must not 500 every held write."""
+    db = tmp_path / "p.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+    CREATE TABLE facts (entity TEXT NOT NULL, attribute TEXT NOT NULL, value TEXT NOT NULL,
+        confidence TEXT NOT NULL, evidence_source TEXT NOT NULL, source_memory_id TEXT, source_agent TEXT,
+        created_at REAL NOT NULL, last_updated REAL NOT NULL, authority TEXT NOT NULL DEFAULT 'open',
+        probe_cmd TEXT, probe_host TEXT, PRIMARY KEY (entity, attribute));
+    CREATE TABLE fact_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT NOT NULL,
+        attribute TEXT NOT NULL, proposed_value TEXT NOT NULL, confidence TEXT NOT NULL,
+        evidence_source TEXT NOT NULL, source_agent TEXT, authority TEXT NOT NULL, current_value TEXT,
+        status TEXT NOT NULL DEFAULT 'pending', created_at REAL NOT NULL, resolved_at REAL,
+        resolved_by TEXT, resolution_reason TEXT);
+    INSERT INTO fact_proposals (entity, attribute, proposed_value, confidence, evidence_source, authority, created_at)
+        VALUES ('igor-2', 'x', 'v', 'high_probability', 'dream:old', 'probe', 1.0);
+    """)
+    conn.commit(); conn.close()
+    store = FactsStore(db)
+    cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(fact_proposals)")}
+    assert {"seen_count", "last_seen"} <= cols
+    assert store.proposals()[0]["seen_count"] == 1          # the old row got the default
+    _seed_locked(store, "probe")
+    r = store.save("igor-2", "access_paths_from_igor", "Tailscale only", "high_probability", "dream:x")
+    assert r.proposal_id == 2 and store.demote("igor-2", "access_paths_from_igor", "x").proposal_id == 3
