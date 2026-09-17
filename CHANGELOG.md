@@ -1,5 +1,29 @@
 # Changelog
 
+## v4.24.1 — One window gate for both harvesters; session ids survive a Windows clock tick (2026-09-16)
+
+**Problem.** Two snags, both filed by the S328/S334 review passes and left
+for "the next Mnemo touch". (1) The dreamer gained a second harvest gate in
+4.21.5 — a memory whose own `timestamp` predates the window is late-arriving
+history, not news — but `mnemo-wiki-compile.py` still harvested on file
+mtime alone, so the nightly wiki and the nightly dream disagreed about what
+happened last night. (2) `SessionManager._generate_session_id()` hashed
+`time.time()`, which ticks every 1–15 ms on Windows, so two sessions started
+in the same tick shared an id and `test_safety_cap_starts_new_session`
+failed 2 of 4 runs on IGOR-2 (CC2 #3492).
+
+**Fix.**
+- New `agentb/window.py` holds `LATE_ARRIVAL_GRACE` + `predates_window()`;
+  `mnemo-dream.py` imports it (old names stay bound) and
+  `mnemo-wiki-compile.py` now applies the same gate and logs the skip count.
+  Pinned by `tests/test_wiki_window.py`, mirroring `test_dream_window.py`.
+- The session-id suffix hashes `time.time_ns()` plus a process-wide counter;
+  `test_session_ids_differ_within_one_clock_tick` freezes the clock and
+  asks for 50 distinct ids.
+
+No schema change, no index rebuild. The scripts deploy on pull; the
+`sessions.py` change rides the next server restart.
+
 ## v4.24.0 — Media association: a file's extension is a format, not its name (2026-09-15)
 
 **Problem.** Guy has asked "where is RockLobster.mp3" more than once; every

@@ -13,6 +13,7 @@ import json
 import gzip
 import logging
 import time
+import itertools
 import hashlib
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -23,6 +24,9 @@ from collections import OrderedDict
 from agentb.config import validate_session_id
 
 log = logging.getLogger("agentb.sessions")
+
+# Process-wide, so two managers in one tick still differ.
+_SESSION_ID_COUNTER = itertools.count()
 
 
 @dataclass
@@ -117,9 +121,15 @@ class SessionManager:
                 )] = written
 
     def _generate_session_id(self) -> str:
-        """Generate a new session ID based on timestamp."""
+        """Generate a new session ID based on timestamp.
+
+        The suffix hashes the clock AND a process-wide counter: on Windows
+        `time.time()` ticks every 1–15 ms, so two sessions started in the
+        same tick used to share an id (snag mnemo-windows-suite-honesty).
+        """
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
-        suffix = hashlib.sha256(str(time.time()).encode()).hexdigest()[:6]
+        seed = f"{time.time_ns()}:{next(_SESSION_ID_COUNTER)}"
+        suffix = hashlib.sha256(seed.encode()).hexdigest()[:6]
         return f"{ts}_{suffix}"
 
     def _should_start_new_session(self) -> bool:

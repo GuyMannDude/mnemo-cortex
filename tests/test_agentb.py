@@ -771,6 +771,16 @@ class TestSessionManager:
         assert r1["session_id"] == r2["session_id"]
         assert r2["session_id"] != r3["session_id"]
 
+    def test_session_ids_differ_within_one_clock_tick(self, tmp_data_dir, monkeypatch):
+        """Windows ticks time.time() every 1-15 ms; two starts in one tick
+        must still get distinct ids (snag mnemo-windows-suite-honesty)."""
+        from agentb import sessions as sessions_mod
+        from agentb.sessions import SessionManager, SessionConfig
+        monkeypatch.setattr(sessions_mod.time, "time_ns", lambda: 1_000_000_000)
+        sm = SessionManager(tmp_data_dir, SessionConfig())
+        ids = {sm._generate_session_id() for _ in range(50)}
+        assert len(ids) == 50
+
     def test_crash_safe_append(self, tmp_data_dir):
         """After ingest, data is on disk even without explicit close."""
         from agentb.sessions import SessionManager, SessionConfig

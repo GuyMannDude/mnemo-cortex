@@ -309,24 +309,9 @@ log = logging.getLogger("mnemo-dream")
 # Harvest: AgentB writebacks (one directory per agent)
 # ---------------------------------------------------------------------------
 
-# Writers batch (jsonl-sync flushes every 60 s), so a memory stamped just
-# before the cutoff can land on disk just after it. One hour of grace keeps
-# that memory; months-late archival is still months late.
-LATE_ARRIVAL_GRACE = timedelta(hours=1)
-
-
-def _predates_window(timestamp, since: datetime) -> bool:
-    """True when a memory's own timestamp is older than the window by more
-    than the grace period. Missing or unparseable → False (mtime decides)."""
-    if not timestamp:
-        return False
-    try:
-        ts = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts < since - LATE_ARRIVAL_GRACE
+# The second harvest gate lives in agentb.window (one home, shared with
+# mnemo-wiki-compile.py); the old names stay bound here for callers + tests.
+from agentb.window import LATE_ARRIVAL_GRACE, predates_window as _predates_window  # noqa: E402
 
 
 def harvest_agentb(since: datetime) -> list[dict]:

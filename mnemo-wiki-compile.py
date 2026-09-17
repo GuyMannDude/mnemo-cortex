@@ -33,6 +33,8 @@ from pathlib import Path
 
 import httpx
 
+from agentb.window import predates_window
+
 # Portable non-blocking single-writer lock (same pattern as passport/storage.py):
 # POSIX fcntl.flock, msvcrt fallback on Windows — a hard `import fcntl` was an
 # instant ImportError there, though the paired mnemo-dream.py runs on Windows.
@@ -130,8 +132,16 @@ log = logging.getLogger("mnemo-wiki")
 # ---------------------------------------------------------------------------
 
 def harvest_agentb(since: datetime) -> list[dict]:
-    """Read all AgentB writeback JSONs newer than `since`."""
+    """Read all AgentB writeback JSONs newer than `since`.
+
+    Two gates, both must pass — the same two the dreamer applies: the file
+    LANDED in the window (mtime) and the memory is ABOUT the window (its own
+    `timestamp`, via agentb.window). A memory whose timestamp predates the
+    window is late-arriving history, not news — skipped and counted.
+    Unparseable timestamps keep the mtime verdict (fail open).
+    """
     memories = []
+    stale: dict = {}
     # Per-agent layout (Mnemo Cortex v2.10.0+): ~/.agentb/agents/<agent>/memory/
     agents_root = AGENTB_DATA_DIR / "agents"
     if not agents_root.exists():
@@ -151,6 +161,9 @@ def harvest_agentb(since: datetime) -> list[dict]:
                 if mtime < since:
                     continue
                 data = json.loads(f.read_text())
+                if predates_window(data.get("timestamp"), since):
+                    stale[agent_id] = stale.get(agent_id, 0) + 1
+                    continue
                 memories.append({
                     "source": "agentb",
                     "agent_id": agent_id,
@@ -163,6 +176,11 @@ def harvest_agentb(since: datetime) -> list[dict]:
                 })
             except (json.JSONDecodeError, KeyError) as e:
                 log.warning(f"Skipping {f}: {e}")
+    if stale:
+        log.info(
+            f"Skipped {sum(stale.values())} late-arriving memories whose own "
+            f"timestamp predates the window: {stale}"
+        )
     return memories
 
 
