@@ -1,5 +1,39 @@
 # Changelog
 
+## v4.24.2 — The dreamer's corrective retry copied the checker's display period (2026-09-22)
+
+**Problem.** The 2026-09-22 dream was discarded. The first rollup had 45
+stated lines and 19 violations (all-caps tokens like NVIDIA, AWS, WSL2 and
+three CVE ids the allowlist did not know; two headers missing their `#`).
+The corrective retry was handed the checker's report, whose `clip()` renders
+every non-ASCII character as `.` for console safety — so all 19 quoted
+examples and the grammar footer showed ` . ` where the separator is ` · `.
+The model wrote ` . ` on all 45 lines; the retry failed 45/45; per-line
+salvage ran only on the retry and dropped everything; the gate refused to
+bless an empty check (correctly) and the night was lost. Quarantine kept the
+text (degrade to raw worked).
+
+**Fix.** Four small pieces, two here and two in the brain's checker.
+1. `_validate_stated_lines` runs the checker with `PYTHONIOENCODING=utf-8`
+   so the report fed back to the model keeps its middle dots on Windows.
+2. `_normalize_ascii_period_separator` repairs a line joined by ` . ` when it
+   has no middle dot, splits into exactly four fields, names a known owner
+   second and a date-shaped third field; everything else stays for the
+   validator. Applied to both attempts via `_repair_stated_lines`.
+3. `_salvage_best_attempt` salvages BOTH attempts when the retry also fails
+   and keeps the larger validated remainder (last night: 26 lines of the
+   first attempt instead of nothing). The retry prompt now names U+00B7 and
+   warns that the report may print it as a period.
+4. Brain `tools/stated-line-check.py`: `clip()` keeps ` · ` visible, the
+   grammar messages use the real separator, stdout never crashes on it,
+   CVE ids (`CVE-YYYY-NNNN…`) are exempt from the allowlist, and NVIDIA /
+   AWS / WSL2 join `stated-line-allow.txt`.
+
+**Tests.** 5 new in `tests/test_dream_cap.py` (separator repair, ambiguous
+lines untouched, best-attempt salvage picks the larger remainder, all-salvage
+failure keeps the validation prefix, retry prompt names the character); the
+existing double-failure and retry-call-failure tests still pass unchanged.
+
 ## v4.24.1 — One window gate for both harvesters; session ids survive a Windows clock tick (2026-09-16)
 
 **Problem.** Two snags, both filed by the S328/S334 review passes and left

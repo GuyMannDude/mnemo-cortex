@@ -535,12 +535,16 @@ def _validate_stated_lines(payload: str) -> None:
     checker = Path(brain_dir) / "tools" / "stated-line-check.py"
     if not checker.is_file():
         raise RuntimeError(f"stated-line validator missing: {checker}")
+    # A piped child on Windows prints in the locale codepage (cp1252); this
+    # report is handed back to the model on the corrective retry, so every
+    # middle dot in it must survive the round trip as UTF-8.
     proc = subprocess.run(
         [sys.executable, str(checker), "--check", "-"],
         input=payload.encode("utf-8"),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     report = proc.stdout.decode("utf-8", errors="replace").strip()
     if proc.returncode:
@@ -572,6 +576,71 @@ def _normalize_swapped_stated_line_fields(payload: str) -> tuple[str, int]:
             swaps += 1
         repaired.append(line)
     return "\n".join(repaired).strip(), swaps
+
+
+_ASCII_SEP = " . "
+_TIMESTAMP_SHAPE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _normalize_ascii_period_separator(payload: str) -> tuple[str, int]:
+    """Repair a stated line whose fields are joined by " . " instead of " · ".
+
+    Live night 2026-09-22: the checker quotes each offending line with every
+    non-ASCII character replaced by "." (console safety), so the corrective
+    retry was shown " . " nineteen times and wrote " . " on all 45 lines.
+    Only repair a line with no middle dot that splits into exactly four fields
+    on " . ", names a known owner second, and carries a date-shaped third
+    field; anything else stays for the validator to reject loudly.
+    """
+    repaired = []
+    fixes = 0
+    for line in payload.splitlines():
+        if "·" not in line and line.count(_ASCII_SEP) == 3:
+            parts = [part.strip() for part in line.split(_ASCII_SEP)]
+            if parts[1] in _STATED_LINE_OWNERS and _TIMESTAMP_SHAPE_RE.match(parts[2]):
+                line = " · ".join(parts)
+                fixes += 1
+        repaired.append(line)
+    return "\n".join(repaired).strip(), fixes
+
+
+def _repair_stated_lines(payload: str, label: str) -> str:
+    """Deterministic repairs applied to every attempt before validation."""
+    payload, sep_fixes = _normalize_ascii_period_separator(payload)
+    if sep_fixes:
+        log.warning("  repaired %d %s stated line(s) joined by ASCII periods", sep_fixes, label)
+    payload, swap_count = _normalize_swapped_stated_line_fields(payload)
+    if swap_count:
+        log.warning("  normalized %d %s stated line(s) emitted owner-first", swap_count, label)
+    return payload
+
+
+def _salvage_best_attempt(attempts: list[tuple[str, str, str]]) -> tuple[str, str, int, list[str]]:
+    """Per-line salvage over every rejected attempt; keep the largest validated remainder.
+
+    ``attempts`` is ``[(label, text, report), ...]``. Returns
+    ``(label, salvaged_text, dropped_count, notes)``; raises ``RuntimeError``
+    with the notes when nothing salvageable validates. Live night 2026-09-22:
+    the retry came back worse than the first attempt (45 rejected lines vs 19)
+    and salvaging only the retry dropped everything.
+    """
+    candidates = []
+    notes = []
+    for label, text, report in attempts:
+        salvaged, dropped = _drop_invalid_stated_lines(text, report)
+        if not dropped:
+            notes.append(f"{label}: report named no salvageable line numbers")
+            continue
+        try:
+            _validate_stated_lines(salvaged)
+        except RuntimeError as salvage_err:
+            notes.append(f"{label}: salvage rejected:\n{salvage_err}")
+            continue
+        candidates.append((len(salvaged.splitlines()), label, salvaged, dropped))
+    if not candidates:
+        raise RuntimeError("stated-line validation rejected every salvage:\n\n" + "\n\n".join(notes))
+    _, label, salvaged, dropped = max(candidates, key=lambda c: c[0])
+    return label, salvaged, dropped, notes
 
 
 def _drop_invalid_stated_lines(payload: str, report: str) -> tuple[str, int]:
@@ -805,9 +874,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
     llm_calls = len(per_agent_briefs) + 1
 
     try:
-        dream_text, swap_count = _normalize_swapped_stated_line_fields(dream_text)
-        if swap_count:
-            log.warning("  normalized %d stated line(s) emitted owner-first", swap_count)
+        dream_text = _repair_stated_lines(dream_text, "rollup")
         try:
             _validate_stated_lines(dream_text)
         except RuntimeError as first_err:
@@ -821,7 +888,10 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
                 f"{rollup_input}\n\n---\n\n# YOUR PREVIOUS ATTEMPT WAS REJECTED\n"
                 f"The grammar validator reported:\n{first_err}\n\n"
                 "Rewrite the complete brief so every stated line conforms: four "
-                "fields separated by middle dots, one sentence per claim, and "
+                "fields separated by the middle-dot character U+00B7 written as "
+                "' · ' (the report above may print it as a plain period for "
+                "display only; never write a plain period as the separator), "
+                "one sentence per claim, and "
                 "a one-token status chosen from shipped, fixed, decided, blocked, "
                 "pending, learned, verified, watching, parked, or in-progress. "
                 "every claim begins with its capitalized subject (CC, Cody, "
@@ -838,33 +908,26 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
             total_prompt_tokens += usage.get("prompt_tokens", 0)
             total_completion_tokens += usage.get("completion_tokens", 0)
             llm_calls += 1
-            retry_text, swap_count = _normalize_swapped_stated_line_fields(retry_text)
-            if swap_count:
-                log.warning("  normalized %d corrective stated line(s) emitted owner-first", swap_count)
+            retry_text = _repair_stated_lines(retry_text, "corrective")
             try:
                 _validate_stated_lines(retry_text)
             except RuntimeError as second_err:
-                salvaged_text, dropped_count = _drop_invalid_stated_lines(
-                    retry_text, str(second_err))
-                if dropped_count:
-                    try:
-                        _validate_stated_lines(salvaged_text)
-                    except RuntimeError as salvage_err:
-                        _quarantine_rejected(
-                            retry_text, str(first_err),
-                            "the retry and per-line salvage were rejected; preserved text is "
-                            f"the RETRY attempt:\n{second_err}\n\nSalvage:\n{salvage_err}")
-                        raise
-                    log.warning(
-                        "  corrective retry still malformed; dropped %d invalid line(s) and "
-                        "preserved the validated remainder", dropped_count)
-                    dream_text = salvaged_text
-                else:
-                    _quarantine_rejected(retry_text, str(first_err),
-                                         "the retry was also rejected and its report named no "
-                                         "salvageable line numbers; preserved text is the RETRY "
-                                         f"attempt:\n{second_err}")
+                try:
+                    label, salvaged_text, dropped_count, _ = _salvage_best_attempt([
+                        ("retry", retry_text, str(second_err)),
+                        ("first", dream_text, str(first_err)),
+                    ])
+                except RuntimeError as salvage_err:
+                    _quarantine_rejected(
+                        retry_text, str(first_err),
+                        "the retry and per-line salvage of BOTH attempts were rejected; "
+                        f"preserved text is the RETRY attempt:\n{second_err}\n\n"
+                        f"Salvage:\n{salvage_err}")
                     raise
+                log.warning(
+                    "  corrective retry still malformed; kept the %s attempt with %d "
+                    "invalid line(s) dropped", label, dropped_count)
+                dream_text = salvaged_text
             else:
                 dream_text = retry_text
     finally:

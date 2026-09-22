@@ -66,6 +66,7 @@ def test_stated_line_gate_pipes_utf8_bytes(monkeypatch, tmp_path):
     def fake_run(argv, **kwargs):
         seen["argv"] = argv
         seen["input"] = kwargs["input"]
+        seen["env"] = kwargs.get("env", {})
         return SimpleNamespace(returncode=0, stdout=b"1 stated line(s)\nAll stated lines conform.")
 
     monkeypatch.setattr(dream.subprocess, "run", fake_run)
@@ -73,6 +74,70 @@ def test_stated_line_gate_pipes_utf8_bytes(monkeypatch, tmp_path):
     assert seen["argv"][-2:] == ["--check", "-"]
     assert isinstance(seen["input"], bytes)
     assert "·" in seen["input"].decode("utf-8")
+    # The report is fed back to the model on retry: a cp1252 child would
+    # mangle every middle dot in it (live night 2026-09-22).
+    assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
+# ── 2026-09-22: the retry copied the report's ASCII-period separator ──
+
+def test_ascii_period_separator_repaired():
+    payload = (
+        "Dave verified fleet status . Dave . 2026-09-22T05:50:24 . shipped\n"
+        "CC kept a good line · CC · 2026-09-22T05:50:24 · shipped"
+    )
+    repaired, fixes = dream._normalize_ascii_period_separator(payload)
+    assert fixes == 1
+    assert repaired.splitlines()[0] == "Dave verified fleet status · Dave · 2026-09-22T05:50:24 · shipped"
+    assert repaired.splitlines()[1] == "CC kept a good line · CC · 2026-09-22T05:50:24 · shipped"
+
+
+def test_ascii_period_repair_leaves_ambiguous_lines_alone():
+    payload = (
+        "# What was built . or shipped . today . really\n"          # no owner second
+        "CC wrote a . b . c . d\n"                                  # no date third
+        "Guy said . Dave . 2026-09-22 . shipped . extra"             # five fields
+    )
+    repaired, fixes = dream._normalize_ascii_period_separator(payload)
+    assert fixes == 0
+    assert repaired == payload
+
+
+def test_salvage_best_attempt_keeps_larger_validated_remainder(monkeypatch):
+    def fake_validate(text):
+        claims = [l for l in text.splitlines() if l.strip() and not l.startswith("DROPPED:")]
+        if any("BAD" in l for l in claims):
+            raise RuntimeError("stated-line validation failed")
+        if not claims:
+            raise RuntimeError("stated-line validation checked no claims")
+    monkeypatch.setattr(dream, "_validate_stated_lines", fake_validate)
+    first = "good one\nBAD two\ngood three\ngood four"
+    first_report = "         line 2    FIELDS   1 field(s)"
+    retry = "BAD one\nBAD two\nBAD three"
+    retry_report = "\n".join(f"         line {i}    FIELDS   1 field(s)" for i in (1, 2, 3))
+    label, salvaged, dropped, notes = dream._salvage_best_attempt([
+        ("retry", retry, retry_report), ("first", first, first_report)])
+    assert label == "first"
+    assert dropped == 1
+    assert salvaged.splitlines()[:3] == ["good one", "good three", "good four"]
+    assert salvaged.splitlines()[-1].startswith("DROPPED: 1 invalid")
+    assert any(n.startswith("retry:") for n in notes)
+
+
+def test_salvage_best_attempt_raises_when_nothing_validates(monkeypatch):
+    monkeypatch.setattr(dream, "_validate_stated_lines",
+                        lambda text: (_ for _ in ()).throw(RuntimeError("rejected")))
+    with pytest.raises(RuntimeError, match="stated-line validation rejected every salvage"):
+        dream._salvage_best_attempt([
+            ("retry", "x\ny", "         line 1    FIELDS   1 field(s)"),
+            ("first", "x\ny", "no line numbers here"),
+        ])
+
+
+def test_retry_prompt_names_the_separator_character():
+    src = Path(dream.__file__).read_text(encoding="utf-8")
+    assert "U+00B7" in src
+    assert "never write a plain period as the separator" in src
 
 
 @pytest.mark.parametrize("returncode, output", [
