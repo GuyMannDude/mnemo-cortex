@@ -597,7 +597,8 @@ def _normalize_ascii_period_separator(payload: str) -> tuple[str, int]:
     for line in payload.splitlines():
         if "·" not in line and line.count(_ASCII_SEP) == 3:
             parts = [part.strip() for part in line.split(_ASCII_SEP)]
-            if parts[1] in _STATED_LINE_OWNERS and _TIMESTAMP_SHAPE_RE.match(parts[2]):
+            if ((parts[1] in _STATED_LINE_OWNERS or parts[0] in _STATED_LINE_OWNERS)
+                    and _TIMESTAMP_SHAPE_RE.match(parts[2])):
                 line = " · ".join(parts)
                 fixes += 1
         repaired.append(line)
@@ -615,8 +616,17 @@ def _repair_stated_lines(payload: str, label: str) -> str:
     return payload
 
 
+_STRUCTURAL_PREFIXES = ("#", "---", "_", "|", "DROPPED:")  # the checker's SKIP_PREFIXES
+
+
+def _claim_count(text: str) -> int:
+    """Stated lines only: headers, rules, blanks and the DROPPED footer do not count."""
+    return sum(1 for line in (raw.strip() for raw in text.splitlines())
+               if line and not line.startswith(_STRUCTURAL_PREFIXES))
+
+
 def _salvage_best_attempt(attempts: list[tuple[str, str, str]]) -> tuple[str, str, int, list[str]]:
-    """Per-line salvage over every rejected attempt; keep the largest validated remainder.
+    """Per-line salvage over every rejected attempt; keep the most validated claims.
 
     ``attempts`` is ``[(label, text, report), ...]``. Returns
     ``(label, salvaged_text, dropped_count, notes)``; raises ``RuntimeError``
@@ -636,7 +646,7 @@ def _salvage_best_attempt(attempts: list[tuple[str, str, str]]) -> tuple[str, st
         except RuntimeError as salvage_err:
             notes.append(f"{label}: salvage rejected:\n{salvage_err}")
             continue
-        candidates.append((len(salvaged.splitlines()), label, salvaged, dropped))
+        candidates.append((_claim_count(salvaged), label, salvaged, dropped))
     if not candidates:
         raise RuntimeError("stated-line validation rejected every salvage:\n\n" + "\n\n".join(notes))
     _, label, salvaged, dropped = max(candidates, key=lambda c: c[0])
@@ -913,20 +923,23 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
                 _validate_stated_lines(retry_text)
             except RuntimeError as second_err:
                 try:
-                    label, salvaged_text, dropped_count, _ = _salvage_best_attempt([
+                    label, salvaged_text, dropped_count, notes = _salvage_best_attempt([
                         ("retry", retry_text, str(second_err)),
                         ("first", dream_text, str(first_err)),
                     ])
                 except RuntimeError as salvage_err:
                     _quarantine_rejected(
-                        retry_text, str(first_err),
+                        f"{retry_text}\n\n# FIRST ATTEMPT (preserved too)\n\n{dream_text}",
+                        str(first_err),
                         "the retry and per-line salvage of BOTH attempts were rejected; "
-                        f"preserved text is the RETRY attempt:\n{second_err}\n\n"
+                        f"preserved text is the RETRY attempt, then the FIRST:\n{second_err}\n\n"
                         f"Salvage:\n{salvage_err}")
                     raise
                 log.warning(
                     "  corrective retry still malformed; kept the %s attempt with %d "
                     "invalid line(s) dropped", label, dropped_count)
+                for note in notes:
+                    log.warning("  salvage note: %s", note.splitlines()[0])
                 dream_text = salvaged_text
             else:
                 dream_text = retry_text

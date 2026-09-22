@@ -134,6 +134,25 @@ def test_salvage_best_attempt_raises_when_nothing_validates(monkeypatch):
         ])
 
 
+def test_ascii_period_repair_handles_owner_first_lines():
+    repaired, fixes = dream._normalize_ascii_period_separator(
+        "CC . fixed the widget . 2026-09-22 . fixed")
+    assert fixes == 1
+    assert dream._repair_stated_lines(repaired, "t") == "fixed the widget · CC · 2026-09-22 · fixed"
+
+
+def test_salvage_best_attempt_ranks_by_claims_not_lines(monkeypatch):
+    monkeypatch.setattr(dream, "_validate_stated_lines", lambda text: None)
+    retry = "# a\n\n# b\n\nclaim one\nclaim two\nBAD"
+    first = "claim one\nclaim two\nclaim three\nclaim four\nclaim five\nBAD"
+    label, salvaged, _, _ = dream._salvage_best_attempt([
+        ("retry", retry, "         line 7    FIELDS   x"),
+        ("first", first, "         line 6    FIELDS   x"),
+    ])
+    assert label == "first"
+    assert dream._claim_count(salvaged) == 5
+
+
 def test_retry_prompt_names_the_separator_character():
     src = Path(dream.__file__).read_text(encoding="utf-8")
     assert "U+00B7" in src
@@ -578,6 +597,8 @@ def test_rollup_double_failure_drops_only_named_bad_lines(monkeypatch, tmp_path)
             raise RuntimeError("stated-line validation failed:\nline 1 FIELDS")
         if payload.endswith("bad line"):
             raise RuntimeError("stated-line validation failed:\n         line 3    STATUS")
+        if dream._claim_count(payload) == 0:
+            raise RuntimeError("stated-line validation checked no claims")
 
     monkeypatch.setattr(dream, "_validate_stated_lines", validate)
     result = dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}])
