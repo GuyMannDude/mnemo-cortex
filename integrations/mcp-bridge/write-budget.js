@@ -27,8 +27,11 @@ import { STARTUP_BUDGETS, MARGIN_FLOOR } from "./boot-budget.js";
 // null when the file is not boot-loaded (snags, doctrine bodies, archives
 // — the overwhelming majority of brain writes, which must stay silent; a
 // guard that fires on healthy writes teaches its reader to skip it).
-export function budgetKeyFor(filename, agentId) {
-  if (agentId && [`${agentId}.md`, `${agentId}-session.md`].includes(filename)) {
+// `ownedLanes` is the agent's lane-candidate list (lane-candidates.js) —
+// tenant-named, or the MNEMO_LANE override — so a lane that is not named
+// after the tenant is still budget-checked.
+export function budgetKeyFor(filename, ownedLanes) {
+  if (ownedLanes && ownedLanes.includes(filename)) {
     return "lane";
   }
   // Shared boot-loaded docs are keyed by their own filename. Restricted to
@@ -70,8 +73,8 @@ export function findBoundary(text) {
 // re-home that rule here and create the second copy this module exists to
 // avoid, shared files report only the one verdict both tools agree on
 // without arithmetic: over budget, or not.
-export function assess({ filename, content, agentId }) {
-  const key = budgetKeyFor(filename, agentId);
+export function assess({ filename, content, ownedLanes }) {
+  const key = budgetKeyFor(filename, ownedLanes);
   if (!key) return null;
   const isLane = key === "lane";
   const budget = STARTUP_BUDGETS[key];
@@ -128,8 +131,8 @@ function clip(s, n = 90) {
 
 // Human-facing line(s) for a write result, or null when there is nothing
 // worth saying. Silence is the common case and is the point.
-export function budgetWarning({ filename, content, agentId }) {
-  const a = assess({ filename, content, agentId });
+export function budgetWarning({ filename, content, ownedLanes }) {
+  const a = assess({ filename, content, ownedLanes });
   if (!a) return null;
 
   if (a.status === "cut") {

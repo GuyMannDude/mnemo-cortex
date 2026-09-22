@@ -201,6 +201,33 @@ read-side pin makes it non-load-bearing); **lock enforcement** (see review #2 �
 a host-CLI or Guy-only-token door, the next release); any ranking-weight
 change; locking vector memories.
 
+## mcp-bridge 2.28.0 — `MNEMO_LANE`: a lane that is not named after the tenant (2026-09-22)
+
+**Problem.** The bridge derived an agent's lane file from `MNEMO_AGENT_ID`
+(`<agent>.md` / `<agent>-session.md`) in three places: `agent_startup`,
+`session_end`'s lane nag + budget check, and the `write_brain_file` lane
+guard. CC2 on IGOR-2 runs as `MNEMO_AGENT_ID=cc` on purpose (one memory
+store with CC) and its lane is `cc2-igor2.md`, so `agent_startup` there
+would have booted CC's lane and stamped CC's session marker — and the lane
+guard let CC2 overwrite `cc-session.md`. CC2 was never told to call
+`agent_startup`, so it booted without a session marker, without the
+lane-budget gate, and its auto-capture ran under the `cc-auto-<epoch>`
+fallback session id. Found 2026-09-22 when Guy asked whether CC2 boots
+the way CC does.
+
+**Fix.** `lane-candidates.js`: `laneCandidates(agentId, MNEMO_LANE)` —
+the override, when set, is the only candidate; otherwise the tenant-named
+pair as before. All three sites use it; the lane guard takes the owned-lane
+list instead of the agent id, so a shared-tenant agent with its own lane is
+refused the tenant's lane. Review caught a fourth site: `write-budget.js`
+keyed "is this a lane?" on the tenant name too, so an override lane would
+never have got the over-budget warning — it now takes the same owned-lane
+list. Unit tests for all three modules (`node lane-candidates.test.js`,
+`node lane-guard.test.js`, `node write-budget.test.js`). README documents the
+env. Deploy: CC2 adds `MNEMO_LANE=cc2-igor2.md` to its `mnemo-cortex` MCP
+env and restarts Claude Code; its next `agent_startup` should print
+`Lane file loaded: cc2-igor2.md`.
+
 ## mcp-bridge 2.27.0 — authority tiers + memory demote (2026-09-15)
 
 `mnemo_fact_authority`, `mnemo_fact_proposals` (list / accept / reject),

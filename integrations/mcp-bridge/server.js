@@ -19,6 +19,7 @@ import {
 } from "./boot-budget.js";
 import { autoCommitBrainFile, sessionEndCommit } from "./brain-git.js";
 import { refusesBrainWrite } from "./lane-guard.js";
+import { laneCandidates } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
 import { searchScope } from "./search-scope.js";
 import { fetchUnrepliedBusSummary } from "./bus-startup.js";
@@ -35,6 +36,10 @@ import { fetchUnrepliedBusSummary } from "./bus-startup.js";
 
 const MNEMO_URL = process.env.MNEMO_URL || "http://localhost:50001";
 const AGENT_ID = process.env.MNEMO_AGENT_ID || "openclaw";
+// MNEMO_LANE: optional lane-file override for an agent that shares a Mnemo
+// tenant but keeps its own lane (CC2 on IGOR-2: MNEMO_AGENT_ID=cc,
+// MNEMO_LANE=cc2-igor2.md). See lane-candidates.js.
+const LANE_CANDIDATES = laneCandidates(AGENT_ID, process.env.MNEMO_LANE);
 // MNEMO_AUTH_TOKEN: optional bearer token for the Mnemo Cortex API. Read from
 // env first, else from ~/.mnemo-auth-token (mode 0600) so the secret lives in
 // one file rather than every agent's MCP config. Sent as X-API-KEY on every
@@ -1399,12 +1404,12 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
 server.registerTool(
   "agent_startup",
   {
-    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (named after your MNEMO_AGENT_ID env, e.g. rocky.md / cc-session.md / opie.md), the cross-agent operating docs (CLAUDE.md, active.md, people.md, doctrines.md), recent Mnemo memories tagged to your agent_id, and the latest dream brief. Returns an agent-neutral session-boot block — your identity comes from your system prompt, this gives you continuity.",
+    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (named after your MNEMO_AGENT_ID env, e.g. rocky.md / cc-session.md / opie.md, or the file MNEMO_LANE names), the cross-agent operating docs (CLAUDE.md, active.md, people.md, doctrines.md), recent Mnemo memories tagged to your agent_id, and the latest dream brief. Returns an agent-neutral session-boot block — your identity comes from your system prompt, this gives you continuity.",
     annotations: { "title": 'Agent session boot', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
   },
   () => _runStartup({
     effectiveAgentId: AGENT_ID,
-    laneCandidates: [`${AGENT_ID}.md`, `${AGENT_ID}-session.md`],
+    laneCandidates: LANE_CANDIDATES,
     identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
       `# AGENT BOOT — ${AGENT_ID}
 
@@ -1545,7 +1550,7 @@ server.registerTool(
 server.registerTool(
   "write_brain_file",
   {
-    description: "Write or update a file in the brain directory ($BRAIN_DIR). Use at session end to update your own lane file. Per the Lane Protocol convention, write only to your own lane (named after MNEMO_AGENT_ID), not other agents' lanes or shared docs.",
+    description: "Write or update a file in the brain directory ($BRAIN_DIR). Use at session end to update your own lane file. Per the Lane Protocol convention, write only to your own lane (named after MNEMO_AGENT_ID, or the file MNEMO_LANE names), not other agents' lanes or shared docs.",
     inputSchema: {
     filename: z
       .string()
@@ -1561,7 +1566,7 @@ server.registerTool(
     );
     try {
       const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "");
-      if (refusesBrainWrite(safe, AGENT_ID)) {
+      if (refusesBrainWrite(safe, LANE_CANDIDATES)) {
         return {
           content: [
             { type: "text", text: `Refused: ${safe} is not yours to write.` },
@@ -1590,7 +1595,7 @@ server.registerTool(
       // advisory exists to report.
       let warning = null;
       try {
-        warning = budgetWarning({ filename: safe, content, agentId: AGENT_ID });
+        warning = budgetWarning({ filename: safe, content, ownedLanes: LANE_CANDIDATES });
       } catch {
         // advisory only — a broken warning must never shadow a good write
       }
@@ -1685,7 +1690,7 @@ server.registerTool(
     // counts. Under-nags on long-lived bridge processes by design.
     try {
       let lane = null;
-      for (const c of [`${AGENT_ID}.md`, `${AGENT_ID}-session.md`]) {
+      for (const c of LANE_CANDIDATES) {
         if (existsSync(join(BRAIN_DIR, c))) { lane = c; break; }
       }
       const startEpoch = sessionStartTime
@@ -1716,7 +1721,7 @@ server.registerTool(
     // Deliberately re-reads instead of trusting anything this process wrote.
     try {
       let lane = null;
-      for (const c of [`${AGENT_ID}.md`, `${AGENT_ID}-session.md`]) {
+      for (const c of LANE_CANDIDATES) {
         if (existsSync(join(BRAIN_DIR, c))) { lane = c; break; }
       }
       if (lane) {
@@ -1724,7 +1729,7 @@ server.registerTool(
         const warning = budgetWarning({
           filename: lane,
           content: onDisk,
-          agentId: AGENT_ID,
+          ownedLanes: LANE_CANDIDATES,
         });
         if (warning) results.push(warning);
       }
