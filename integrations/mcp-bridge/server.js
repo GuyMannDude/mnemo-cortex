@@ -21,6 +21,7 @@ import { autoCommitBrainFile, sessionEndCommit } from "./brain-git.js";
 import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
+import { summaryRefusal, appendCheckpointToLane } from "./checkpoint.js";
 import { searchScope } from "./search-scope.js";
 import { fetchUnrepliedBusSummary } from "./bus-startup.js";
 
@@ -321,6 +322,24 @@ let toolCallCount = 0;
 let sessionToolCalls = 0;
 let sessionStartTime = null;
 let sessionId = null;
+// memory_ids saved by session_checkpoint THIS session. A later checkpoint
+// or session_end is expected to near-duplicate them, so those saves pass
+// force=true instead of being HELD by the dedup gate.
+let checkpointIds = [];
+
+// POST /writeback; if Mnemo HOLDS it and every near-duplicate is one of this
+// session's own checkpoints, retry with force — that overlap is the expected
+// shape. A hold against anything else is returned as-is for the caller to
+// report. Never forces blindly, so the dedup gate stays on for the session.
+async function writebackPastOwnCheckpoints(body) {
+  const data = await mnemoRequest("POST", "/writeback", body);
+  if (data.status !== "held" || checkpointIds.length === 0) return data;
+  const dupIds = (data.near_duplicates || []).map((m) => m.id);
+  const onlyOwn = dupIds.length > 0 && dupIds.every((id) => checkpointIds.includes(id));
+  if (!onlyOwn) return data;
+  process.stderr.write(`[mnemo-mcp] save HELD by this session's own checkpoint(s) ${dupIds.join(", ")} — retrying with force\n`);
+  return mnemoRequest("POST", "/writeback", { ...body, force: true });
+}
 
 // Session timestamps use host-local time, not UTC, so the date portion
 // matches every other timestamp the agents write (active.md, brain commit
@@ -385,6 +404,7 @@ const TOOL_CAPTURE = {
   list_brain_files: "skip",
   write_brain_file: "full",
   session_end: "drain",
+  session_checkpoint: "skip",
   wiki_search: "summary",
   wiki_read: "summary",
   wiki_index: "skip",
@@ -1120,6 +1140,7 @@ async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates })
   toolCallCount = 0;
   sessionToolCalls = 0;
   captureBuffer.length = 0;
+  checkpointIds = [];
   if (flushTimer) clearTimeout(flushTimer);
   flushTimer = null;
 
@@ -1620,6 +1641,142 @@ server.registerTool(
   }
 );
 
+// ── Tool: session_checkpoint ───────────────────────────────────
+// session_end without the end: flush auto-capture, save a substantive
+// summary, optionally append a dated CHECKPOINT line to the lane and commit
+// it. Same session_id, nothing rotated, session_end still runs later.
+// Built for many-open-at-once Cowork sessions (Opie #3709): a session that
+// never reaches session_end used to leave nothing behind.
+
+server.registerTool(
+  "session_checkpoint",
+  {
+    description: "Save-and-commit WITHOUT closing the session. Flushes auto-capture, saves your summary to Mnemo Cortex, and optionally appends a dated CHECKPOINT line to your lane file and commits + pushes it. The session continues under the same session_id; call session_end as usual when you are actually done. Use it during long sessions or when many sessions are open at once, so a session that never reaches session_end still leaves a record. The summary must carry substance (400+ chars: what changed, why, what is next) — status-only saves are refused.",
+    inputSchema: {
+    summary: z
+      .string()
+      .max(10000)
+      .describe("What this session has learned, changed, and decided so far, and what is next. Substance, not status — the tool cannot see the chat."),
+    key_facts: z
+      .array(z.string().max(1000))
+      .optional()
+      .describe("Key facts to remember (one per item)"),
+    category: z
+      .enum([
+        "topology", "current_state", "doctrine", "incident",
+        "identity", "relationship", "decision", "idea", "session_log", "unknown",
+      ])
+      .optional()
+      .describe("Decay class. Defaults to current_state."),
+    tags: z
+      .array(z.string().max(64))
+      .optional()
+      .describe("Extra free-form tags; 'session_checkpoint' is always added."),
+    lane_kickstart_line: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe("One dated line for your lane file. Appended under a '## CHECKPOINT <timestamp>' heading at the END of the lane (below any BOOT BOUNDARY), then committed + pushed as its own commit. Omit to save to Mnemo only."),
+    force: z
+      .boolean()
+      .optional()
+      .describe("Save despite reported near-duplicates. A second checkpoint in the same session is forced automatically."),
+  },
+    annotations: { "title": 'Checkpoint (Save, Keep Going)', "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
+  },
+  async ({ summary, key_facts, category, tags, lane_kickstart_line, force }) => {
+    const refusal = summaryRefusal(summary);
+    if (refusal) {
+      return { content: [{ type: "text", text: refusal }], isError: true };
+    }
+    trackSave();
+    await flushBuffer();
+    const results = [];
+    // No agent_startup this process → mint the session id HERE, once, so the
+    // later checkpoints and session_end land under it ("same session_id").
+    if (!sessionId) {
+      sessionId = `${AGENT_ID}-${localTimestamp()}`;
+      if (!sessionStartTime) sessionStartTime = new Date().toISOString();
+    }
+    const sid = sessionId;
+    const ts = localTimestamp();
+    let memoryId = null;
+
+    try {
+      await ensureHealth();
+      const data = await writebackPastOwnCheckpoints({
+        session_id: sid,
+        summary: `[CHECKPOINT] ${summary}`,
+        key_facts: key_facts || [],
+        projects_referenced: [],
+        decisions_made: [],
+        agent_id: AGENT_ID,
+        source: "user",
+        category: category || "current_state",
+        additional_tags: ["session_checkpoint", ...(tags || [])],
+        ...(force ? { force: true } : {}),
+      });
+      if (data.status === "held") {
+        const ids = (data.near_duplicates || []).map((m) => m.id).join(", ");
+        results.push(
+          `Mnemo save: HELD as near-duplicate of ${ids || "existing memories"} — NOT saved. ` +
+          `Repeat with force=true if this checkpoint is meant to stand beside them.`
+        );
+      } else {
+        memoryId = data.memory_id || null;
+        if (memoryId) checkpointIds.push(memoryId);
+        results.push(`Mnemo save: OK (memory_id=${memoryId || "ok"}, session ${sid})`);
+      }
+    } catch (err) {
+      results.push(`Mnemo save: FAILED (${err.message})`);
+    }
+
+    // The lane append runs even when the Mnemo save failed: the brain is
+    // the fleet's "now", and a checkpoint line on disk + pushed is worth
+    // more than nothing while Mnemo is down.
+    let lane = { lane: null, commit_sha: null, lane_check: "n/a", warning: null };
+    if (lane_kickstart_line && lane_kickstart_line.trim()) {
+      try {
+        lane = appendCheckpointToLane({
+          brainDir: BRAIN_DIR,
+          ownedLanes: LANE_CANDIDATES,
+          line: lane_kickstart_line,
+          ts,
+          agentId: AGENT_ID,
+          dateStr: localDateOnly(),
+        });
+        results.push(
+          lane.lane
+            ? `Lane: appended '## CHECKPOINT ${ts}' to ${lane.lane}; git: ${lane.git}; lane-check ${lane.lane_check} (${lane.status})`
+            : `Lane: ${lane.git}`
+        );
+        if (lane.warning) results.push(lane.warning);
+      } catch (err) {
+        results.push(`Lane append FAILED (${err.message}) — lane untouched`);
+      }
+    } else {
+      results.push("Lane: not touched (no lane_kickstart_line)");
+    }
+
+    results.push(`Session continues as ${sid} — not closed; call session_end when you are done.`);
+    const receipt = JSON.stringify({
+      memory_id: memoryId,
+      commit_sha: lane.commit_sha,
+      lane_check: lane.lane_check,
+    });
+    // The header must not outrun the facts: a checkpoint whose memory did not
+    // land is INCOMPLETE, and one where nothing landed anywhere is an error.
+    const header = memoryId
+      ? "Checkpoint complete."
+      : "Checkpoint INCOMPLETE — memory NOT saved to Mnemo.";
+    const nothingLanded = !memoryId && !lane.commit_sha;
+    return {
+      content: [{ type: "text", text: `${header}\n${results.join("\n")}\n${receipt}` }],
+      ...(nothingLanded ? { isError: true } : {}),
+    };
+  }
+);
+
 // ── Tool: session_end ──────────────────────────────────────────
 // Drain auto-capture buffer, save final summary, commit + push
 // brain lane changes.
@@ -1650,7 +1807,7 @@ server.registerTool(
       const sid =
         sessionId ||
         `${AGENT_ID}-${localTimestamp()}`;
-      const data = await mnemoRequest("POST", "/writeback", {
+      const data = await writebackPastOwnCheckpoints({
         session_id: sid,
         summary: `[SESSION END] ${summary}`,
         key_facts: key_facts || [],
@@ -1667,7 +1824,15 @@ server.registerTool(
         category: "current_state",
         additional_tags: ["session_end"],
       });
-      results.push(`Mnemo save: OK (memory_id=${data.memory_id || "ok"})`);
+      if (data.status === "held") {
+        const ids = (data.near_duplicates || []).map((m) => m.id).join(", ");
+        results.push(
+          `Mnemo save: HELD as near-duplicate of ${ids || "existing memories"} — NOT saved. ` +
+          `Re-save via mnemo_save with force=true (or supersedes=[id]) before closing.`
+        );
+      } else {
+        results.push(`Mnemo save: OK (memory_id=${data.memory_id || "ok"})`);
+      }
     } catch (err) {
       results.push(`Mnemo save: FAILED (${err.message})`);
     }
@@ -1697,7 +1862,10 @@ server.registerTool(
         ? new Date(sessionStartTime).getTime() / 1000
         : null;
       if (lane && startEpoch) {
-        const ct = execFileSync("git", ["log", "-1", "--format=%ct", "--", lane], {
+        // Checkpoint commits are excluded: a CHECKPOINT block is a dated
+        // record appended at the END of the lane, not the KICKSTART rewrite
+        // the Lane Protocol asks for (and below a BOOT BOUNDARY it never boots).
+        const ct = execFileSync("git", ["log", "-1", "--format=%ct", "--invert-grep", "--grep= checkpoint ", "--", lane], {
           cwd: BRAIN_DIR,
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],

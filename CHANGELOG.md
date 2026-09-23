@@ -201,6 +201,46 @@ read-side pin makes it non-load-bearing); **lock enforcement** (see review #2 �
 a host-CLI or Guy-only-token door, the next release); any ranking-weight
 change; locking vector memories.
 
+## mcp-bridge 2.29.0 — `session_checkpoint`: save-and-commit without closing the session (2026-09-22)
+
+**Problem.** `session_end` was the bridge's only save-and-commit, so a session
+that never ends never commits. Guy runs many Cowork sessions open at once; the
+09-21 IGOR reboot ate one whole. Spec: Opie #3709, Guy's go the same evening.
+
+**Fix.** New tool `session_checkpoint(summary, key_facts?, category?, tags?,
+lane_kickstart_line?, force?)`. In order: flush the auto-capture buffer →
+`/writeback` the summary as `[CHECKPOINT] …` (source user, category
+current_state, tag `session_checkpoint`) → if a lane line was given, append
+`## CHECKPOINT <ts>` + the line at the END of the lane (below any BOOT
+BOUNDARY), commit that one path as `brain: <agent> checkpoint <ts>`, push, and
+report the lane's boot-budget verdict → return a receipt
+`{memory_id, commit_sha|null, lane_check: green|red|n/a}`. It does NOT close
+the session, rotate the session_id, or write a session-end summary.
+- **Substance floor:** summaries under 400 chars (trimmed) are refused before
+  anything runs — the tool cannot see the chat, and a status-only checkpoint
+  is the failure mode it exists to prevent.
+- **The lane gate never blocks the save:** a red lane still lands on disk and
+  in git; the overage comes back in the receipt (`doctrine-degrade-to-raw`).
+- **Dedup with `session_end`:** memory_ids saved by checkpoints are kept for
+  the session. When Mnemo HOLDS a later checkpoint or `session_end` and every
+  near-duplicate it names is one of those ids, the save is retried with
+  `force=true` — near-duplicating your own checkpoint is the expected shape.
+  A hold against anything else is reported, never forced (the dedup gate
+  stays on). `session_end` now also REPORTS a HELD save instead of printing
+  "OK" with no memory_id (it did that before — a silent loss).
+- **Honest header:** a checkpoint whose memory did not land says
+  `Checkpoint INCOMPLETE — memory NOT saved`; when neither the memory nor a
+  lane commit landed the response is an error.
+- **Session id:** with no `agent_startup` in this process, the first
+  checkpoint mints the session id once and later calls reuse it.
+- `session_end`'s "lane NOT updated this session" advisory ignores checkpoint
+  commits: a CHECKPOINT block is a dated record at the end of the lane, not
+  the KICKSTART rewrite the Lane Protocol asks for.
+- `brain-git.js` `autoCommitBrainFile` takes an optional commit `message`.
+- Unit tests: `node checkpoint.test.js` (floor, block/append, verdict, and
+  the append + pathspec commit against a throwaway bare remote, including
+  "another agent's dirty file is not swept").
+
 ## mcp-bridge 2.28.0 — `MNEMO_LANE`: a lane that is not named after the tenant (2026-09-22)
 
 **Problem.** The bridge derived an agent's lane file from `MNEMO_AGENT_ID`

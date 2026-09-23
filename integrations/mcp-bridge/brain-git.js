@@ -38,9 +38,10 @@ function firstLine(err) {
  * @param {string} opts.filename  sanitized filename relative to brainDir
  * @param {string} opts.agentId   for the commit message
  * @param {string} opts.dateStr   local date, e.g. "2026-07-17"
+ * @param {string} [opts.message] commit subject; default names write_brain_file
  * @returns {string} human-readable status — never throws
  */
-export function autoCommitBrainFile({ brainDir, filename, agentId, dateStr }) {
+export function autoCommitBrainFile({ brainDir, filename, agentId, dateStr, message }) {
   let insideWorkTree = false;
   try {
     insideWorkTree =
@@ -63,7 +64,7 @@ export function autoCommitBrainFile({ brainDir, filename, agentId, dateStr }) {
       [
         "commit",
         "-m",
-        `brain: ${agentId} updated ${filename} via write_brain_file — ${dateStr}`,
+        message || `brain: ${agentId} updated ${filename} via write_brain_file — ${dateStr}`,
         "--",
         filename,
       ],

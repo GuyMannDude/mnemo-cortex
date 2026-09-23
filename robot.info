@@ -111,6 +111,7 @@
       {"name": "agent_startup", "purpose": "Neutral session-boot tool (BRAIN_DIR gated) — loads the calling agent's lane file + cross-agent docs + recent memories + last dream brief."},
       {"name": "opie_startup", "purpose": "Legacy alias of agent_startup pinned to Opie's lane. Behaves identically except for the identity-header text and the lane filename it loads."},
       {"name": "session_end", "purpose": "Drains auto-capture, saves a summary, commits the agent's brain lane. Tags as source=user, category=current_state."},
+      {"name": "session_checkpoint", "purpose": "v2.29 — save-and-commit WITHOUT closing the session: flush auto-capture, save a substantive summary (400+ chars floor), optionally append a dated CHECKPOINT line to the lane and commit + push it. Same session_id; session_end still runs later."},
       {"name": "read_brain_file", "purpose": "Read a file from the agent's brain repo (when BRAIN_DIR is configured)."},
       {"name": "write_brain_file", "purpose": "Write/update a file in the agent's brain repo."},
       {"name": "list_brain_files", "purpose": "List files in the agent's brain repo, optionally filtered by subdirectory."},

@@ -12,6 +12,7 @@ This is the shared bridge — **claude-desktop**, **claude-code**, **openclaw-mc
 - `mnemo_share` — toggle cross-agent sharing for the current session.
 - `agent_startup` — neutral session-boot tool that loads the calling agent's lane file, cross-agent docs, recent memories, and last dream brief.
 - `session_end` — drains auto-capture, saves a session-summary memory, commits the agent's brain lane.
+- `session_checkpoint` — the same save-and-commit WITHOUT closing the session: flushes auto-capture, saves a substantive summary (400+ chars, status-only saves refused), optionally appends a dated `## CHECKPOINT` line to the lane and commits + pushes it. Same session_id; `session_end` still runs later. For long or many-open-at-once sessions.
 - `wiki_search` / `wiki_read` / `wiki_index` — query static wiki pages, a legacy WikAI archive (when `WIKI_DIR` is configured). No longer the primary discovery system — that's the Librarian (`librarian.py` in the main repo; see the README's Librarian section).
 - `read_brain_file` / `write_brain_file` / `list_brain_files` — read/write the agent's brain repo (when `BRAIN_DIR` is configured).
 - `passport_observe_behavior` / `passport_get_user_context` — Developer's Passport pipeline.
