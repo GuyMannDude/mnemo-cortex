@@ -112,6 +112,10 @@
       "description": "Recall past trajectories relevant to a task."
     },
     {
+      "name": "mnemo_transcript",
+      "description": "Search or read full archived session transcripts (Mnemo 4.25 archive tier)."
+    },
+    {
       "name": "mnemo_fact_get",
       "description": "Fetch a verified fact by id."
     },

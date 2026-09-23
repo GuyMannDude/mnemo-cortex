@@ -27,6 +27,7 @@ import logging
 import asyncio
 import statistics
 import uuid
+import zlib
 import httpx
 from collections import OrderedDict
 from contextlib import asynccontextmanager, suppress
@@ -34,7 +35,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -50,6 +51,10 @@ from agentb.cache import l3_scan, ContextChunk
 from agentb.fsutil import atomic_write_text as _atomic_write_text
 from agentb.ledger import get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
+from agentb.transcripts import (
+    TranscriptArchive, TranscriptConflict, validate_transcript_id, pointer_text,
+    UUID_RE as TRANSCRIPT_UUID_RE,
+)
 from agentb.provenance import (
     VALID_SOURCES, VALID_CATEGORIES, DEFAULT_HIDDEN_CATEGORIES,
     suggest_category, compute_stale_warning,
@@ -442,6 +447,8 @@ class TenantManager:
             "vec": vec_store,
             "vec_mode": vec_mode,
             "trajectories": traj_store,
+            # v4.25: full client transcripts (never embedded; see transcripts.py)
+            "transcripts": TranscriptArchive(data_dir, key),
         }
         self._tenants[key] = tenant
         log.info(f"Tenant '{key}' initialized at {data_dir}")
@@ -500,12 +507,19 @@ class BodySizeLimitMiddleware:
     crosses the cap.
     """
 
-    def __init__(self, app, max_bytes: int):
+    def __init__(self, app, max_bytes: int, path_limits: Optional[dict] = None):
         self.app = app
-        self.max_bytes = max_bytes
+        self.default_max = max_bytes
+        # v4.25: exact-path overrides (POST /transcripts takes a whole
+        # session file). A path listed here with 0 falls back to the default.
+        self.path_limits = {k: v for k, v in (path_limits or {}).items() if v > 0}
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        max_bytes = self.path_limits.get(scope.get("path", ""), self.default_max)
+        if max_bytes <= 0:
             await self.app(scope, receive, send)
             return
 
@@ -516,8 +530,8 @@ class BodySizeLimitMiddleware:
                 except ValueError:
                     await self._reject(send, 400, b"Invalid Content-Length")
                     return
-                if declared > self.max_bytes:
-                    await self._reject(send, 413, self._limit_msg())
+                if declared > max_bytes:
+                    await self._reject(send, 413, self._limit_msg(max_bytes))
                     return
 
         received = 0
@@ -528,8 +542,8 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_bytes:
-                    raise _BodyTooLarge(self.max_bytes)
+                if received > max_bytes:
+                    raise _BodyTooLarge(max_bytes)
             return message
 
         async def tracking_send(message):
@@ -544,10 +558,11 @@ class BodySizeLimitMiddleware:
             # If the app already started responding there is nothing safe to
             # send; either way the body stops being read here.
             if not response_started:
-                await self._reject(send, 413, self._limit_msg())
+                await self._reject(send, 413, self._limit_msg(max_bytes))
 
-    def _limit_msg(self) -> bytes:
-        return f"Request body too large (limit {self.max_bytes} bytes)".encode()
+    @staticmethod
+    def _limit_msg(max_bytes: int) -> bytes:
+        return f"Request body too large (limit {max_bytes} bytes)".encode()
 
     @staticmethod
     async def _reject(send, status: int, body: bytes):
@@ -968,9 +983,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     # Reject oversized payloads before they get embedded, indexed, or written
     # to disk. Enforced while the body streams — a header-only check was
     # bypassable by omitting Content-Length (chunked transfer encoding).
-    if config.server.max_body_bytes > 0:
+    if config.server.max_body_bytes > 0 or config.server.max_transcript_bytes > 0:
         app.add_middleware(BodySizeLimitMiddleware,
-                           max_bytes=config.server.max_body_bytes)
+                           max_bytes=config.server.max_body_bytes,
+                           path_limits={"/transcripts": config.server.max_transcript_bytes})
 
     # ── Auth ──
     # Two tiers (v4.9): the master auth_token keeps full access; scoped tokens
@@ -2254,6 +2270,190 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "agent_id": agent_id or "default",
             "context": sessions.get_recent_context(n),
         }
+
+    # ── Transcript archive tier (v4.25) ──
+    # Full client session transcripts (Claude Code JSONL: Cowork, CC, CC2),
+    # redacted, stored beside hot/warm/cold, searchable by FTS5, NEVER
+    # embedded. The one thing recall learns is a pointer memory written on a
+    # session's first upload.
+
+    def _transcript_tenant(request: Request, agent_id: Optional[str]) -> dict:
+        _enforce_scope(request, agent_id)
+        if agent_id is None and tenants.has_named_tenants():
+            raise HTTPException(
+                400, "agent_id is required on a multi-tenant installation")
+        return tenants.get(agent_id)
+
+    def _check_transcript_id(session_id: str) -> None:
+        try:
+            validate_transcript_id(session_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    async def _read_transcript_body(request: Request) -> bytes:
+        body = await request.body()
+        encoding = request.headers.get("content-encoding", "").strip().lower()
+        if encoding in ("", "identity"):
+            return body
+        if encoding != "gzip":
+            raise HTTPException(415, f"Unsupported Content-Encoding {encoding!r} (gzip only)")
+        cap = config.server.max_transcript_decompressed_bytes
+
+        def _gunzip() -> bytes:
+            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            out = bytearray()
+            chunk = body
+            while chunk:
+                room = (cap - len(out) + 1) if cap > 0 else 0
+                out += d.decompress(chunk, room)
+                if cap > 0 and len(out) > cap:
+                    raise HTTPException(
+                        413, f"Decompressed transcript exceeds {cap} bytes")
+                chunk = d.unconsumed_tail
+            out += d.flush()
+            if cap > 0 and len(out) > cap:
+                raise HTTPException(413, f"Decompressed transcript exceeds {cap} bytes")
+            if not d.eof:
+                raise HTTPException(400, "Truncated gzip body")
+            return bytes(out)
+
+        try:
+            return await asyncio.to_thread(_gunzip)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, f"Bad gzip body: {e}")
+
+    @app.post("/transcripts")
+    async def upload_transcript(request: Request,
+                                agent_id: Optional[str] = None,
+                                host: Optional[str] = None,
+                                session_id: Optional[str] = None):
+        """Archive one client session transcript (raw JSONL body, optionally
+        Content-Encoding: gzip). Idempotent: same bytes = unchanged, a longer
+        file whose prefix matches = replaced, anything else = 409."""
+        tenant = _transcript_tenant(request, agent_id)
+        if agent_id and agent_id in config.agents and config.agents[agent_id].read_only:
+            raise HTTPException(403, f"Agent '{agent_id}' is read-only")
+        if host is not None and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", host):
+            raise HTTPException(400, "host must match [A-Za-z0-9_.-] (1-64 chars)")
+        # Capture gate: a transcript upload is ambient capture. Nothing is
+        # written while paused; the shipper leaves its state untouched and
+        # re-sends after the pause.
+        if gate.is_paused():
+            return {"status": "paused", "session_id": session_id, "agent_id": agent_id}
+
+        raw = await _read_transcript_body(request)
+        if not raw.strip():
+            raise HTTPException(400, "Empty transcript body")
+        if session_id is None:
+            # Derive from content: the most common sessionId on the lines.
+            counts: dict[str, int] = {}
+            for m in re.finditer(rb'"sessionId"\s*:\s*"([^"]{1,128})"', raw):
+                sid = m.group(1).decode("ascii", "replace")
+                counts[sid] = counts.get(sid, 0) + 1
+            session_id = max(counts, key=counts.get) if counts else ""
+            if not TRANSCRIPT_UUID_RE.fullmatch(session_id):
+                raise HTTPException(
+                    400, "session_id not given and no UUID sessionId found in the body")
+        _check_transcript_id(session_id)
+
+        archive: TranscriptArchive = tenant["transcripts"]
+        try:
+            status, manifest = await asyncio.to_thread(
+                archive.upload, session_id, raw, agent_id, host)
+        except TranscriptConflict as e:
+            log.warning(f"Transcript conflict {session_id}: {e.reason}")
+            raise HTTPException(409, e.detail())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        pointer_status = None
+        # The pointer: ONE memory per top-level session, on its first upload.
+        # A superset replace does not write another; a subagent transcript
+        # never writes one (its parent's pointer is the door).
+        if (status == "archived" and manifest.get("parent_session_id") is None
+                and not manifest.get("pointer_memory_id")):
+            wb = WritebackRequest(
+                session_id=f"transcript-{session_id}",
+                agent_id=agent_id,
+                summary=pointer_text(manifest),
+                key_facts=[f"Transcript session_id {session_id}: read it with "
+                           f"mnemo_transcript get, or GET /transcripts/{session_id}"],
+                source="tool", category="session_log",
+                additional_tags=["transcript-archive", f"session:{session_id}"],
+                timestamp=manifest.get("first_ts"),
+            )
+            try:
+                saved = await writeback(wb, request)
+                pointer_status = saved.status
+                if saved.memory_id:
+                    manifest = await asyncio.to_thread(
+                        archive.set_pointer, session_id, saved.memory_id)
+                else:
+                    manifest = await asyncio.to_thread(
+                        archive.set_pointer, session_id, None,
+                        f"writeback status {saved.status}")
+            except Exception as e:
+                detail = getattr(e, "detail", None) or repr(e)
+                log.error(f"Transcript pointer memory failed for {session_id}: {detail}")
+                pointer_status = "failed"
+                manifest = await asyncio.to_thread(
+                    archive.set_pointer, session_id, None, str(detail)[:300])
+
+        return {"status": status, "pointer": pointer_status, "manifest": manifest}
+
+    @app.get("/transcripts")
+    async def search_transcripts(request: Request, agent_id: Optional[str] = None,
+                                 q: Optional[str] = None,
+                                 limit: int = Query(20, ge=1, le=200)):
+        """FTS search over archived turns (q given), else the newest sessions."""
+        tenant = _transcript_tenant(request, agent_id)
+        archive: TranscriptArchive = tenant["transcripts"]
+        if q is None or not q.strip():
+            sessions = await asyncio.to_thread(archive.list_sessions, limit)
+            return {"agent_id": agent_id or "default", "sessions": sessions}
+        try:
+            hits = await asyncio.to_thread(archive.search, q, limit)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"agent_id": agent_id or "default", "q": q, "results": hits}
+
+    @app.get("/transcripts/{session_id}")
+    async def get_transcript_archive(request: Request, session_id: str,
+                                     agent_id: Optional[str] = None,
+                                     format: Literal["manifest", "turns", "raw"] = "manifest"):
+        tenant = _transcript_tenant(request, agent_id)
+        _check_transcript_id(session_id)
+        archive: TranscriptArchive = tenant["transcripts"]
+        if format == "raw":
+            raw = await asyncio.to_thread(archive.raw, session_id)
+            if raw is None:
+                raise HTTPException(404, "Transcript not archived")
+            return Response(raw, media_type="application/x-ndjson")
+        manifest = await asyncio.to_thread(archive.manifest, session_id)
+        if manifest is None:
+            raise HTTPException(404, "Transcript not archived")
+        if format == "manifest":
+            return manifest
+        turns = await asyncio.to_thread(archive.turns, session_id, 0, None, 1_000_000)
+        return {"session_id": session_id, "manifest": manifest, "turns": turns or []}
+
+    @app.get("/transcripts/{session_id}/turns")
+    async def get_transcript_turns(request: Request, session_id: str,
+                                   agent_id: Optional[str] = None,
+                                   from_seq: int = Query(0, alias="from", ge=0),
+                                   to_seq: Optional[int] = Query(None, alias="to", ge=0),
+                                   limit: int = Query(200, ge=1, le=2000)):
+        tenant = _transcript_tenant(request, agent_id)
+        _check_transcript_id(session_id)
+        archive: TranscriptArchive = tenant["transcripts"]
+        turns = await asyncio.to_thread(archive.turns, session_id, from_seq, to_seq, limit)
+        if turns is None:
+            raise HTTPException(404, "Transcript not archived")
+        next_from = turns[-1]["seq"] + 1 if len(turns) == limit else None
+        return {"session_id": session_id, "from": from_seq, "to": to_seq,
+                "turns": turns, "next_from": next_from}
 
     # ── Vec index management ──
     @app.get("/vec/status")

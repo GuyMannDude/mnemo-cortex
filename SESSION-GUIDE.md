@@ -372,6 +372,48 @@ you need to understand what actually happened.
 
 ---
 
+## The Transcript Archive (v4.25): The Whole Session, Word for Word
+
+Auto-capture keeps summaries. The archive tier keeps the **complete client
+transcript**: every user turn, assistant turn, thinking block, tool call and
+tool output, redacted for secrets before it touches disk. It sits beside the
+hot/warm/cold session tiers and is **never embedded**, so it never crowds
+recall.
+
+**How a transcript gets there:** `tools/transcript-ship.py` walks a Claude
+Code projects directory (Cowork sessions are Claude Code too) and POSTs every
+new or grown `*.jsonl` to `POST /transcripts`. Run it on a timer:
+
+```bash
+python tools/transcript-ship.py --root ~/.claude/projects --agent cc --host igor \
+  --server http://localhost:50001
+```
+
+Uploads are idempotent (the same file twice is a no-op, a grown file replaces
+the old one), so running it often is cheap. Exit 0 = clean, 1 = something
+did not ship (failure, 409 conflict, or capture paused), 2 = server down.
+
+**How an agent finds it:** each archived session writes ONE pointer memory
+(`Full transcript archived: <first prompt> ... <N user turns, dates, host>`,
+category `session_log`, tag `session:<id>`). The default recall lens hides
+`session_log`; use `mnemo_recall` with `mode: "recent"` or
+`category: "session_log"`, or go straight to the archive:
+
+| Want | Call |
+|------|------|
+| Find where something was said or run | `mnemo_transcript action=search q="exact words"` |
+| List recent archived sessions | `mnemo_transcript action=search` (no q) |
+| What a session was | `mnemo_transcript action=get session_id=<id>` |
+| Read it, page by page | `mnemo_transcript action=get session_id=<id> format=turns from=0` |
+
+Replies are budgeted; a page that runs out says `from=<n>` to continue.
+Subagent transcripts are archived as `<parent-id>_agent-<id>`.
+
+**Pausing:** `mnemo_capture_pause` stops transcript uploads too; the shipper
+retries after the pause.
+
+---
+
 ## Multi-Agent Memory
 
 When multiple agents share a Mnemo Cortex instance, each agent has 

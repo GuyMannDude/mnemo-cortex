@@ -22,6 +22,10 @@ import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
 import { summaryRefusal, appendCheckpointToLane } from "./checkpoint.js";
+import {
+  SESSION_KEY_RE, REPLY_BUDGET, searchPath, getPath,
+  formatSearch, formatManifest, formatTurns,
+} from "./transcript-format.js";
 import { searchScope } from "./search-scope.js";
 import { fetchUnrepliedBusSummary } from "./bus-startup.js";
 
@@ -166,6 +170,32 @@ async function mnemoRequest(method, path, body) {
   }
 
   return data;
+}
+
+// Text-bodied GET (the archive tier's format=raw is NDJSON, not JSON).
+// Same timeout and error surface as mnemoRequest.
+async function mnemoRequestText(path) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const headers = {};
+  if (AUTH_TOKEN) headers["X-API-KEY"] = AUTH_TOKEN;
+  let res;
+  try {
+    res = await fetch(`${MNEMO_URL}${path}`, { method: "GET", headers, signal: controller.signal });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      throw new Error("Mnemo Cortex request timed out. The server may be overloaded or unreachable.");
+    }
+    throw new Error("Cannot reach Mnemo Cortex. Is it running?");
+  }
+  clearTimeout(timer);
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    process.stderr.write(`[mnemo-mcp] HTTP error: GET ${path} → ${res.status}: ${text}\n`);
+    throw new Error(`Mnemo Cortex returned ${res.status}: ${text}`);
+  }
+  return text;
 }
 
 // ── Health check on startup ────────────────────────────────────
@@ -1018,6 +1048,65 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: "text", text: `Recall trajectory error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: mnemo_transcript ─────────────────────────────────────
+// Read the transcript archive tier (Mnemo 4.25): full client session
+// transcripts, redacted, FTS-searchable, never embedded — recall only ever
+// sees one pointer memory per session, and this tool opens the door.
+
+server.registerTool(
+  "mnemo_transcript",
+  {
+    description: `Search or read the FULL archived session transcripts for the current agent (${AGENT_ID}) — every user turn, assistant turn, thinking block, tool call and tool output, secret-redacted. mnemo_recall finds a session's one pointer memory ("Full transcript archived: ..."); this tool reads what it points to. action=search: keyword (FTS) search over every turn, or with no q the newest sessions. action=get: format=manifest (what the session is), turns (paged by seq with from/to; replies are budgeted and name the next from), or raw (the redacted JSONL, cut to the reply budget).`,
+    inputSchema: {
+      action: z.enum(["search", "get"]).describe("search = find turns or list sessions; get = read one session"),
+      q: z.string().max(1000).optional().describe("search: keywords (all must match). Omit to list the newest sessions."),
+      limit: z.number().int().min(1).max(200).optional().describe("search: max results, default 20"),
+      session_id: z.string().optional().describe("get: the transcript's session id (a UUID, or <uuid>_agent-<id> for a subagent)"),
+      format: z.enum(["manifest", "turns", "raw"]).optional().describe("get: default manifest"),
+      from: z.number().int().min(0).optional().describe("get turns: first seq, default 0"),
+      to: z.number().int().min(0).optional().describe("get turns: last seq (inclusive); default a 50-turn page"),
+    },
+    annotations: { title: "Transcript Archive", readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  },
+  async ({ action, q, limit, session_id, format, from, to }) => {
+    try {
+      await ensureHealth();
+      if (action === "search") {
+        const data = await mnemoRequest("GET", searchPath(AGENT_ID, q, limit));
+        captureCall("mnemo_transcript", `search ${q ? q.slice(0, 80) : "(list)"}`);
+        return { content: [{ type: "text", text: formatSearch(data) }] };
+      }
+      if (!session_id || !SESSION_KEY_RE.test(session_id)) {
+        return {
+          content: [{ type: "text", text: "get needs session_id: a UUID, or <uuid>_agent-<id> for a subagent transcript." }],
+          isError: true,
+        };
+      }
+      const fmt = format || "manifest";
+      captureCall("mnemo_transcript", `get ${session_id} ${fmt}`);
+      if (fmt === "raw") {
+        const raw = await mnemoRequestText(getPath(AGENT_ID, session_id, "raw"));
+        const cut = raw.length > REPLY_BUDGET;
+        const text = cut
+          ? `${raw.slice(0, REPLY_BUDGET)}\n[raw cut at ${REPLY_BUDGET} of ${raw.length} chars; use format=turns with from/to to page]`
+          : raw;
+        return { content: [{ type: "text", text }] };
+      }
+      const data = await mnemoRequest("GET", getPath(AGENT_ID, session_id, fmt, from, to));
+      if (fmt === "manifest") {
+        return { content: [{ type: "text", text: formatManifest(data) }] };
+      }
+      const { text } = formatTurns({ ...data, session_id });
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Transcript error: ${err.message}` }],
         isError: true,
       };
     }

@@ -1,5 +1,105 @@
 # Changelog
 
+## v4.25.0 — Transcript archive tier: the whole session, not the summary (2026-09-23)
+
+**Problem.** Mnemo kept what an agent chose to save and what the auto-capture
+summarised: the recall feed (`mnemo-cc-sync` posts budgeted turn summaries to
+`/writeback`) is lossy by design, and the hot/warm/cold tiers hold the live
+wire's exchanges, not the client's own transcript. When a question needed
+what was actually said or run, word for word (the tool output, the exact
+command, the reasoning before a decision), the only copy was the client's
+JSONL on whichever machine ran the session, and a Cowork VM's copy dies with
+the VM. Guy (via CC #3747): complete transcripts for Cowork (Opie), CC and
+CC2, kept in Mnemo Cortex and its archives. "No bandaids... full build."
+
+**Fix.** A fourth session tier beside hot/warm/cold, `sessions/archive/` per
+tenant (`agentb/transcripts.py`, `TranscriptArchive`):
+- **Store.** `<session_id>.jsonl.gz` (the redacted transcript; lines with no
+  secret are kept byte-exact) + `<session_id>.manifest.json` (sha256 and byte
+  count of the RAW upload, line/bad-line/line-type counts, user/assistant/
+  tool_use/tool_result counts, first/last timestamp, client version, cwd,
+  host, title, redaction count by kind, upload count, pointer memory id) +
+  `index.sqlite` (`sessions`, `turns`, FTS5 over `turns.text`). The manifest
+  is written last, as the commit marker.
+- **Parser.** One parser for the Claude Code session JSONL, which covers all
+  three clients (Cowork is Claude Code in a VM). One row per content block:
+  text, thinking, tool_use (input as JSON, tool name kept), tool_result (tool
+  name resolved through `tool_use_id`, images as `[image]`), system lines,
+  attachments. Unknown line types are archived and counted; a line that is
+  not JSON is archived as redacted text and counted; neither aborts.
+- **Redaction.** The v4.1 patterns run over EVERY string of every line before
+  anything touches disk, not only text/tool blocks: the `toolUseResult` copy
+  of a tool's output and attachment payloads carry the same secrets. Counted
+  in the manifest; the server logs kinds, never values.
+- **Idempotency.** The client file is append-only, so only the sha256 and
+  length of the raw upload are kept: same sha = `unchanged`; longer, and its
+  first N bytes hash to the stored sha = `replaced`; anything else = 409 with
+  both shas. The unredacted bytes never reach disk.
+- **Subagent transcripts** (`<uuid>/subagents/agent-<id>.jsonl`, which carry
+  the PARENT's sessionId) are keyed `<uuid>_agent-<id>`, archived and
+  searchable, and write no pointer of their own.
+- **Never embedded.** Recall learns one thing per top-level session: on its
+  first upload the server writes ONE memory through the normal `/writeback`
+  path (category `session_log`, source `tool`, tags `transcript-archive` +
+  `session:<id>`, text `Full transcript archived: <first prompt> ...
+  <N user turns, first_ts to last_ts, host>`, timestamped at the session's
+  start). A replace never writes another. `session_log` is hidden from the
+  default recall lens; the `recent` lens and `category=session_log` see it.
+- **Endpoints.** `POST /transcripts?agent_id=&host=&session_id=` (raw body or
+  `Content-Encoding: gzip`; session_id derived from the lines when omitted);
+  `GET /transcripts?agent_id=&q=&limit=` (FTS, words quoted so query syntax is
+  text; no q = newest sessions); `GET /transcripts/{id}?format=manifest|turns|raw`;
+  `GET /transcripts/{id}/turns?from=&to=&limit=` (paged, `next_from`). 404 when
+  absent, 400 on an id that is not a UUID or `<uuid>_agent-<id>`, 409 on a
+  divergent upload. Capture gate: a paused server writes nothing and answers
+  `status: paused`. Scope pin, read-only agents and the multi-tenant
+  "agent_id required" rule apply as on `/context`.
+- **Body caps.** A session file outgrows the 16 MB general cap, so
+  `/transcripts` has its own: `server.max_transcript_bytes` (64 MB as sent)
+  and `server.max_transcript_decompressed_bytes` (512 MB after gunzip, so a
+  gzip body cannot expand without bound). Every other path keeps
+  `max_body_bytes`.
+- **Shipper.** `tools/transcript-ship.py --root <dir> (repeatable) --agent
+  --host [--server --state --dry-run]`: walks `*.jsonl`, skips files whose
+  mtime+size (then sha) match its state file, POSTs new or grown ones gzipped,
+  records 409s so the same bytes are not re-posted. Exit 0 clean, 1 partial
+  (failure, conflict or capture pause), 2 server down. Pure ASCII.
+- **Bridge 2.30.0:** `mnemo_transcript` (see below).
+
+Multipart upload was in the order and is not here: `python-multipart` is not
+a dependency, and a raw (optionally gzipped) body carries the same file.
+
+**Measured on IGOR-2** (28 real CC2 transcripts, 28.6 MB): 13.9 s total,
+about 0.5 s per MB (4.1 MB session: 1.9 s, off the event loop), 0 bad lines,
+10 redactions (2 real-shaped tokens in a subagent, 8 `postgres://user:pass@`
+examples in prose: the patterns fail toward redaction, as designed); archive
+6.6 MB gz + 16.1 MB index.
+
+**Tests.** `tests/test_transcripts.py` (19: every block type + a bad line + an
+unknown type; redaction of message text AND `toolUseResult`, nothing secret
+on disk; same sha no-op, superset replace, smaller and divergent 409 with
+both shas; FTS hit + operator-safe queries + paging; one pointer only, and
+the pointer is the only embedding; subagent writes no pointer; capture gate;
+tenant isolation; per-path body cap; gzip bomb) and
+`tests/test_transcript_ship.py` (7: the real shipper against the real app:
+layouts, ship/skip/grow, 409 recorded and not re-posted, pause, dry run,
+server down = exit 2, pure ASCII).
+
+## mcp-bridge 2.30.0 — `mnemo_transcript`: read the archive tier (2026-09-23)
+
+**Problem.** Mnemo 4.25.0 archives whole transcripts, but recall only ever
+returns the one pointer memory per session. An agent needs a door from the
+pointer to the text.
+
+**Fix.** New tool `mnemo_transcript` for the calling tenant (`MNEMO_AGENT_ID`):
+`action=search` (q: FTS over every archived turn; no q: newest sessions) and
+`action=get` (`session_id`, `format` manifest | turns | raw, `from`/`to` for
+turns). Replies are budgeted at 60,000 characters; a turns page that runs out
+names the `from` to resume at, a single oversized turn is cut and says so,
+raw is cut with a pointer to paging. Pure parts in `transcript-format.js`;
+unit tests: `node transcript-format.test.js`. Listed in the Desktop
+extension manifest. Every client restarts once to see the tool.
+
 ## v4.24.2 — The dreamer's corrective retry copied the checker's display period (2026-09-22)
 
 **Problem.** The 2026-09-22 dream was discarded. The first rollup had 45

@@ -303,6 +303,11 @@ class ServerConfig:
     # no legitimate memory write approaches it; it only stops abusive payloads
     # from being embedded/indexed/written to disk. 0 disables the check.
     max_body_bytes: int = 16 * 1024 * 1024
+    # v4.25: POST /transcripts carries a whole client session file, so it
+    # gets its own cap (the body as sent, gzip or not) and a cap on the
+    # decompressed size (a gzip body must not expand without bound).
+    max_transcript_bytes: int = 64 * 1024 * 1024
+    max_transcript_decompressed_bytes: int = 512 * 1024 * 1024
 
 
 @dataclass
@@ -502,6 +507,11 @@ def _parse_config(raw: dict) -> AgentBConfig:
             # was silently ignored from YAML before v4.1 — the dataclass
             # default always won
             max_body_bytes=s.get("max_body_bytes", ServerConfig.max_body_bytes),
+            max_transcript_bytes=s.get(
+                "max_transcript_bytes", ServerConfig.max_transcript_bytes),
+            max_transcript_decompressed_bytes=s.get(
+                "max_transcript_decompressed_bytes",
+                ServerConfig.max_transcript_decompressed_bytes),
         )
     if "data_dir" in raw:
         cfg.data_dir = _resolve_path(raw["data_dir"])
