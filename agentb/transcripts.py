@@ -61,7 +61,8 @@ SCHEMA_VERSION = 1
 # Bump when redaction changes in a way archived sessions must be re-run
 # through (TranscriptArchive.reprocess_all). 1 = 4.25.0 (values only);
 # 2 = 4.25.1 (keys, duplicate keys, raw-line backstop).
-REDACTION_VERSION = 2
+# 3 = 4.25.2 (collision-safe keys, no text redaction over serialized JSON).
+REDACTION_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -263,14 +264,16 @@ def parse_transcript(raw: bytes) -> ParsedTranscript:
         if not line.strip():
             continue
         p.line_count += 1
-        dup_keys = False
+        # Values a duplicated key threw away (json.loads keeps the last copy).
+        # They are never stored; walking them gives the exact count of any
+        # secret that re-serialization removes.
+        dropped: list = []
 
         def _pairs(pairs):
-            nonlocal dup_keys
             d = {}
             for k, v in pairs:
                 if k in d:
-                    dup_keys = True
+                    dropped.append(d[k])
                 d[k] = v
             return d
 
@@ -285,21 +288,24 @@ def parse_transcript(raw: bytes) -> ParsedTranscript:
             p.lines.append(clean)
             continue
 
-        # Keys and values both (redact_obj walks keys since 4.25.1). A line is
-        # kept byte-exact ONLY when neither the parsed walk nor a scan of the
-        # raw line finds anything and no key is duplicated (json.loads keeps
-        # the last copy, so the first copy's value was never walked).
+        # Keys and values both (redact_obj walks keys since 4.25.1). The line
+        # is kept byte-exact ONLY when the walk finds nothing, no key was
+        # duplicated, and a scan of the raw line finds nothing either.
+        #
+        # 4.25.2: the raw scan only DECIDES; it never edits and never counts.
+        # Text patterns match across JSON field boundaries (a URL in one
+        # field and an email in the next look like user:pass@host), so
+        # running redact_text over serialized JSON wrote invalid JSON and
+        # counted phantom redactions (review of 1717aeb). A rewrite is
+        # json.dumps of the walked object: valid by construction, checked.
         clean_obj, counts = redact_obj(obj)
+        _, dropped_counts = redact_obj(dropped) if dropped else (None, {})
         _, raw_counts = redact_text(line)
-        if counts or raw_counts or dup_keys:
+        if counts or dropped or raw_counts:
             out = json.dumps(clean_obj, ensure_ascii=False, separators=(",", ":"))
-            # Belt and braces: the re-serialized line must scan clean too.
-            out, residue = redact_text(out)
+            json.loads(out)          # never store a line that does not parse
             p.redactions.update(counts)
-            p.redactions.update(residue)
-            if raw_counts and not counts and not residue:
-                # Gone by re-serialization (e.g. a duplicate key's first copy).
-                p.redactions.update(raw_counts)
+            p.redactions.update(dropped_counts)
             p.lines.append(out)
         else:
             p.lines.append(line)
@@ -528,10 +534,16 @@ class TranscriptArchive:
         and nobody has marked it corrupt. (A full decode is left to raw().)"""
         if manifest.get("gz_corrupt"):
             return False
-        gz = self._gz(session_id)
+        # 4.25.2: decode it whole. exists + non-empty let a truncated gz
+        # answer "unchanged" until a read tripped over it (review of
+        # 1717aeb); the upload already parsed the full body, so the extra
+        # decode costs about the same again.
         try:
-            return gz.stat().st_size > 0
-        except OSError:
+            with gzip.open(self._gz(session_id), "rb") as f:
+                while f.read(1 << 20):
+                    pass
+            return True
+        except (OSError, EOFError, zlib.error):
             return False
 
     def _store(self, session_id: str, parsed: ParsedTranscript, *, raw_sha: str,
@@ -539,8 +551,10 @@ class TranscriptArchive:
                existing: Optional[dict], counts_upload: bool) -> dict:
         """Write gz (atomic + fsync) -> index -> manifest (the commit marker).
         Caller holds the session lock."""
-        for stale in (self._gz(session_id).with_name(f"{session_id}.jsonl.gz.tmp"),):
-            stale.unlink(missing_ok=True)      # 4.25.0 left these on a crash
+        for stale in (self._gz(session_id).with_name(f"{session_id}.jsonl.gz.tmp"),
+                      self._manifest_path(session_id).with_name(
+                          f"{session_id}.manifest.json.tmp")):
+            stale.unlink(missing_ok=True)      # a crash mid-write leaves these
         payload = ("\n".join(parsed.lines) + "\n").encode("utf-8")
         gz_path = self._gz(session_id)
         atomic_write_bytes(gz_path, gzip.compress(payload))

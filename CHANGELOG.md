@@ -1,5 +1,53 @@
 # Changelog
 
+## v4.25.2 — Transcript archive: the second review's two bugs and two partials (2026-09-23)
+
+**Problem.** CC's review of 1717aeb (#3760) confirmed 4.25.1's tail, pointer
+and reprocess fixes and found two new bugs and two partial fixes. The Mnemo
+restart was held because 4.25.1's startup sweep would have run the first bug
+over the two archived sessions.
+- **B (critical): invalid JSON written.** 4.25.1 ran `redact_text` over the
+  re-serialized line as a "belt and braces" pass. Text patterns match across
+  JSON field boundaries: `https://github.com","author":"guy@` reads as a URL
+  with a password to the url-credential pattern. The walk found nothing, the
+  scan rewrote the serialized JSON, and the stored line no longer parsed
+  (`format=raw` broken for it, and a later reprocess counted it as a bad line)
+  plus a phantom redaction was counted.
+- **A: colliding keys lost data.** Two different secrets of one kind used as
+  keys in one dict both became `[REDACTED:kind]`; the dict kept the last, and
+  the first value vanished from gz, turns and FTS.
+- **Count (partial):** raw-scan counts were added only when the walk and the
+  residue pass found nothing, so a duplicate-key secret beside another secret
+  on the same line under-counted. The bytes were clean.
+- **Torn gz (partial):** the unchanged path checked exists + non-empty, so a
+  truncated non-empty gz kept answering `unchanged` until a read failed.
+
+**Fix.**
+- The raw-line scan only DECIDES whether a line is rewritten; it never edits
+  and never counts. A rewrite is `json.dumps` of the walked object, checked
+  with `json.loads` before it is stored.
+- Counts are exact: the values a duplicated key threw away are captured by the
+  JSON object hook and walked (never stored), so each removed secret is
+  counted once, and a cross-field false match counts nothing.
+- `redact_obj`: a key that lands on an occupied slot becomes `...#2`, `#3`, ...
+- `_gz_intact` decodes the whole gz; a truncated one gets `repaired` from the
+  next same-bytes upload. A leftover `<id>.manifest.json.tmp` is swept along
+  with the gz `.tmp`.
+- `POST /transcripts/reprocess` answers 403 for a read-only agent, and the
+  startup sweep skips read-only agents (with a log line), matching upload.
+- Shutdown waits up to 5 s for a running startup sweep, then logs that it is
+  still running (a thread cannot be cancelled; unreached sessions are redone
+  at the next start).
+- `REDACTION_VERSION` 3, so anything the unreleased 4.25.1 logic touched is
+  redone too.
+
+**Tests.** 6 new in `tests/test_transcripts.py`: URL then email in the next
+field stays valid JSON, counts 0, and survives a reprocess; colliding keys in
+`redact_obj` and through the archive (both values stored and searchable, both
+keys gone); duplicate-key secret + another secret counts 2; truncated
+non-empty gz repaired and manifest `.tmp` swept; reprocess 403 for a read-only
+agent. Negative control: 4.25.1's `redact.py` + `transcripts.py` fail 5 of them.
+
 ## v4.25.1 — Transcript archive: four gaps the review found in 4.25.0 (2026-09-23)
 
 **Problem.** CC's Opus review of 3138ba7 (#3753) found two redaction gaps and

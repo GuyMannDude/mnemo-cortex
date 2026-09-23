@@ -164,8 +164,20 @@ def redact_obj(obj):
             # v4.25.1: KEYS too. A secret used as a dict key (a tool_use
             # input keyed by a token, an attachment map) used to pass
             # through untouched with counts == {} (review of 3138ba7).
-            return {(_walk(key) if isinstance(key, str) else key): _walk(value)
-                    for key, value in node.items()}
+            # v4.25.2: two secrets of one kind both redact to the same
+            # key, and the later one overwrote the earlier value. A key
+            # that lands on an occupied slot gets '#2', '#3', ... so every
+            # value survives (review of 1717aeb).
+            out: dict = {}
+            for key, value in node.items():
+                new_key = _walk(key) if isinstance(key, str) else key
+                if new_key in out:
+                    n = 2
+                    while f"{new_key}#{n}" in out:
+                        n += 1
+                    new_key = f"{new_key}#{n}"
+                out[new_key] = _walk(value)
+            return out
         return node
 
     return _walk(obj), totals

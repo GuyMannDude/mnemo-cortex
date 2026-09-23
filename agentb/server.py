@@ -940,6 +940,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         for name, d in dirs.values():
             if not (d / "sessions" / "archive").is_dir():
                 continue
+            if name in config.agents and config.agents[name].read_only:
+                log.info(f"Transcript reprocess skipped for read-only agent '{name}'")
+                continue
             rep = TranscriptArchive(d, name).reprocess_all()
             reports.append(rep)
             if rep["reprocessed"] or rep["corrupt"] or rep["failed"]:
@@ -988,6 +991,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             try:
                 with suppress(asyncio.CancelledError):
                     await maintenance_task
+                # 4.25.2: a thread cannot be cancelled; give a running sweep
+                # a short grace, then say so rather than hang silently.
+                if not reprocess_task.done():
+                    await asyncio.wait({reprocess_task}, timeout=5)
+                    if not reprocess_task.done():
+                        log.warning("Shutdown: transcript reprocess sweep still running; "
+                                    "sessions it had not reached are redone at next start")
             finally:
                 tenants.close()
 
@@ -2450,6 +2460,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         whose manifest predates it (redaction_version). Idempotent: current
         sessions are skipped. Master token or a token pinned to this tenant."""
         tenant = _transcript_tenant(request, agent_id)
+        if agent_id and agent_id in config.agents and config.agents[agent_id].read_only:
+            raise HTTPException(403, f"Agent '{agent_id}' is read-only")
         archive: TranscriptArchive = tenant["transcripts"]
         return await asyncio.to_thread(archive.reprocess_all)
 

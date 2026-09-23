@@ -614,3 +614,89 @@ def test_endpoint_failed_pointer_is_retried_on_unchanged_upload(client, tmp_path
     assert len(_memories(tmp_path)) == 1
     r3 = client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
     assert r3.json()["pointer"] is None and len(_memories(tmp_path)) == 1
+
+
+# -------------------------------------------------------------------------
+#  4.25.2 -- review of 1717aeb
+# -------------------------------------------------------------------------
+
+FAKE_KEY_2 = "sk-" + "ant-" + "api03-" + "Z9y8X7w6V5u4T3s2R1q0" * 2
+
+
+def _stored_lines(arc: TranscriptArchive, sid: str) -> list[str]:
+    return [ln for ln in arc.raw(sid).decode("utf-8").split("\n") if ln]
+
+
+def test_cross_field_raw_match_keeps_valid_json_and_counts_nothing(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    line = _line({"type": "assistant", "sessionId": SID, "message": {
+        "id": "m1", "role": "assistant", "content": [{"type": "tool_result_like",
+        "repo": "https://github.com", "author": "guy@example.com"}]}})
+    from agentb.redact import redact_text
+    assert redact_text(line)[1], "precondition: the raw scan must hit across fields"
+    raw = (specimen_lines()[1] + "\n" + line + "\n").encode()
+    _, m = arc.upload(SID, raw, "cc", None)
+    for stored in _stored_lines(arc, SID):
+        json.loads(stored)                        # every stored line parses
+    assert m["redactions_applied"] == 0 and m["bad_lines"] == 0
+    assert b"guy@example.com" in arc.raw(SID)
+    # and a reprocess of it stays valid and still counts nothing
+    _age_to_v1(arc, SID, _stored_lines(arc, SID))
+    assert arc.reprocess_all()["new_redactions"] == 0
+    for stored in _stored_lines(arc, SID):
+        json.loads(stored)
+    assert arc.manifest(SID)["bad_lines"] == 0
+
+
+def test_colliding_redacted_keys_keep_every_value():
+    clean, counts = redact_obj({FAKE_KEY: "first", FAKE_KEY_2: "second"})
+    assert sorted(clean.values()) == ["first", "second"]
+    assert set(clean) == {"[REDACTED:anthropic]", "[REDACTED:anthropic]#2"}
+    assert counts == {"anthropic": 2}
+
+
+def test_colliding_keys_survive_the_archive(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    line = _line({"type": "assistant", "sessionId": SID, "message": {"id": "m1", "role": "assistant",
+        "content": [{"type": "tool_use", "id": "t1", "name": "Write",
+                     "input": {FAKE_KEY: "okapi-one", FAKE_KEY_2: "okapi-two"}}]}})
+    arc.upload(SID, (line + "\n").encode(), "cc", None)
+    raw = arc.raw(SID)
+    assert b"okapi-one" in raw and b"okapi-two" in raw
+    assert FAKE_KEY.encode() not in raw and FAKE_KEY_2.encode() not in raw
+    assert {h["session_id"] for h in arc.search("okapi")} == {SID}
+
+
+def test_dup_key_secret_plus_another_secret_counts_both(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    line = ('{"type":"system","content":"' + FAKE_KEY + '","content":"harmless",'
+            '"note":"' + FAKE_KEY_2 + '","sessionId":"' + SID + '"}')
+    _, m = arc.upload(SID, (line + "\n").encode(), "cc", None)
+    assert m["redactions_applied"] == 2
+    assert FAKE_KEY.encode() not in arc.raw(SID) and FAKE_KEY_2.encode() not in arc.raw(SID)
+
+
+def test_truncated_nonempty_gz_is_not_unchanged(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    raw = specimen()
+    arc.upload(SID, raw, "cc", None)
+    gz = tmp_path / "sessions" / "archive" / f"{SID}.jsonl.gz"
+    data = gz.read_bytes()
+    gz.write_bytes(data[: len(data) // 2])
+    mtmp = tmp_path / "sessions" / "archive" / f"{SID}.manifest.json.tmp"
+    mtmp.write_text("{half", encoding="utf-8")
+    status, _ = arc.upload(SID, raw, "cc", None)
+    assert status == "repaired"
+    assert b"zebra" in arc.raw(SID)
+    assert not mtmp.exists()
+
+
+def test_reprocess_refuses_read_only_agent(tmp_path):
+    from agentb.config import AgentConfig
+    cfg = _cfg(tmp_path)
+    cfg.agents = {"ro": AgentConfig(read_only=True)}
+    with patch("agentb.server.create_resilient_embedding", return_value=FakeEmbedding()), \
+         patch("agentb.server.create_resilient_reasoning", return_value=FakeReasoning()):
+        from agentb.server import create_app
+        with TestClient(create_app(cfg)) as c:
+            assert c.post("/transcripts/reprocess", params={"agent_id": "ro"}).status_code == 403
