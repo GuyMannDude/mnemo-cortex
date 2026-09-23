@@ -52,7 +52,8 @@ from agentb.fsutil import atomic_write_text as _atomic_write_text
 from agentb.ledger import get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.transcripts import (
-    TranscriptArchive, TranscriptConflict, validate_transcript_id, pointer_text,
+    TranscriptArchive, TranscriptConflict, TranscriptCorrupt, validate_transcript_id,
+    pointer_text,
     UUID_RE as TRANSCRIPT_UUID_RE,
 )
 from agentb.provenance import (
@@ -923,6 +924,40 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     for agent_name in config.agents:
         tenants.get(agent_name)
 
+    def _startup_transcript_reprocess() -> list[dict]:
+        """Every tenant data dir that holds a transcript archive: configured
+        agents (which may set their own data_dir) plus <data_dir>/agents/*."""
+        dirs: dict[str, tuple[str, Path]] = {}
+        for name in config.agents:
+            d = get_agent_data_dir(config, name)
+            dirs[str(Path(d).resolve())] = (name, Path(d))
+        agents_root = Path(config.data_dir) / "agents"
+        if agents_root.is_dir():
+            for d in agents_root.iterdir():
+                if d.is_dir():
+                    dirs.setdefault(str(d.resolve()), (d.name, d))
+        reports = []
+        for name, d in dirs.values():
+            if not (d / "sessions" / "archive").is_dir():
+                continue
+            rep = TranscriptArchive(d, name).reprocess_all()
+            reports.append(rep)
+            if rep["reprocessed"] or rep["corrupt"] or rep["failed"]:
+                log.warning(
+                    f"Transcript reprocess '{name}': {rep['reprocessed']} reprocessed, "
+                    f"{rep['new_redactions']} new redaction(s), {rep['corrupt']} corrupt, "
+                    f"{rep['failed']} failed, {rep['current']} current")
+        return reports
+
+    def _log_reprocess_exit(task: "asyncio.Task") -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error(f"Startup transcript reprocess DIED: {exc!r} -- archived "
+                      f"sessions may still carry the older redaction; "
+                      f"POST /transcripts/reprocess per tenant")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Fail closed on EVERY serving path — this runs under uvicorn/gunicorn
@@ -942,6 +977,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # dreamer-reclassify, Analyst, and Muse passes all die with it.
         maintenance_task = asyncio.create_task(maintenance_loop())
         maintenance_task.add_done_callback(_log_maintenance_exit)
+        # v4.25.1: bring every tenant's transcript archive up to the current
+        # REDACTION_VERSION once per start, off the event loop.
+        reprocess_task = asyncio.create_task(asyncio.to_thread(_startup_transcript_reprocess))
+        reprocess_task.add_done_callback(_log_reprocess_exit)
         try:
             yield
         finally:
@@ -2369,10 +2408,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             raise HTTPException(400, str(e))
 
         pointer_status = None
-        # The pointer: ONE memory per top-level session, on its first upload.
-        # A superset replace does not write another; a subagent transcript
-        # never writes one (its parent's pointer is the door).
-        if (status == "archived" and manifest.get("parent_session_id") is None
+        # The pointer: ONE memory per top-level session. Keyed on the manifest
+        # having none, whatever the upload status (4.25.1): a first writeback
+        # that failed (embedder down, exception, crash before set_pointer) is
+        # retried by the next upload, even an unchanged one. A subagent
+        # transcript never writes one (its parent's pointer is the door).
+        if (manifest.get("parent_session_id") is None
                 and not manifest.get("pointer_memory_id")):
             wb = WritebackRequest(
                 session_id=f"transcript-{session_id}",
@@ -2403,6 +2444,15 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         return {"status": status, "pointer": pointer_status, "manifest": manifest}
 
+    @app.post("/transcripts/reprocess")
+    async def reprocess_transcripts(request: Request, agent_id: Optional[str] = None):
+        """Re-run the current redaction over this tenant's archived sessions
+        whose manifest predates it (redaction_version). Idempotent: current
+        sessions are skipped. Master token or a token pinned to this tenant."""
+        tenant = _transcript_tenant(request, agent_id)
+        archive: TranscriptArchive = tenant["transcripts"]
+        return await asyncio.to_thread(archive.reprocess_all)
+
     @app.get("/transcripts")
     async def search_transcripts(request: Request, agent_id: Optional[str] = None,
                                  q: Optional[str] = None,
@@ -2427,7 +2477,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         _check_transcript_id(session_id)
         archive: TranscriptArchive = tenant["transcripts"]
         if format == "raw":
-            raw = await asyncio.to_thread(archive.raw, session_id)
+            try:
+                raw = await asyncio.to_thread(archive.raw, session_id)
+            except TranscriptCorrupt as e:
+                raise HTTPException(500, {
+                    "error": "archived transcript unreadable",
+                    "session_id": session_id, "reason": e.reason,
+                    "repair": "the next upload of this session rewrites it"})
             if raw is None:
                 raise HTTPException(404, "Transcript not archived")
             return Response(raw, media_type="application/x-ndjson")

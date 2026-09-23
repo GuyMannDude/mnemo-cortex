@@ -423,3 +423,194 @@ def test_endpoint_gzip_bomb_is_capped(make_client):
         r = c.post("/transcripts", params={"agent_id": "cc", "session_id": SID},
                    content=gzip.compress(specimen())[:-12], headers={"Content-Encoding": "gzip"})
         assert r.status_code in (400, 413)
+
+
+# -------------------------------------------------------------------------
+#  4.25.1 -- review of 3138ba7
+# -------------------------------------------------------------------------
+
+import time
+
+from agentb.redact import redact_obj
+from agentb.transcripts import REDACTION_VERSION, TranscriptCorrupt
+
+PEM_HEAD = "-----BEGIN " + "RSA PRIVATE KEY-----"
+PEM_TAIL = "-----END " + "RSA PRIVATE KEY-----"
+PEM_BODY = "MIIEowIBAAKCAQEA" + "q1w2e3r4t5y6u7i8o9p0" * 3
+
+
+def _keyed_lines(sid: str = SID) -> list[str]:
+    base = {"sessionId": sid, "timestamp": "2026-09-22T12:00:00.000Z"}
+    return [
+        _line({**base, "type": "user",
+               "message": {"role": "user", "content": "look at the lemur config"}}),
+        _line({**base, "type": "assistant", "message": {"id": "m9", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "t9", "name": "Write",
+             "input": {FAKE_KEY: "value-under-a-secret-key"}}]}}),
+        _line({**base, "type": "attachment",
+               "attachment": {"type": "map", "content": {FAKE_KEY: "attached"}}}),
+        # duplicated top-level key: json.loads keeps the LAST copy
+        '{"type":"system","content":"' + FAKE_KEY + '","content":"harmless","sessionId":"' + sid + '"}',
+    ]
+
+
+def _assert_nowhere(arc: TranscriptArchive, sid: str, secret: str):
+    assert secret.encode() not in arc.raw(sid)
+    assert all(secret not in (t["text"] or "") for t in arc.turns(sid, 0, None, 100000))
+    body = secret.split("-")[-1]
+    assert arc.search(body) == [], "secret body reachable through FTS"
+
+
+def test_redact_obj_redacts_keys():
+    clean, counts = redact_obj({FAKE_KEY: {"nested": [{FAKE_KEY: 1}]}})
+    assert FAKE_KEY not in json.dumps(clean)
+    assert counts.get("anthropic") == 2
+
+
+def test_secret_as_key_and_duplicate_key_are_redacted(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    raw = ("\n".join(_keyed_lines()) + "\n").encode()
+    _, m = arc.upload(SID, raw, "cc", None)
+    _assert_nowhere(arc, SID, FAKE_KEY)
+    # tool_use key + attachment key + the duplicate key's dropped first copy
+    assert m["redactions_applied"] >= 3
+    assert m["redaction_version"] == REDACTION_VERSION
+
+
+def test_unfinished_tail_is_dropped_and_healed_by_next_upload(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    partial_tail = ('{"type":"user","sessionId":"' + SID + '","message":{"role":"user","content":'
+                    '[{"type":"tool_result","tool_use_id":"x","content":"'
+                    + PEM_HEAD + "\\n" + PEM_BODY)
+    raw = specimen() + partial_tail.encode()
+    status, m = arc.upload(SID, raw, "cc", None)
+    assert status == "archived"
+    assert m["unfinished_tail_bytes"] == len(partial_tail.encode())
+    assert m["bytes"] == len(raw) and m["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert PEM_BODY.encode() not in arc.raw(SID)
+    assert arc.search(PEM_BODY) == []
+
+    grown = raw + ("\\n" + PEM_TAIL + '"}]}}\n').encode()
+    status, m2 = arc.upload(SID, grown, "cc", None)
+    assert status == "replaced" and m2["unfinished_tail_bytes"] == 0
+    assert PEM_BODY.encode() not in arc.raw(SID)
+    assert m2["redactions_by_kind"].get("private-key") == 1
+
+
+def test_complete_tail_without_newline_is_kept(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    _, m = arc.upload(SID, specimen().rstrip(b"\n"), "cc", None)
+    assert m["unfinished_tail_bytes"] == 0 and m["user_turns"] == 2
+
+
+def test_corrupt_gz_is_reported_and_repaired_by_same_bytes(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    raw = specimen()
+    arc.upload(SID, raw, "cc", None)
+    gz = tmp_path / "sessions" / "archive" / f"{SID}.jsonl.gz"
+    gz.write_bytes(b"\x1f\x8b torn by a power cut")
+    gz.with_name(gz.name + ".tmp").write_bytes(b"leftover")
+    with pytest.raises(TranscriptCorrupt):
+        arc.raw(SID)
+    assert arc.manifest(SID)["gz_corrupt"]
+    status, m = arc.upload(SID, raw, "cc", None)
+    assert status == "repaired" and "gz_corrupt" not in m and m["uploads"] == 1
+    assert b"zebra" in arc.raw(SID)
+    assert not gz.with_name(gz.name + ".tmp").exists()
+
+
+def test_missing_gz_is_repaired_by_same_bytes(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    arc.upload(SID, specimen(), "cc", None)
+    (tmp_path / "sessions" / "archive" / f"{SID}.jsonl.gz").unlink()
+    assert arc.upload(SID, specimen(), "cc", None)[0] == "repaired"
+
+
+def _age_to_v1(arc: TranscriptArchive, sid: str, lines: list[str]) -> None:
+    """Make an archive look like 4.25.0 wrote it: a v1 manifest over a gz
+    holding lines 4.25.0 would have kept verbatim."""
+    d = arc.dir
+    (d / f"{sid}.jsonl.gz").write_bytes(gzip.compress(("\n".join(lines) + "\n").encode()))
+    m = json.loads((d / f"{sid}.manifest.json").read_text(encoding="utf-8"))
+    m.pop("redaction_version", None)
+    m["redactions_applied"], m["redactions_by_kind"] = 0, {}
+    (d / f"{sid}.manifest.json").write_text(json.dumps(m), encoding="utf-8")
+
+
+def test_reprocess_upgrades_v1_archives_and_is_idempotent(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    raw = specimen()
+    _, before = arc.upload(SID, raw, "cc", "igor")
+    _age_to_v1(arc, SID, specimen_lines()[:2] + _keyed_lines())
+    rep = arc.reprocess_all()
+    assert rep["reprocessed"] == 1 and rep["new_redactions"] >= 3
+    m = arc.manifest(SID)
+    assert m["redaction_version"] == REDACTION_VERSION
+    assert m["reprocessed_from_version"] == 1
+    assert m["sha256"] == before["sha256"] and m["bytes"] == before["bytes"]
+    assert m["host"] == "igor" and m["uploads"] == 1
+    _assert_nowhere(arc, SID, FAKE_KEY)
+    assert arc.reprocess_all()["current"] == 1
+    # the client's next upload of the same bytes still matches
+    assert arc.upload(SID, raw, "cc", None)[0] == "unchanged"
+
+
+def test_same_bytes_on_a_v1_archive_repairs_from_the_upload(tmp_path):
+    arc = TranscriptArchive(tmp_path, "cc")
+    raw = ("\n".join(_keyed_lines()) + "\n").encode()
+    arc.upload(SID, raw, "cc", None)
+    _age_to_v1(arc, SID, _keyed_lines())
+    status, m = arc.upload(SID, raw, "cc", None)
+    assert status == "repaired" and m["redaction_version"] == REDACTION_VERSION
+    _assert_nowhere(arc, SID, FAKE_KEY)
+
+
+def test_endpoint_reprocess_and_startup_sweep(tmp_path, make_client):
+    with make_client() as c:
+        c.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
+        r = c.post("/transcripts/reprocess", params={"agent_id": "cc"})
+        assert r.status_code == 200 and r.json()["current"] == 1
+    arc = TranscriptArchive(tmp_path / "agents" / "cc", "cc")
+    _age_to_v1(arc, SID, _keyed_lines())
+    with make_client() as c:                     # the startup sweep runs off-loop
+        deadline = time.time() + 10
+        while (time.time() < deadline
+               and arc.manifest(SID).get("redaction_version") != REDACTION_VERSION):
+            time.sleep(0.05)
+        assert arc.manifest(SID)["redaction_version"] == REDACTION_VERSION
+        raw = c.get(f"/transcripts/{SID}", params={"agent_id": "cc", "format": "raw"})
+        assert FAKE_KEY not in raw.text
+
+
+def test_endpoint_corrupt_raw_is_500(client, tmp_path):
+    client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
+    (tmp_path / "agents" / "cc" / "sessions" / "archive" / f"{SID}.jsonl.gz").write_bytes(b"junk")
+    r = client.get(f"/transcripts/{SID}", params={"agent_id": "cc", "format": "raw"})
+    assert r.status_code == 500 and "unreadable" in r.text
+    assert client.post("/transcripts", params={"agent_id": "cc"},
+                       content=specimen()).json()["status"] == "repaired"
+
+
+def test_endpoint_failed_pointer_is_retried_on_unchanged_upload(client, tmp_path):
+    import agentb.server as srv
+    real = srv._atomic_write_text
+    calls = {"n": 0}
+
+    def flaky(path, text):
+        if Path(path).parent.name == "memory" and calls["n"] == 0:
+            calls["n"] += 1
+            raise OSError("disk hiccup")
+        return real(path, text)
+
+    with patch.object(srv, "_atomic_write_text", flaky):
+        r1 = client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
+    assert r1.json()["pointer"] == "failed"
+    assert r1.json()["manifest"]["pointer_error"]
+    assert _memories(tmp_path) == []
+    r2 = client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
+    assert r2.json()["status"] == "unchanged" and r2.json()["pointer"] == "archived"
+    assert r2.json()["manifest"]["pointer_memory_id"]
+    assert "pointer_error" not in r2.json()["manifest"]
+    assert len(_memories(tmp_path)) == 1
+    r3 = client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
+    assert r3.json()["pointer"] is None and len(_memories(tmp_path)) == 1

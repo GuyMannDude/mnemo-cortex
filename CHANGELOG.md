@@ -1,5 +1,65 @@
 # Changelog
 
+## v4.25.1 — Transcript archive: four gaps the review found in 4.25.0 (2026-09-23)
+
+**Problem.** CC's Opus review of 3138ba7 (#3753) found two redaction gaps and
+two durability gaps in the archive tier, before any backfill ran (two
+sessions were in it: CC2's `d591140d`, Opie's `b6014bf8`).
+1. **Secrets as keys.** `redact_obj` redacted values only and rebuilt dicts
+   with the original keys, so a secret used as a dict key (a tool_use input,
+   an attachment map) produced no count, the original line was kept
+   byte-exact in the `.gz`, and `json.dumps(input)` carried the key into
+   `turns.text` and FTS. A duplicated JSON key hid the same way: `json.loads`
+   keeps the last copy, so the first copy's value was never scanned.
+2. **Unfinished last line.** An upload taken while the client was still
+   appending (a big tool_result, e.g. `cat key.pem` cut before its END line)
+   failed JSON parsing and went through `redact_text` alone; the private-key
+   pattern needs BEGIN and END together, so the key body was archived.
+3. **Torn gz.** The `.gz` was written with `gzip.open` + `os.replace` and no
+   fsync, while the manifest after it was fsynced: a power cut could leave a
+   good manifest over an empty gz, every later same-bytes upload answered
+   `unchanged`, and `format=raw` failed forever.
+4. **Pointer never retried.** The pointer write ran only on
+   `status == archived`; a failed first writeback was never retried.
+
+**Fix.**
+1. `redact_obj` walks keys too (also covers `/ingest` metadata). A transcript
+   line is kept byte-exact only when the parsed walk AND a scan of the raw
+   line find nothing and no key is duplicated; otherwise it is re-serialized
+   from the cleaned object (which drops the duplicate), and the result is
+   scanned once more.
+2. A last segment with no newline that does not parse as a complete JSON
+   object is dropped (`unfinished_tail_bytes` in the manifest); it arrives
+   whole in the next upload. `sha256`/`bytes` still cover the full raw upload,
+   so the prefix check is unchanged. A complete JSON tail without a newline is
+   kept.
+3. The gz goes through `fsutil.atomic_write_bytes` (tmp + fsync + replace +
+   dir fsync); 4.25.0's leftover `.tmp` is removed. A gz that fails to decode
+   answers 500 and marks the manifest `gz_corrupt`; the unchanged path also
+   checks the gz exists and is non-empty. Either way the next upload of the
+   same bytes rebuilds it (`status: repaired`).
+4. The pointer is written whenever a top-level session's manifest has no
+   `pointer_memory_id`, whatever the upload status, including `unchanged`.
+5. **Reprocess.** Manifests carry `redaction_version` (2 from this release; a
+   manifest without it is 1). `POST /transcripts/reprocess?agent_id=` and a
+   once-per-start sweep of every tenant (off the event loop, logged) re-run
+   the current redaction over stored transcripts that predate it, rebuild gz
+   + turns + FTS, and keep the original upload's sha256/bytes so the client's
+   next upload still matches. A same-bytes upload over an older version
+   rebuilds from the upload itself (`repaired`). Item 2 cannot be repaired
+   server-side (those bytes were never stored); the client's re-upload
+   covers it.
+
+**Tests.** 11 new in `tests/test_transcripts.py`: secret as a key in tool_use
+input, in an attachment map, and as a duplicated top-level key (absent from
+gz, turns and FTS, counted); `redact_obj` keys; unfinished PEM tail dropped
+then healed by the grown upload; complete tail without a newline kept; torn
+and missing gz repaired by same bytes; stale `.tmp` removed; reprocess of a
+v1 archive (idempotent, sha kept, client's next upload still `unchanged`);
+v1 + same bytes = `repaired`; the endpoint and the startup sweep; corrupt raw
+= 500; a failed pointer retried on an unchanged upload, exactly once. A
+negative control (4.25.0's `redact.py`) fails the key tests.
+
 ## v4.25.0 — Transcript archive tier: the whole session, not the summary (2026-09-23)
 
 **Problem.** Mnemo kept what an agent chose to save and what the auto-capture

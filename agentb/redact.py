@@ -161,7 +161,11 @@ def redact_obj(obj):
         if isinstance(node, list):
             return [_walk(item) for item in node]
         if isinstance(node, dict):
-            return {key: _walk(value) for key, value in node.items()}
+            # v4.25.1: KEYS too. A secret used as a dict key (a tool_use
+            # input keyed by a token, an attachment map) used to pass
+            # through untouched with counts == {} (review of 3138ba7).
+            return {(_walk(key) if isinstance(key, str) else key): _walk(value)
+                    for key, value in node.items()}
         return node
 
     return _walk(obj), totals

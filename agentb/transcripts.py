@@ -35,17 +35,17 @@ import gzip
 import hashlib
 import json
 import logging
-import os
 import re
 import sqlite3
 import threading
+import zlib
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from agentb.fsutil import atomic_write_text
+from agentb.fsutil import atomic_write_bytes, atomic_write_text
 from agentb.redact import redact_obj, redact_text
 
 log = logging.getLogger("agentb.transcripts")
@@ -58,6 +58,10 @@ SESSION_KEY_RE = re.compile(rf"(?P<parent>{_UUID})(?:_agent-(?P<agent>[A-Za-z0-9
 UUID_RE = re.compile(_UUID)
 
 SCHEMA_VERSION = 1
+# Bump when redaction changes in a way archived sessions must be re-run
+# through (TranscriptArchive.reprocess_all). 1 = 4.25.0 (values only);
+# 2 = 4.25.1 (keys, duplicate keys, raw-line backstop).
+REDACTION_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -109,6 +113,15 @@ class TranscriptConflict(Exception):
         }
 
 
+class TranscriptCorrupt(Exception):
+    """The stored .gz does not decode (e.g. torn by a power cut)."""
+
+    def __init__(self, session_id: str, reason: str):
+        super().__init__(f"{session_id}: archived transcript unreadable ({reason})")
+        self.session_id = session_id
+        self.reason = reason
+
+
 def validate_transcript_id(session_id: str) -> str:
     """Return the id if it is a transcript key, else raise ValueError."""
     if not isinstance(session_id, str) or not SESSION_KEY_RE.fullmatch(session_id):
@@ -158,6 +171,7 @@ class ParsedTranscript:
     first_user_text: Optional[str] = None
     redactions: Counter = field(default_factory=Counter)
     decode_errors: bool = False
+    unfinished_tail_bytes: int = 0      # dropped: the client was mid-append
 
 
 def _strings(node) -> list[str]:
@@ -225,14 +239,43 @@ def parse_transcript(raw: bytes) -> ParsedTranscript:
         p.turns.append(Turn(seq, ts, role, kind, tool_name, body))
         seq += 1
 
-    for line in text.split("\n"):
+    segments = text.split("\n")
+    if not text.endswith("\n"):
+        # The last segment has no newline: the client may still be writing it
+        # (a big tool_result cut mid-way, e.g. a PEM before its END line, which
+        # no pattern can recognise). A tail that parses as a complete JSON
+        # object is kept; anything else is dropped -- it arrives whole in the
+        # next upload, and sha256/bytes still cover the full raw upload.
+        tail = segments.pop()
+        if tail.strip():
+            try:
+                complete = isinstance(json.loads(tail), dict)
+            except (ValueError, RecursionError):
+                complete = False
+            if complete:
+                segments.append(tail)
+            else:
+                p.unfinished_tail_bytes = len(tail.encode("utf-8"))
+
+    for line in segments:
         if line.endswith("\r"):
             line = line[:-1]
         if not line.strip():
             continue
         p.line_count += 1
+        dup_keys = False
+
+        def _pairs(pairs):
+            nonlocal dup_keys
+            d = {}
+            for k, v in pairs:
+                if k in d:
+                    dup_keys = True
+                d[k] = v
+            return d
+
         try:
-            obj = json.loads(line)
+            obj = json.loads(line, object_pairs_hook=_pairs)
             if not isinstance(obj, dict):
                 raise ValueError("line is not a JSON object")
         except (ValueError, RecursionError):
@@ -242,10 +285,22 @@ def parse_transcript(raw: bytes) -> ParsedTranscript:
             p.lines.append(clean)
             continue
 
+        # Keys and values both (redact_obj walks keys since 4.25.1). A line is
+        # kept byte-exact ONLY when neither the parsed walk nor a scan of the
+        # raw line finds anything and no key is duplicated (json.loads keeps
+        # the last copy, so the first copy's value was never walked).
         clean_obj, counts = redact_obj(obj)
-        if counts:
+        _, raw_counts = redact_text(line)
+        if counts or raw_counts or dup_keys:
+            out = json.dumps(clean_obj, ensure_ascii=False, separators=(",", ":"))
+            # Belt and braces: the re-serialized line must scan clean too.
+            out, residue = redact_text(out)
             p.redactions.update(counts)
-            p.lines.append(json.dumps(clean_obj, ensure_ascii=False, separators=(",", ":")))
+            p.redactions.update(residue)
+            if raw_counts and not counts and not residue:
+                # Gone by re-serialization (e.g. a duplicate key's first copy).
+                p.redactions.update(raw_counts)
+            p.lines.append(out)
         else:
             p.lines.append(line)
         obj = clean_obj
@@ -387,12 +442,29 @@ class TranscriptArchive:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def raw(self, session_id: str) -> Optional[bytes]:
+        """The redacted JSONL. Raises TranscriptCorrupt when the .gz does not
+        decode, after marking the manifest so the next upload rewrites it."""
         validate_transcript_id(session_id)
         path = self._gz(session_id)
         if not path.exists() or not self._manifest_path(session_id).exists():
             return None
-        with gzip.open(path, "rb") as f:
-            return f.read()
+        try:
+            with gzip.open(path, "rb") as f:
+                return f.read()
+        except (OSError, EOFError, zlib.error) as e:
+            self._mark_corrupt(session_id, f"{type(e).__name__}: {e}")
+            raise TranscriptCorrupt(session_id, str(e)) from e
+
+    def _mark_corrupt(self, session_id: str, reason: str) -> None:
+        with _lock_for(self.dir / session_id):
+            m = self.manifest(session_id)
+            if m is None:
+                return
+            m["gz_corrupt"] = reason[:300]
+            atomic_write_text(self._manifest_path(session_id),
+                              json.dumps(m, indent=2, ensure_ascii=False))
+        log.error(f"Transcript archive CORRUPT: {session_id} ({reason}); "
+                  "the next upload of this session rewrites it")
 
     def turns(self, session_id: str, from_seq: int = 0, to_seq: Optional[int] = None,
               limit: int = 500) -> Optional[list[dict]]:
@@ -451,11 +523,108 @@ class TranscriptArchive:
             conn.close()
 
     # -- write --
+    def _gz_intact(self, session_id: str, manifest: dict) -> bool:
+        """Cheap check for the unchanged path: the file exists, is non-empty,
+        and nobody has marked it corrupt. (A full decode is left to raw().)"""
+        if manifest.get("gz_corrupt"):
+            return False
+        gz = self._gz(session_id)
+        try:
+            return gz.stat().st_size > 0
+        except OSError:
+            return False
+
+    def _store(self, session_id: str, parsed: ParsedTranscript, *, raw_sha: str,
+               raw_bytes: int, agent_id: Optional[str], host: Optional[str],
+               existing: Optional[dict], counts_upload: bool) -> dict:
+        """Write gz (atomic + fsync) -> index -> manifest (the commit marker).
+        Caller holds the session lock."""
+        for stale in (self._gz(session_id).with_name(f"{session_id}.jsonl.gz.tmp"),):
+            stale.unlink(missing_ok=True)      # 4.25.0 left these on a crash
+        payload = ("\n".join(parsed.lines) + "\n").encode("utf-8")
+        gz_path = self._gz(session_id)
+        atomic_write_bytes(gz_path, gzip.compress(payload))
+
+        now = _now_iso()
+        parent = parent_of(session_id)
+        prev = existing or {}
+        manifest = {
+            "session_id": session_id,
+            "parent_session_id": parent,
+            "agent_id": agent_id or prev.get("agent_id") or "default",
+            "host": host if host is not None else prev.get("host"),
+            "sha256": raw_sha,
+            "bytes": raw_bytes,
+            "archived_bytes": gz_path.stat().st_size,
+            "lines": parsed.line_count,
+            "bad_lines": parsed.bad_lines,
+            "unfinished_tail_bytes": parsed.unfinished_tail_bytes,
+            "decode_errors": parsed.decode_errors,
+            "line_types": dict(parsed.line_types),
+            "user_turns": parsed.user_turns,
+            "assistant_turns": parsed.assistant_turns,
+            "tool_use": parsed.tool_use,
+            "tool_result": parsed.tool_result,
+            "indexed_turns": len(parsed.turns),
+            "first_ts": parsed.first_ts,
+            "last_ts": parsed.last_ts,
+            "client_version": parsed.client_version,
+            "cwd": parsed.cwd,
+            "title": parsed.title,
+            "session_ids_seen": dict(parsed.session_ids),
+            "first_user_text": (parsed.first_user_text or "")[:500],
+            "redactions_applied": sum(parsed.redactions.values()),
+            "redactions_by_kind": dict(parsed.redactions),
+            "redaction_version": REDACTION_VERSION,
+            "uploaded_at": now if counts_upload else prev.get("uploaded_at", now),
+            "first_uploaded_at": prev.get("first_uploaded_at", now),
+            "uploads": int(prev.get("uploads", 0)) + (1 if counts_upload else 0),
+            "pointer_memory_id": prev.get("pointer_memory_id"),
+            "schema_version": SCHEMA_VERSION,
+        }
+        if prev.get("pointer_error") and not prev.get("pointer_memory_id"):
+            manifest["pointer_error"] = prev["pointer_error"]
+
+        conn = self._connect(create=True)
+        try:
+            with conn:
+                conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
+                conn.executemany(
+                    "INSERT INTO turns(session_id, seq, ts, role, kind, tool_name, text) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [(session_id, t.seq, t.ts, t.role, t.kind, t.tool_name, t.text)
+                     for t in parsed.turns])
+                conn.execute(
+                    "INSERT OR REPLACE INTO sessions(session_id, tenant, host, first_ts, "
+                    "last_ts, user_turns, assistant_turns, bytes, sha256, title, "
+                    "parent_session_id, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (session_id, manifest["agent_id"], manifest["host"], parsed.first_ts,
+                     parsed.last_ts, parsed.user_turns, parsed.assistant_turns,
+                     raw_bytes, raw_sha, parsed.title, parent, manifest["uploaded_at"]))
+        finally:
+            conn.close()
+
+        # The manifest lands last: it is the commit marker. A crash before it
+        # leaves the previous manifest, so the client's next upload redoes
+        # this one (superset of the old, or first upload again).
+        atomic_write_text(self._manifest_path(session_id),
+                          json.dumps(manifest, indent=2, ensure_ascii=False))
+        if manifest["redactions_applied"]:
+            log.warning(
+                f"Redacted {manifest['redactions_applied']} secret(s) in transcript "
+                f"{session_id}: " + ", ".join(
+                    f"{k}x{v}" for k, v in parsed.redactions.items()))
+        return manifest
+
     def upload(self, session_id: str, raw: bytes, agent_id: Optional[str],
                host: Optional[str]) -> tuple[str, dict]:
         """Archive one transcript. Returns (status, manifest) where status is
-        archived | replaced | unchanged. Raises TranscriptConflict (409) and
-        ValueError (400: bad id, or nothing parseable)."""
+        archived | replaced | unchanged | repaired. Raises TranscriptConflict
+        (409) and ValueError (400: bad id, or nothing parseable).
+
+        repaired = the same bytes as the archive, but the stored copy was
+        corrupt or redacted by an older REDACTION_VERSION, so it was rebuilt
+        from this upload."""
         validate_transcript_id(session_id)
         sha = hashlib.sha256(raw).hexdigest()
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -464,99 +633,112 @@ class TranscriptArchive:
             status = "archived"
             if existing is not None:
                 if existing.get("sha256") == sha:
-                    return "unchanged", existing
-                old_bytes = int(existing.get("bytes") or 0)
-                if len(raw) <= old_bytes:
-                    raise TranscriptConflict(
-                        session_id, existing.get("sha256", ""), sha,
-                        "upload is not longer than the archived transcript "
-                        f"({len(raw)} <= {old_bytes} bytes) and differs from it")
-                if hashlib.sha256(raw[:old_bytes]).hexdigest() != existing.get("sha256"):
-                    raise TranscriptConflict(
-                        session_id, existing.get("sha256", ""), sha,
-                        f"first {old_bytes} bytes differ from the archived transcript "
-                        "(the client file is append-only, so this is a different file)")
-                status = "replaced"
+                    if (self._gz_intact(session_id, existing)
+                            and int(existing.get("redaction_version") or 1) >= REDACTION_VERSION):
+                        return "unchanged", existing
+                    status = "repaired"
+                else:
+                    old_bytes = int(existing.get("bytes") or 0)
+                    if len(raw) <= old_bytes:
+                        raise TranscriptConflict(
+                            session_id, existing.get("sha256", ""), sha,
+                            "upload is not longer than the archived transcript "
+                            f"({len(raw)} <= {old_bytes} bytes) and differs from it")
+                    if hashlib.sha256(raw[:old_bytes]).hexdigest() != existing.get("sha256"):
+                        raise TranscriptConflict(
+                            session_id, existing.get("sha256", ""), sha,
+                            f"first {old_bytes} bytes differ from the archived transcript "
+                            "(the client file is append-only, so this is a different file)")
+                    status = "replaced"
 
             parsed = parse_transcript(raw)
             if parsed.line_count == 0 or parsed.bad_lines == parsed.line_count:
-                raise ValueError("upload contains no JSON transcript lines")
+                raise ValueError("upload contains no complete JSON transcript lines")
 
-            payload = ("\n".join(parsed.lines) + "\n").encode("utf-8")
-            gz_path = self._gz(session_id)
-            tmp = gz_path.with_name(gz_path.name + ".tmp")
-            with gzip.open(tmp, "wb") as f:
-                f.write(payload)
-            os.replace(tmp, gz_path)
-
-            now = _now_iso()
-            parent = parent_of(session_id)
-            manifest = {
-                "session_id": session_id,
-                "parent_session_id": parent,
-                "agent_id": agent_id or "default",
-                "host": host,
-                "sha256": sha,
-                "bytes": len(raw),
-                "archived_bytes": gz_path.stat().st_size,
-                "lines": parsed.line_count,
-                "bad_lines": parsed.bad_lines,
-                "decode_errors": parsed.decode_errors,
-                "line_types": dict(parsed.line_types),
-                "user_turns": parsed.user_turns,
-                "assistant_turns": parsed.assistant_turns,
-                "tool_use": parsed.tool_use,
-                "tool_result": parsed.tool_result,
-                "indexed_turns": len(parsed.turns),
-                "first_ts": parsed.first_ts,
-                "last_ts": parsed.last_ts,
-                "client_version": parsed.client_version,
-                "cwd": parsed.cwd,
-                "title": parsed.title,
-                "session_ids_seen": dict(parsed.session_ids),
-                "first_user_text": (parsed.first_user_text or "")[:500],
-                "redactions_applied": sum(parsed.redactions.values()),
-                "redactions_by_kind": dict(parsed.redactions),
-                "uploaded_at": now,
-                "first_uploaded_at": (existing or {}).get("first_uploaded_at", now),
-                "uploads": int((existing or {}).get("uploads", 0)) + 1,
-                "pointer_memory_id": (existing or {}).get("pointer_memory_id"),
-                "schema_version": SCHEMA_VERSION,
-            }
-
-            conn = self._connect(create=True)
-            try:
-                with conn:
-                    conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
-                    conn.executemany(
-                        "INSERT INTO turns(session_id, seq, ts, role, kind, tool_name, text) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        [(session_id, t.seq, t.ts, t.role, t.kind, t.tool_name, t.text)
-                         for t in parsed.turns])
-                    conn.execute(
-                        "INSERT OR REPLACE INTO sessions(session_id, tenant, host, first_ts, "
-                        "last_ts, user_turns, assistant_turns, bytes, sha256, title, "
-                        "parent_session_id, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (session_id, agent_id or "default", host, parsed.first_ts,
-                         parsed.last_ts, parsed.user_turns, parsed.assistant_turns,
-                         len(raw), sha, parsed.title, parent, now))
-            finally:
-                conn.close()
-
-            # The manifest lands last: it is the commit marker. A crash before
-            # it leaves the previous manifest, so the client's next upload
-            # redoes this one (superset of the old, or first upload again).
-            atomic_write_text(self._manifest_path(session_id),
-                              json.dumps(manifest, indent=2, ensure_ascii=False))
-            if manifest["redactions_applied"]:
-                log.warning(
-                    f"Redacted {manifest['redactions_applied']} secret(s) in transcript "
-                    f"{session_id}: " + ", ".join(
-                        f"{k}x{v}" for k, v in parsed.redactions.items()))
+            manifest = self._store(session_id, parsed, raw_sha=sha, raw_bytes=len(raw),
+                                   agent_id=agent_id, host=host, existing=existing,
+                                   counts_upload=status != "repaired")
             log.info(f"Transcript {status}: {session_id} ({len(raw)} bytes, "
                      f"{parsed.line_count} lines, {len(parsed.turns)} turns, "
                      f"tenant {agent_id or 'default'})")
             return status, manifest
+
+    def reprocess(self, session_id: str) -> Optional[dict]:
+        """Re-run the CURRENT redaction over one stored transcript whose
+        manifest predates it. Rebuilds gz + turns + FTS from the stored
+        (already redacted) lines; sha256/bytes of the original upload are
+        kept, so the client's next upload still matches. Returns a result
+        dict, or None when the session was already current. A corrupt gz is
+        marked and skipped (the client's next upload repairs it).
+
+        What this cannot fix: bytes 4.25.0 dropped or stored in a form no
+        pattern now recognises beyond what re-parsing finds -- e.g. an
+        unfinished tail line is only healed by the client re-uploading."""
+        validate_transcript_id(session_id)
+        with _lock_for(self.dir / session_id):
+            m = self.manifest(session_id)
+            if m is None:
+                return None
+            old_version = int(m.get("redaction_version") or 1)
+            if old_version >= REDACTION_VERSION:
+                return None
+            gz = self._gz(session_id)
+            try:
+                with gzip.open(gz, "rb") as f:
+                    stored = f.read()
+            except (OSError, EOFError, zlib.error) as e:
+                m["gz_corrupt"] = f"{type(e).__name__}: {e}"[:300]
+                atomic_write_text(self._manifest_path(session_id),
+                                  json.dumps(m, indent=2, ensure_ascii=False))
+                log.error(f"Reprocess skipped {session_id}: stored gz unreadable ({e})")
+                return {"session_id": session_id, "status": "corrupt", "reason": str(e)}
+            parsed = parse_transcript(stored)
+            new_redactions = dict(parsed.redactions)
+            # The stored text was redacted once already; the manifest keeps
+            # the running total of everything ever removed.
+            merged = Counter(m.get("redactions_by_kind") or {})
+            merged.update(parsed.redactions)
+            parsed.redactions = merged
+            manifest = self._store(session_id, parsed, raw_sha=m["sha256"],
+                                   raw_bytes=int(m["bytes"]), agent_id=m.get("agent_id"),
+                                   host=m.get("host"), existing=m, counts_upload=False)
+            manifest["reprocessed_at"] = _now_iso()
+            manifest["reprocessed_from_version"] = old_version
+            atomic_write_text(self._manifest_path(session_id),
+                              json.dumps(manifest, indent=2, ensure_ascii=False))
+            log.info(f"Transcript reprocessed: {session_id} v{old_version}->"
+                     f"v{REDACTION_VERSION}, {sum(new_redactions.values())} new redaction(s)")
+            return {"session_id": session_id, "status": "reprocessed",
+                    "from_version": old_version, "new_redactions": new_redactions}
+
+    def reprocess_all(self) -> dict:
+        """reprocess() every archived session in this tenant. Never raises
+        on one bad session; reports it."""
+        report = {"tenant": self.tenant, "checked": 0, "reprocessed": 0, "current": 0,
+                  "corrupt": 0, "failed": 0, "new_redactions": 0, "sessions": []}
+        if not self.dir.is_dir():
+            return report
+        for mpath in sorted(self.dir.glob("*.manifest.json")):
+            sid = mpath.name[: -len(".manifest.json")]
+            report["checked"] += 1
+            try:
+                res = self.reprocess(sid)
+            except Exception as e:                 # one bad file never stops the sweep
+                log.error(f"Reprocess FAILED for {sid}: {e!r}")
+                report["failed"] += 1
+                report["sessions"].append({"session_id": sid, "status": "failed",
+                                           "reason": repr(e)[:300]})
+                continue
+            if res is None:
+                report["current"] += 1
+                continue
+            report["sessions"].append(res)
+            if res["status"] == "reprocessed":
+                report["reprocessed"] += 1
+                report["new_redactions"] += sum(res["new_redactions"].values())
+            else:
+                report["corrupt"] += 1
+        return report
 
     def set_pointer(self, session_id: str, memory_id: Optional[str],
                     error: Optional[str] = None) -> dict:
