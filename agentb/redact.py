@@ -35,10 +35,17 @@ import re
 # env-credential below.
 _CREDENTIAL_NAME = (
     r"(?:(?i:[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credentials?|"
-    r"authorization|(?:api|access|secret|private|client|signing|encryption|master)"
+    r"authorization|cookie|(?:api|access|secret|private|client|signing|encryption|master)"
     r"[_-]?key))|[A-Z0-9_.-]*_KEY)"
 )
 _CREDENTIAL_KEY_RE = re.compile(_CREDENTIAL_NAME)
+# The same names at the start of a name-character run (v4.26.1): the
+# lookbehind keeps a scan from restarting inside the run of name characters.
+# Values stay linear too: each pattern below stops its value at a character
+# that also ends the next restart's reach (review of the 4.26.1 draft: a
+# value class that allowed `=` rescanned `password=password=…` to the end
+# from every name, 12 s at 100k chars).
+_ASSIGN_NAME = rf"(?<![A-Za-z0-9_.-]){_CREDENTIAL_NAME}"
 
 # Each entry: (kind, compiled pattern). Order matters only for overlapping
 # matches (first pattern wins via the combined scan below); more specific
@@ -118,6 +125,33 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
         \s*[=:]\s*["']?
         (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
         """)),
+    # Cookie / Set-Cookie headers (v4.26.1): the whole header value goes --
+    # every Cookie pair is a credential, and a Set-Cookie's attributes carry
+    # nothing worth the parsing. Needs name=value after the colon, so prose
+    # about cookies survives. A quoted cookie value (RFC 6265) goes whole: a
+    # quote right after `=` opens one. The cookie name has no `:`, so
+    # `cookie:cookie:…` cannot rescan.
+    ("cookie", re.compile(
+        r"(?i)(?<![\w-])(?:set-)?cookie\s*:[ \t]*"
+        r"(?P<val>[^\s=;,:\"'\\]+=(?:[^\r\n\"'\\]|(?<==)\"[^\"\r\n\\]*\")*)")),
+    # Short secrets under a credential NAME (v4.26.1, snag-redactor-short-kv):
+    # generic-assignment and env-credential need 16+ chars; a credential-
+    # named key gets a floor of 6. Generic names keep 16. Two shapes only:
+    #  - quoted literal, any spacing: password = "abc123" (escaped quotes too,
+    #    as in raw JSONL text);
+    #  - unquoted, no spaces, ending at whitespace / & ; / a quote / a
+    #    backslash / end: env files, CLI flags, query strings. Most code
+    #    keeps its right-hand sides: a kwarg ends at , or ), a call at (, an
+    #    index at [, and `x = y` has spaces. NOT kept: a spaceless
+    #    `token=self.access_token` (it is shaped exactly like a secret).
+    #    `=` is not a value character (linear time), except as base64
+    #    padding at the end.
+    ("credential-assignment", re.compile(
+        rf"{_ASSIGN_NAME}\s*=\s*\\?(?P<q>[\"'])"
+        r"(?P<val>(?:(?!(?P=q))[^\\\n]){6,})\\?(?P=q)")),
+    ("credential-assignment", re.compile(
+        rf"{_ASSIGN_NAME}=(?![=\"'])"
+        r"(?P<val>[^\s&;,=\"'\\()\[\]{}<>]{6,}+=*+)(?=[\s&;\"'\\<>]|$)")),
     # JSON credential field: "password": "…", "api_key": "…" (v4.25.3,
     # inspection #1). Any non-empty value -- the field name is the evidence.
     ("credential-field", re.compile(
@@ -220,6 +254,19 @@ def redact_obj(obj):
                     while f"{new_key}#{n}" in out:
                         n += 1
                     new_key = f"{new_key}#{n}"
+                if (isinstance(key, str) and _CREDENTIAL_KEY_RE.fullmatch(key)
+                        and isinstance(value, list)):
+                    # v4.26.1: a list under a credential name (Node gives
+                    # set-cookie as an array) -- each scalar element goes.
+                    clean = []
+                    for item in value:
+                        if _is_credential_value(item):
+                            totals["credential-field"] = totals.get("credential-field", 0) + 1
+                            clean.append(REPLACEMENT_FMT.format(kind="credential-field"))
+                        else:
+                            clean.append(_walk(item))
+                    out[new_key] = clean
+                    continue
                 if (isinstance(key, str) and _CREDENTIAL_KEY_RE.fullmatch(key)
                         and _is_credential_value(value)):
                     # v4.25.3 (inspection #1): the key names a credential,

@@ -555,6 +555,25 @@ def test_reprocess_upgrades_v1_archives_and_is_idempotent(tmp_path):
     assert arc.upload(SID, raw, "cc", None)[0] == "unchanged"
 
 
+def test_reprocess_rescrubs_v4_archive_short_credential(tmp_path):
+    """4.26.1: REDACTION_VERSION 5 re-runs a v4 archive, and the short
+    credential-named key=value and the Cookie header that v4 kept now go."""
+    short = "Qz7" + "wK9"
+    arc = TranscriptArchive(tmp_path, "cc")
+    arc.upload(SID, specimen(), "cc", "igor")
+    base = {"sessionId": SID, "timestamp": "2026-09-22T12:00:00.000Z", "type": "user"}
+    _age_to_v1(arc, SID, specimen_lines()[:2] + [
+        _line({**base, "message": {"role": "user", "content": "export DB_PASSWORD=" + short}}),
+        _line({**base, "message": {"role": "user", "content": "> Cookie: sid=" + short}})])
+    m = json.loads((arc.dir / f"{SID}.manifest.json").read_text(encoding="utf-8"))
+    m["redaction_version"] = 4
+    (arc.dir / f"{SID}.manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    rep = arc.reprocess_all()
+    assert rep["reprocessed"] == 1 and rep["new_redactions"] >= 2
+    assert arc.manifest(SID)["reprocessed_from_version"] == 4
+    _assert_nowhere(arc, SID, short)
+
+
 def test_same_bytes_on_a_v1_archive_repairs_from_the_upload(tmp_path):
     arc = TranscriptArchive(tmp_path, "cc")
     raw = ("\n".join(_keyed_lines()) + "\n").encode()

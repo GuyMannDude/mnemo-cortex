@@ -240,3 +240,125 @@ def test_inspection_2_partial_pem_redacted():
     # Control: a complete block still redacts to its END line only.
     full = begin + "\n" + body + "\n-----END " + "OPENSSH PRIVATE KEY-----\nafter."
     assert redact_text(full) == ("[REDACTED:private-key]\nafter.", {"private-key": 1})
+
+
+# ── v4.26.1: short credential-named key=value + Cookie headers ──
+# (snag-redactor-short-kv-secret-passes.md; batch 2 leftovers #4 + #3)
+
+SHORT = "abc" + "123"   # six chars: under the 16-char generic floor
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("password=" + SHORT, SHORT),
+    ('password="' + SHORT + '"', SHORT),
+    ("api_key=" + SHORT + "45", SHORT + "45"),
+    ("PASSWORD=" + SHORT, SHORT),
+    ("password = '" + SHORT + "'", SHORT),
+    ("export DB_PASSWORD=hunt" + "er2 && run", "hunt" + "er2"),
+    ("GITHUB_TOKEN=" + SHORT + "xyz\n", SHORT + "xyz"),
+    ("https://x.test/cb?user=guy&token=" + SHORT + "&page=2", SHORT),
+    ("mysql --password=" + SHORT + " -u root", SHORT),
+    ("password=p@ss!" + "23", "p@ss!" + "23"),
+    ("db.password=" + SHORT, SHORT),
+    ("token=" + SHORT + "==", SHORT),            # base64 padding
+])
+def test_short_credential_named_assignment_redacted(text, secret):
+    out, found = redact_text(text)
+    assert secret not in out, text
+    assert found == {"credential-assignment": 1}, (text, found)
+    assert redact_text(out) == (out, {})   # idempotent
+
+
+@pytest.mark.parametrize("text, kept", [
+    ("Cookie: session=" + SHORT, "Cookie: "),
+    ("Set-Cookie: sid=" + SHORT + "; Path=/; HttpOnly", "Set-Cookie: "),
+    ('curl -H "Cookie: a=1; sid=' + SHORT + '" https://x.test', '" https://x.test'),
+    ("> cookie: sid=" + SHORT + "\n< HTTP/1.1 200", "\n< HTTP/1.1 200"),
+    ('Cookie: sid="' + SHORT + '"; b=2', "Cookie: "),         # RFC 6265 quoted
+])
+def test_cookie_header_redacted(text, kept):
+    out, found = redact_text(text)
+    assert SHORT not in out, text
+    assert found == {"cookie": 1}, (text, found)
+    assert kept in out
+    assert redact_text(out) == (out, {})
+
+
+def test_cookie_json_header_field_redacted():
+    """A headers dict in a log line: the Cookie VALUE goes, JSON stays valid."""
+    obj = {"headers": {"Cookie": "sid=" + SHORT, "Set-Cookie": "a=" + SHORT,
+                       "Accept": "text/html"}}
+    clean, counts = redact_obj(obj)
+    assert SHORT not in json.dumps(clean)
+    assert clean["headers"]["Accept"] == "text/html"
+    out, found = redact_text(json.dumps(obj))
+    assert SHORT not in out and json.loads(out)["headers"]["Accept"] == "text/html"
+    # Node gives set-cookie as an array: every element goes.
+    clean, counts = redact_obj({"set-cookie": ["sid=" + SHORT + "; Path=/", "b=" + SHORT],
+                                "token": [None, True]})
+    assert SHORT not in json.dumps(clean) and counts == {"credential-field": 2}
+    assert clean["token"] == [None, True]
+
+
+def test_short_secret_inside_raw_json_line():
+    """Raw JSONL text: the quotes around the value arrive escaped."""
+    line = json.dumps({"cmd": 'login password="' + SHORT + '" now', "n": 1})
+    out, found = redact_text(line)
+    assert SHORT not in out
+    assert json.loads(out)["n"] == 1
+    line = json.dumps({"cmd": "login password=" + SHORT + "\nnext"})
+    out, _ = redact_text(line)
+    assert SHORT not in out and json.loads(out)["cmd"].endswith("\nnext")
+
+
+# The fails-closed pairing (doctrine-redaction-fails-closed): real-shaped lines
+# that share the name=value shape and must come back byte-identical.
+FALSE_POSITIVE_CORPUS = [
+    "mode=ro", "sort_key=" + SHORT, "version=4.25.3", "branch=main",
+    "immutable=1", "port=50001", "key=value", "timeout=5s", "tenant=cc",
+    "model=claude-fable-5-1", "log_level=INFO", "GET /memories?page=2&sort=asc",
+    "file:mnemo.db?mode=ro&immutable=1",
+    # names that merely contain a credential word
+    "max_tokens=4096", "num_tokens=123456", "password_hint=the_dog",
+    "primary_key=user_id", "public_key=ssh-ed25519", "tokenizer=cl100k",
+    "author=guy", "keyword=memory", "monkey=banana1",
+    # code: the right-hand side is a variable, a call, or a comparison
+    "login(password=db_password)", "connect(host=h, password=pw_var, port=5432)",
+    "if password==hashed_pw:", "token = self.access_token",
+    "password = get_password()", "api_key=os.environ['API_KEY']",
+    "token=tok.strip()", "password: str", "password: Optional[str] = None",
+    "apiKey: string", "def f(password: str, token: str | None = None):",
+    # placeholders, env references, too short to be a secret
+    "password=${DB_PASSWORD}", "password=$DB_PASSWORD", "password=",
+    'password=""', "password=abc", "api_key=<your-key>", "password=********",
+    # prose about cookies (no name=value after the colon)
+    "the cookie: chocolate chip", "Set-Cookie headers are not logged",
+    "Cookie:", "cookies=enabled",
+    # a whole config block
+    "[server]\nhost=0.0.0.0\nport=50001\nworkers=4\nlog_level=INFO\n",
+]
+
+
+@pytest.mark.parametrize("text", FALSE_POSITIVE_CORPUS)
+def test_false_positive_corpus_byte_identical(text):
+    assert redact_text(text) == (text, {})
+
+
+def test_long_value_keeps_its_generic_kind():
+    """The 16+ patterns still fire first: the kind a long secret reports is
+    unchanged by 4.26.1."""
+    long_secret = "Zx9qR4tLm2Vb7Kp1Wd"
+    assert redact_text("password=" + long_secret) == (
+        "password=[REDACTED:generic-assignment]", {"generic-assignment": 1})
+
+
+def test_short_assignment_linear_on_long_name_runs():
+    """No quadratic rescan: a 200k-char run of name characters is one pass."""
+    import time
+    for blob in ("a" * 200_000, "A_" * 100_000, "x.y-" * 50_000,
+                 # rescans the review of the draft found (12 s / 8 s / 2 s)
+                 "password=" * 20_000 + ",", "TOKEN=aaaaaaa|" * 14_000 + ",",
+                 "cookie:" * 30_000, 'password="' * 20_000, "Cookie: a=" * 20_000):
+        t0 = time.perf_counter()
+        redact_text(blob)
+        assert time.perf_counter() - t0 < 2.0, blob[:8]

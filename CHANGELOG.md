@@ -1,5 +1,56 @@
 # Changelog
 
+## v4.26.1 — Redactor: short secrets after a credential name, and Cookie headers (2026-09-24)
+
+**Problem.** The `name=value` patterns needed a value of 16+ characters, so
+`password=abc123`, `password="abc123"`, `api_key=abc12345` and
+`PASSWORD=abc123` passed unredacted into storage and, with the Jev shadow on,
+out to TypeSafe (`snag-redactor-short-kv-secret-passes.md`, batch 2 leftover
+#4). Cookie and Set-Cookie headers were not redacted at all (leftover #3).
+
+**Fix.**
+- New kind `credential-assignment`: a value of **6+** characters after a
+  credential-NAMED key (the v4.25.3 `_CREDENTIAL_NAME` list: `*password`,
+  `*token`, `*secret`, `api_key`, …, and UPPERCASE `*_KEY`). Two shapes: a
+  quoted literal with any spacing (`password = "abc123"`, escaped quotes in raw
+  JSONL too), and an unquoted value with no spaces that ends at whitespace,
+  `&`, `;`, a quote, a backslash or the end (env files, CLI flags,
+  `?token=` in a URL). Generic names keep the 16-character floor; the 16+
+  patterns still fire first, so a long secret reports the kind it did before.
+- Most code keeps its right-hand sides: a kwarg ends at `,` or `)`, a call
+  at `(`, an index at `[`, a comparison is `==`, and a `x = y` assignment has
+  spaces. A spaceless `token=self.access_token` IS redacted (same shape as a
+  secret), and so is an UPPERCASE `*_KEY` config name (`SORT_KEY=created_at`)
+  — the `*_KEY` catch-all is part of the credential-name list.
+- New kind `cookie`: the whole value of a `Cookie:` / `Set-Cookie:` header,
+  when it starts with `name=value` (prose about cookies survives); a quoted
+  cookie value goes whole. `cookie` joins the credential field names, so a
+  JSON headers dict loses the value too, and a list under a credential name
+  (Node's `set-cookie` array) loses every scalar element.
+- Linear time: `=` is not an unquoted value character (except trailing
+  base64 padding) and a cookie name has no `:`, so no input makes the scan
+  restart and re-read to the end (the review of the draft found 12 s at
+  100k characters; now about 0.1 s at 200k).
+- `REDACTION_VERSION` 4 → 5: the startup sweep re-scrubs archived transcripts.
+
+**Tests.** 12 short-assignment and 5 Cookie cases plus the JSON shapes (all failing on 00309b6), a
+45-line false-positive corpus that must come back byte-identical (config
+lines, names that merely contain a credential word, code, placeholders, prose
+about cookies), a linear-time check on 200k-char name runs and the review's
+rescan inputs, and a transcript
+re-scrub test (a v4 archive is re-run and the short secret leaves the raw
+file, the turns and FTS).
+
+**Known gaps (not in this release).** YAML/INI with spaces or a colon
+(`password: abc123`, `password = abc123` unquoted) still needs 16+
+characters: those shapes are indistinguishable from type hints and code
+assignments. A value followed by `,` or `)` in prose is left alone for the
+same reason. Also not covered: `--password abc123` (space, no `=`); a
+quoted value after a colon (`password: "abc123"`, compose files, JS objects);
+Python-repr dicts (`{'password': 'abc123'}`); a raw-JSON list under a
+credential name (`"set-cookie": ["…"]` as text; the parsed form is caught);
+an escaped quote inside a quoted value; `pwd=` / `pass=` names.
+
 ## v4.26.0 — Proposal envelope: one home for machine proposals, and the Jev shadow as its first writer (2026-09-24)
 
 **Problem.** Machine writers had different shapes and only one of them had a
