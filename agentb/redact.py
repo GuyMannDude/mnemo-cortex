@@ -24,6 +24,22 @@ from __future__ import annotations
 
 import re
 
+# Field names that hold a credential, matched against the WHOLE name
+# (case-insensitive). Used for dict keys in redact_obj and for the JSON
+# `"name": "value"` shape in redact_text (v4.25.3, inspection #1): the
+# name-then-[=:] patterns below never see a JSON key next to its value --
+# redact_obj walks them as separate strings, and in raw JSON the closing
+# quote sits between the name and the colon. A bare `*_key` is too common in
+# ordinary code (sort_key, primary_key, public_key) to redact case-blind, so
+# the catch-all is UPPERCASE only -- the env-var convention, as in
+# env-credential below.
+_CREDENTIAL_NAME = (
+    r"(?:(?i:[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credentials?|"
+    r"authorization|(?:api|access|secret|private|client|signing|encryption|master)"
+    r"[_-]?key))|[A-Z0-9_.-]*_KEY)"
+)
+_CREDENTIAL_KEY_RE = re.compile(_CREDENTIAL_NAME)
+
 # Each entry: (kind, compiled pattern). Order matters only for overlapping
 # matches (first pattern wins via the combined scan below); more specific
 # prefixes go before generic ones.
@@ -61,9 +77,19 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     # Shopify tokens (admin/custom-app/storefront).
     ("shopify", re.compile(r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{20,}")),
     # ── Structural secrets ──
-    # PEM private key blocks (multiline, the whole block goes).
+    # PEM private key blocks (multiline, the whole block goes). v4.25.3
+    # (inspection #2): a key with no END line (`head` of a key file, a
+    # clipped tool_result) still goes -- the BEGIN line plus the body runs
+    # after it: base64 runs that are long (16+), carry a digit/+/=, or have
+    # a capital past the first letter (a short final line), and
+    # `Proc-Type:`-style header lines, across whitespace or JSON-escaped
+    # newlines. Prose after the key (plain words) and the closing quote of a
+    # JSON string that carried it survive.
     ("private-key", re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+        r"(?:.*?-----END [A-Z ]*PRIVATE KEY-----"
+        r"|(?:(?:\s|\\[nr])*(?:[A-Za-z0-9+/=]{16,}|[A-Za-z]*[0-9+/=][A-Za-z0-9+/=]*"
+        r"|[A-Za-z][a-z]*[A-Z][A-Za-z]*|[A-Z][A-Za-z-]+:[^\n\\\"]*))*)",
         re.DOTALL)),
     # JWTs: three dot-separated base64url segments, first decodes to {"alg"….
     # eyJ is base64url for '{"' — distinctive enough combined with structure.
@@ -92,6 +118,10 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
         \s*[=:]\s*["']?
         (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
         """)),
+    # JSON credential field: "password": "…", "api_key": "…" (v4.25.3,
+    # inspection #1). Any non-empty value -- the field name is the evidence.
+    ("credential-field", re.compile(
+        rf'"{_CREDENTIAL_NAME}"\s*:\s*"(?P<val>(?:[^"\\]|\\.)+)"')),
     # Credentials embedded in connection URLs (postgres://user:pass@host,
     # amqp/redis/mongodb/… — any scheme). Only the password is redacted.
     ("url-credential", re.compile(
@@ -132,13 +162,27 @@ def redact_text(text: str) -> tuple[str, dict[str, int]]:
                 if _GENERIC_VALUE_ALLOWLIST.match(val):
                     return m.group(0)
                 found[_kind] = found.get(_kind, 0) + 1
-                return m.group(0).replace(val, REPLACEMENT_FMT.format(kind=_kind))
+                # Splice by span: str.replace would hit the first copy of the
+                # value, which can sit inside the NAME ("password": "pass").
+                s, e = m.start("val") - m.start(), m.end("val") - m.start()
+                return m.group(0)[:s] + REPLACEMENT_FMT.format(kind=_kind) + m.group(0)[e:]
             text = pattern.sub(_sub, text)
         else:
             text, n = pattern.subn(REPLACEMENT_FMT.format(kind=kind), text)
             if n:
                 found[kind] = found.get(kind, 0) + n
     return text, found
+
+
+def _is_credential_value(value) -> bool:
+    """A leaf worth redacting under a credential-named key: a non-empty
+    string that is not a placeholder/path/already-redacted, or a number."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    return (isinstance(value, str) and bool(value.strip())
+            and not _GENERIC_VALUE_ALLOWLIST.match(value))
 
 
 def redact_obj(obj):
@@ -176,6 +220,13 @@ def redact_obj(obj):
                     while f"{new_key}#{n}" in out:
                         n += 1
                     new_key = f"{new_key}#{n}"
+                if (isinstance(key, str) and _CREDENTIAL_KEY_RE.fullmatch(key)
+                        and _is_credential_value(value)):
+                    # v4.25.3 (inspection #1): the key names a credential,
+                    # so the value goes whatever its shape.
+                    totals["credential-field"] = totals.get("credential-field", 0) + 1
+                    out[new_key] = REPLACEMENT_FMT.format(kind="credential-field")
+                    continue
                 out[new_key] = _walk(value)
             return out
         return node

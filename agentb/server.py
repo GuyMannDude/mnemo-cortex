@@ -2099,10 +2099,18 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         traj: TrajectoryStore = tenant["trajectories"]
         steps = [s.model_dump() for s in req.steps]
 
+        # v4.25.3 (inspection #4): same redaction choke point as every other
+        # write door, BEFORE the embed -- the embedder may be remote.
+        (task_description, steps, outcome, evidence_source), red_counts = redact_obj(
+            [req.task_description, steps, req.outcome, req.evidence_source])
+        if red_counts:
+            log.warning(f"🔒 Redacted {sum(red_counts.values())} secret(s) in /trajectory/save "
+                        f"(agent={req.agent_id}): {', '.join(sorted(red_counts))}")
+
         # Embed the recipe so it's recallable by NL description. Any embedder
         # failure must surface — a saved-but-unindexed trajectory would never be
         # recalled (silent loss is the failure mode Vapor Truth forbids).
-        text = traj_embedding_text(req.task_description, req.outcome, steps)
+        text = traj_embedding_text(task_description, outcome, steps)
         try:
             embedding = await embedder.embed(text, task_type="document")
         except Exception as e:
@@ -2113,9 +2121,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             record = traj.save(
                 agent_id=req.agent_id,
                 task_type=req.task_type,
-                task_description=req.task_description,
+                task_description=task_description,
                 steps=steps,
-                outcome=req.outcome,
+                outcome=outcome,
                 rating=req.rating,
                 embedding=embedding,
                 token_cost=req.token_cost,
@@ -2123,7 +2131,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 duration_seconds=req.duration_seconds,
                 derived_from=req.derived_from,
                 source=req.source,
-                evidence_source=req.evidence_source,
+                evidence_source=evidence_source,
             )
         except VecDimMismatch as e:
             log.error(f"Trajectory vec dim mismatch (agent={req.agent_id}): {e}")

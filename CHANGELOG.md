@@ -1,5 +1,54 @@
 # Changelog
 
+## v4.25.3 — Security: the four HIGHs from the CC3 code inspection (2026-09-24)
+
+**Problem.** CC3's read-only inspection (`code-inspection-2026-09-24-cc3.md`,
+findings #1-#4, re-probed by CC on ea89ebb) found four ways a secret reached
+storage or the logs:
+- **#1 JSON-key credentials unredacted.** `{"password": "…"}`, `{"api_key": …}`,
+  `{"GITHUB_TOKEN": …}` passed through. `redact_obj` walked the key and the
+  value as separate strings, and the name-then-`[=:]` patterns never match raw
+  JSON (the closing quote sits between the name and the colon).
+- **#2 Partial private keys stored raw.** The PEM pattern needed both BEGIN and
+  END lines, so `head` of a key file or a clipped tool_result kept its body.
+- **#3 Google API key in the URL.** `?key=…` on every Google call; httpx logs
+  every request URL at INFO and HTTPStatusError text carries the URL into the
+  failure-path warnings.
+- **#4 `/trajectory/save` had no redaction.** Description, step args, outcome
+  and evidence_source were embedded (possibly remotely) and stored verbatim.
+
+**Fix.**
+- `redact_obj`: a value under a credential-named key is replaced whatever its
+  shape. New kind `credential-field`. Names are whole-name matched,
+  case-insensitive: `*password`, `*passphrase`, `*secret`, `*token`,
+  `credentials`, `authorization`, and api/access/secret/private/client/
+  signing/encryption/master `key`. The bare `*_KEY` catch-all is UPPERCASE
+  only, so ordinary code names (`sort_key`, `primary_key`, `public_key`) are
+  untouched (found in review). Empty values, placeholders and booleans are
+  left alone.
+- `redact_text`: new `credential-field` pattern for the JSON `"name": "value"`
+  shape. Value-capturing patterns now splice by span, so a value that also
+  appears in the name (`"password": "pass"`) cannot leak.
+- PEM: a BEGIN line with no END still redacts, through the key-shaped runs
+  after it (base64 lines, a short final line, `Proc-Type:` headers). Prose
+  after the key and the closing quote of a JSON string survive (the first
+  draft ate prose up to the next punctuation; found in review).
+- Google reasoning, embedding and the auth probe send the key in the
+  `x-goog-api-key` header; no URL carries it.
+- `/trajectory/save` runs `redact_obj` over all four fields before the embed.
+
+**Not in this release.** `transcripts.REDACTION_VERSION` is unchanged (3), so
+already-archived transcripts are not re-run through the new patterns yet;
+bumping it triggers the startup reprocess sweep and is a rollout decision.
+
+**Tests.** One regression test per finding, each failing on ea89ebb:
+`test_inspection_1_json_key_credential_redacted`,
+`test_inspection_2_partial_pem_redacted`,
+`test_inspection_3_google_key_not_in_url_or_error_text`,
+`test_inspection_4_trajectory_save_redacts`. The existing Google probe test
+asserted `?key=` and now asserts the header. Suite: 980 passed, 1 skipped.
+`robot.info` version and changelog bumped with it.
+
 ## v4.25.2 — Transcript archive: the second review's two bugs and two partials (2026-09-23)
 
 **Problem.** CC's review of 1717aeb (#3760) confirmed 4.25.1's tail, pointer

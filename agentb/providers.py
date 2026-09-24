@@ -563,8 +563,8 @@ async def _google_auth_ok(config: ProviderConfig) -> bool:
     base = config.api_base or "https://generativelanguage.googleapis.com/v1beta"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{base}/models",
-                                    params={"key": config.api_key, "pageSize": 1})
+            resp = await client.get(f"{base}/models", params={"pageSize": 1},
+                                    headers={"x-goog-api-key": config.api_key})
         return resp.status_code == 200
     except Exception as e:
         log.warning(f"Google auth probe failed: {e}")
@@ -632,12 +632,15 @@ class GoogleReasoning(ReasoningProvider):
     async def generate(self, prompt: str, system: str = "", max_tokens: int = 2048) -> str:
         import httpx
         base = self.config.api_base or "https://generativelanguage.googleapis.com/v1beta"
-        url = f"{base}/models/{self.config.model}:generateContent?key={self.config.api_key}"
+        # v4.25.3 (inspection #3): the key rides in a header, never the URL --
+        # httpx logs every request URL at INFO and puts it in error text.
+        url = f"{base}/models/{self.config.model}:generateContent"
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
         async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json=payload,
+                                     headers={"x-goog-api-key": self.config.api_key})
             resp.raise_for_status()
             candidates = resp.json().get("candidates", [])
             if candidates:
@@ -653,7 +656,7 @@ class GoogleEmbedding(EmbeddingProvider):
     async def embed(self, text: str, *, task_type: str = "document") -> list[float]:
         import httpx
         base = self.config.api_base or "https://generativelanguage.googleapis.com/v1beta"
-        url = f"{base}/models/{self.config.model}:embedContent?key={self.config.api_key}"
+        url = f"{base}/models/{self.config.model}:embedContent"  # key in header (inspection #3)
         # No text prefix (nomic-specific) — map to Gemini's native taskType
         # param instead so fallback embeds are task-correct too.
         payload: dict = {
@@ -666,7 +669,8 @@ class GoogleEmbedding(EmbeddingProvider):
         if (od := self.config.extra.get("output_dimensionality")):
             payload["outputDimensionality"] = int(od)
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json=payload,
+                                     headers={"x-goog-api-key": self.config.api_key})
             resp.raise_for_status()
             return _require_vector(
                 resp.json().get("embedding", {}).get("values", []), self.label)

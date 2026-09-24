@@ -112,7 +112,7 @@ from agentb.providers import (
 
 
 class _FakeParamClient(_FakeClient):
-    """Also records query params (Google probes auth via ?key=)."""
+    """Also records query params (Google's key moved to a header in 4.25.3)."""
     last_params = None
     async def get(self, url, *a, headers=None, params=None, **k):
         _FakeParamClient.last_params = params
@@ -144,7 +144,8 @@ async def test_google_probe_is_real_and_fail_closed():
         assert await GoogleReasoning(cfg).health_check() is True
         assert await GoogleEmbedding(cfg).health_check() is True
     assert _FakeParamClient.last_url.endswith("/models")
-    assert _FakeParamClient.last_params["key"] == "AIza-test"
+    assert "key" not in _FakeParamClient.last_params          # never in the URL
+    assert _FakeParamClient.last_headers["x-goog-api-key"] == "AIza-test"
     with patch("agentb.providers.httpx.AsyncClient", return_value=_FakeParamClient(400)):
         assert await _google_auth_ok(cfg) is False
     assert await _google_auth_ok(
@@ -169,3 +170,46 @@ async def test_huggingface_probe_hosted_and_self_hosted():
     # No key, no api_base → fail closed, not "True because hosted is free"
     bare = HuggingFaceEmbedding(ProviderConfig(provider="huggingface", model="x"))
     assert await bare.health_check() is False
+
+
+# ── v4.25.3: inspection #3 — the Google key never rides in the URL ──
+
+@pytest.mark.asyncio
+async def test_inspection_3_google_key_not_in_url_or_error_text(caplog):
+    """Before 4.25.3 the key was ?key=… on the URL: httpx logs every request
+    URL at INFO, and HTTPStatusError text carries the URL into every
+    log.warning(f"...{e}") on the failure paths. Real httpx client, mock
+    transport: a 200 call and a 429 call, both key-free in URL, logs and
+    exception text."""
+    import logging
+    import httpx
+    secret = "AIzaSyINSPECTION3testkey0000000000000"
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith(":generateContent") and len(seen) > 1:
+            return httpx.Response(429, request=request)
+        if request.url.path.endswith(":embedContent"):
+            return httpx.Response(200, json={"embedding": {"values": [0.1, 0.2]}})
+        return httpx.Response(200, json={"candidates": [
+            {"content": {"parts": [{"text": "ok"}]}}]})
+
+    real = httpx.AsyncClient
+    def client(*a, **k):
+        k["transport"] = httpx.MockTransport(handler)
+        return real(*a, **k)
+
+    cfg = ProviderConfig(provider="google", model="gemini", api_key=secret)
+    caplog.set_level(logging.INFO)
+    with patch("agentb.providers.httpx.AsyncClient", side_effect=client):
+        assert await GoogleReasoning(cfg).generate("hi") == "ok"
+        with pytest.raises(httpx.HTTPStatusError) as err:
+            await GoogleReasoning(cfg).generate("hi")
+        await GoogleEmbedding(cfg).embed("hi")
+    assert secret not in str(err.value)
+    assert secret not in caplog.text
+    assert len(seen) == 3
+    for req in seen:
+        assert secret not in str(req.url)
+        assert req.headers["x-goog-api-key"] == secret

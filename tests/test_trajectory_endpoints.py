@@ -132,3 +132,27 @@ def test_recall_empty_is_clean(client):
     r = client.post("/trajectory/recall", json={"agent_id": "cc", "query": "nothing here"})
     assert r.status_code == 200
     assert r.json() == {"trajectories": [], "total_found": 0, "agent_id": "cc"}
+
+
+def test_inspection_4_trajectory_save_redacts(client, tmp_path):
+    """/trajectory/save was the one write door with no redaction: secrets in
+    the description, step args, outcome or evidence_source were embedded and
+    stored verbatim (code-inspection-2026-09-24-cc3.md #4)."""
+    key = "sk-ant-api03-" + "Q" * 40
+    pw = "Zx9qR4tLm2Vb7Kp1Wd"
+    r = client.post("/trajectory/save", json={
+        "agent_id": "cc", "task_type": "deploy",
+        "task_description": f"rotate {key}",
+        "steps": [{"action": "curl", "tool_used": "bash",
+                   "args": {"headers": {"Authorization": f"Bearer {key}"},
+                            "password": pw}}],
+        "outcome": f"worked with {key}", "rating": 5,
+        "evidence_source": f"tool:{key}",
+    })
+    assert r.status_code == 200, r.text
+    on_disk = b"".join(p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
+    assert key.encode() not in on_disk and pw.encode() not in on_disk
+    assert b"[REDACTED:" in on_disk
+    got = client.post("/trajectory/recall", json={"agent_id": "cc", "query": "rotate"}).json()
+    assert key not in str(got) and pw not in str(got)
+    assert got["trajectories"][0]["steps"][0]["action"] == "curl"   # recipe intact

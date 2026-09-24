@@ -185,3 +185,58 @@ def test_ingest_redacts_prompt_response_metadata(client, tmp_path):
     content = hot[0].read_text()
     assert key not in content
     assert "[REDACTED:anthropic]" in content
+
+
+# ── v4.25.3: inspection #1 / #2 (code-inspection-2026-09-24-cc3.md) ──
+
+def test_inspection_1_json_key_credential_redacted():
+    """A credential NAME as a JSON key with its secret as the value: redact_obj
+    walked key and value as separate strings, and the name-then-[=:] patterns
+    never matched raw JSON (the closing quote sits before the colon)."""
+    secret = "Zx9qR4tLm2Vb7Kp1Wd"
+    obj = {"password": secret, "GITHUB_TOKEN": secret, "apiKey": "short",
+           "SHOPIFY_KEY": secret, "secret_key": secret,
+           "nested": [{"client_secret": secret, "Authorization": "Basic " + secret}]}
+    clean, counts = redact_obj(obj)
+    assert secret not in json.dumps(clean)
+    assert "short" not in json.dumps(clean)
+    assert counts == {"credential-field": 7}
+    # Ordinary fields that merely contain the words stay untouched.
+    keep = {"max_tokens": 1500, "tokenizer": "cl100k", "author": "guy",
+            "password_hint": "the dog", "flag_token": True, "api_key": "",
+            # ordinary code names: *_key is redacted only in UPPERCASE form
+            "sort_key": "created_at", "primary_key": "id", "public_key": "ssh-ed25519 AAAA"}
+    assert redact_obj(keep) == (keep, {})
+
+    for raw in ('{"password": "%s"}' % secret, '{"password":"pass"}',
+                '{"x-api-key": "%s", "n": 1}' % secret):
+        out, found = redact_text(raw)
+        assert found == {"credential-field": 1}, raw
+        assert json.loads(out)  # still valid JSON — only the value went
+        assert secret not in out and '"pass"' not in out
+    # Control: the name=value form still redacts as before, and it is idempotent.
+    assert redact_text("password=" + secret) == (
+        "password=[REDACTED:generic-assignment]", {"generic-assignment": 1})
+    once, _ = redact_text('{"password": "%s"}' % secret)
+    assert redact_text(once) == (once, {})
+
+
+def test_inspection_2_partial_pem_redacted():
+    """A private key with no END line (head of a key file, a clipped
+    tool_result) was stored raw: the pattern needed BEGIN…END."""
+    body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW"
+    begin = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"   # split: push-guard
+    out, found = redact_text(begin + "\n" + body + "\n" + body[:20])
+    assert found == {"private-key": 1}
+    assert body[:20] not in out and "BEGIN" not in out
+    # Inside raw JSON (escaped newlines): the body goes, the JSON survives.
+    line = json.dumps({"tool_result": begin + "\n" + body, "n": 1})
+    out, found = redact_text(line)
+    assert found == {"private-key": 1}
+    assert json.loads(out) == {"tool_result": "[REDACTED:private-key]", "n": 1}
+    # Prose after an unterminated key survives; only key-shaped runs go.
+    out, _ = redact_text(begin + "\n" + body + "\nbmUAAAAE\n\nand then we asked about Tokyo.")
+    assert out == "[REDACTED:private-key]\n\nand then we asked about Tokyo."
+    # Control: a complete block still redacts to its END line only.
+    full = begin + "\n" + body + "\n-----END " + "OPENSSH PRIVATE KEY-----\nafter."
+    assert redact_text(full) == ("[REDACTED:private-key]\nafter.", {"private-key": 1})
