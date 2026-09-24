@@ -62,7 +62,7 @@ SCHEMA_VERSION = 1
 # through (TranscriptArchive.reprocess_all). 1 = 4.25.0 (values only);
 # 2 = 4.25.1 (keys, duplicate keys, raw-line backstop).
 # 3 = 4.25.2 (collision-safe keys, no text redaction over serialized JSON).
-REDACTION_VERSION = 3
+REDACTION_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

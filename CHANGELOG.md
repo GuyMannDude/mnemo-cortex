@@ -1,5 +1,15 @@
 # Changelog
 
+## v4.25.4 — Re-scrub archived transcripts under the v4.25.3 redactor (2026-09-24)
+
+**Problem.** v4.25.3 fixed the redactor (JSON-key credentials, partial PEM) but
+left `REDACTION_VERSION` at 3, so transcripts archived before it kept those
+secret shapes on disk.
+
+**Fix.** `REDACTION_VERSION` 3 → 4. The startup reprocess sweep re-runs every
+archived transcript whose manifest carries an older version through the current
+redactor. No other change.
+
 ## v4.25.3 — Security: the four HIGHs from the CC3 code inspection (2026-09-24)
 
 **Problem.** CC3's read-only inspection (`code-inspection-2026-09-24-cc3.md`,
