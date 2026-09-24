@@ -15,3 +15,14 @@ export function laneCandidates(agentId, laneOverride) {
   if (override) return [override.endsWith(".md") ? override : `${override}.md`];
   return [`${agentId}.md`, `${agentId}-session.md`];
 }
+
+// Session-id prefix. With MNEMO_LANE set, the lane's short name (the part
+// before the first "-" or ".") follows the tenant: cc3-igor.md on tenant cc
+// → "cc-cc3", so CC3's and CC2's sessions don't read as CC's. The tenant
+// stays first, so "<agent>-" prefix readers keep working. No override, or a
+// lane named after the tenant itself (cc-session.md) → just the tenant.
+// Server-side session ids must match [A-Za-z0-9_-]; the tag is kept to that.
+export function sessionPrefix(agentId, laneOverride) {
+  const tag = (laneOverride || "").trim().split(/[-.]/)[0].replace(/[^A-Za-z0-9_]/g, "");
+  return tag && tag !== agentId ? `${agentId}-${tag}` : agentId;
+}

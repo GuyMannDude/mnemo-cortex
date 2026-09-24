@@ -12,6 +12,35 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.32.0 — 2026-09-23 — session id carries the `MNEMO_LANE` tag
+
+**Problem.** A shared-tenant agent (`MNEMO_AGENT_ID=cc` +
+`MNEMO_LANE=cc3-igor.md`) booted as `Session ID: cc-2026-09-23-20-23-31`.
+Since 2.28.0 `MNEMO_LANE` picks the lane file, but nothing in the session
+id said which lane produced it. Only the `[CC3]` summary prefix, which is a
+convention and not a mechanism, told CC3's records apart from CC's. CC2 had
+the same gap (snag-mnemo-bridge-session-id-lacks-lane, found on CC3's
+first boot).
+
+**Fix.** With `MNEMO_LANE` set, the lane's short name (the part before its
+first `-` or `.`) goes after the tenant: `cc-cc3-2026-…`, `cc-cc2-…`,
+auto-capture `cc-cc3-auto-<ms>`. The tenant stays first. No `MNEMO_LANE`, or
+a lane named after the tenant itself (`cc-session.md`), gives the same ids
+as before. Every bridge mint site uses it: `agent_startup`, `mnemo_save`,
+`session_checkpoint`, `session_end`, and the auto-capture flush. The
+deprecated `opie_startup` keeps `opie-`. `agent_id` on every write is
+unchanged, because the tenant is still `cc`.
+
+**Census first.** These consumers read session ids, and all of them still
+work: the server's `[A-Za-z0-9_-]{1,128}` validator (the tag is stripped to
+that charset); `inferAgent()`, the recall display label (it now shows
+`cc-cc3`, which is the point); the dreamer's `-auto-` and `-jsonl-` markers
+(the auto-capture id keeps `-auto-`, and bridge ids never carried
+`-jsonl-`); the ledger and write-back dedup, which treat the id as opaque.
+Transcript archive ids are Claude UUIDs, not bridge ids. New
+`sessionPrefix()` in `lane-candidates.js`, with 5 cases in
+`lane-candidates.test.js` (4 → 9).
+
 ## 2.31.0 — 2026-09-23 — `write_brain_file` is compare-and-write
 
 **Problem.** `write_brain_file` was last-writer-wins. On 2026-09-22 two Opie

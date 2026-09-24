@@ -20,7 +20,7 @@ import {
 import { autoCommitBrainFile, sessionEndCommit, fastForwardBrain, lastCommitLine } from "./brain-git.js";
 import { recordSeen, isCurrent, staleWriteRefusal } from "./write-guard.js";
 import { refusesBrainWrite } from "./lane-guard.js";
-import { laneCandidates } from "./lane-candidates.js";
+import { laneCandidates, sessionPrefix } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
 import { summaryRefusal, appendCheckpointToLane } from "./checkpoint.js";
 import {
@@ -46,6 +46,9 @@ const AGENT_ID = process.env.MNEMO_AGENT_ID || "openclaw";
 // tenant but keeps its own lane (CC2 on IGOR-2: MNEMO_AGENT_ID=cc,
 // MNEMO_LANE=cc2-igor2.md). See lane-candidates.js.
 const LANE_CANDIDATES = laneCandidates(AGENT_ID, process.env.MNEMO_LANE);
+// Session ids start with this: the tenant, plus the lane tag when MNEMO_LANE
+// is set (cc + cc3-igor.md → "cc-cc3"). See lane-candidates.js.
+const SESSION_PREFIX = sessionPrefix(AGENT_ID, process.env.MNEMO_LANE);
 // MNEMO_AUTH_TOKEN: optional bearer token for the Mnemo Cortex API. Read from
 // env first, else from ~/.mnemo-auth-token (mode 0600) so the secret lives in
 // one file rather than every agent's MCP config. Sent as X-API-KEY on every
@@ -240,12 +243,13 @@ async function ensureHealth() {
 // ── Format memory chunks for display ───────────────────────────
 
 // The /context API doesn't surface agent_id in chunks today, but we
-// always write session IDs as `${AGENT_ID}-YYYY-MM-DD-HH-MM-SS`, so we
+// always write session IDs as `${SESSION_PREFIX}-YYYY-MM-DD-HH-MM-SS`, so we
 // can recover the agent from the `source` string. Mem0 chunks and
 // non-conforming sessions fall through and stay "?".
 function inferAgent(source) {
   if (!source) return null;
   // session:cc-2026-04-27-19-37-28  → "cc"
+  // session:cc-cc3-2026-09-23-20-23-31  → "cc-cc3" (tenant + MNEMO_LANE tag)
   // session:lmstudio-igor2-2026-04-27-...  → "lmstudio-igor2"
   const m = String(source).match(
     /^session:(.+?)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}/
@@ -477,7 +481,7 @@ async function flushBuffer() {
     .filter((e) => TOOL_CAPTURE[e.tool] === "full")
     .map((e) => e.summary.slice(0, 100));
 
-  const sid = sessionId || `${AGENT_ID}-auto-${Date.now()}`;
+  const sid = sessionId || `${SESSION_PREFIX}-auto-${Date.now()}`;
 
   try {
     await mnemoRequest("POST", "/writeback", {
@@ -856,7 +860,7 @@ server.registerTool(
       const sid =
         session_id ||
         sessionId ||
-        `${AGENT_ID}-${localTimestamp()}`;
+        `${SESSION_PREFIX}-${localTimestamp()}`;
 
       const body = {
         session_id: sid,
@@ -1226,10 +1230,10 @@ async function readBrainCapped(path, cap = STARTUP_FILE_CAP, label) {
   );
 }
 
-async function _runStartup({ effectiveAgentId, identityHeader, laneCandidates }) {
+async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, laneCandidates }) {
   beginBootAudit();
   sessionStartTime = new Date().toISOString();
-  sessionId = `${effectiveAgentId}-${localTimestamp()}`;
+  sessionId = `${sessionPrefix}-${localTimestamp()}`;
   toolCallCount = 0;
   sessionToolCalls = 0;
   captureBuffer.length = 0;
@@ -1523,6 +1527,7 @@ server.registerTool(
   },
   () => _runStartup({
     effectiveAgentId: AGENT_ID,
+    sessionPrefix: SESSION_PREFIX,
     laneCandidates: LANE_CANDIDATES,
     identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
       `# AGENT BOOT — ${AGENT_ID}
@@ -1556,6 +1561,7 @@ server.registerTool(
   },
   () => _runStartup({
     effectiveAgentId: "opie",
+    sessionPrefix: "opie",
     laneCandidates: ["opie.md"],
     identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
       `# OPIE STARTUP (deprecated alias — call \`agent_startup\` instead going forward)
@@ -1813,7 +1819,7 @@ server.registerTool(
     // No agent_startup this process → mint the session id HERE, once, so the
     // later checkpoints and session_end land under it ("same session_id").
     if (!sessionId) {
-      sessionId = `${AGENT_ID}-${localTimestamp()}`;
+      sessionId = `${SESSION_PREFIX}-${localTimestamp()}`;
       if (!sessionStartTime) sessionStartTime = new Date().toISOString();
     }
     const sid = sessionId;
@@ -1930,7 +1936,7 @@ server.registerTool(
     try {
       const sid =
         sessionId ||
-        `${AGENT_ID}-${localTimestamp()}`;
+        `${SESSION_PREFIX}-${localTimestamp()}`;
       const data = await writebackPastOwnCheckpoints({
         session_id: sid,
         summary: `[SESSION END] ${summary}`,
