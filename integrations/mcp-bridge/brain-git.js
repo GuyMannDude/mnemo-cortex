@@ -85,6 +85,39 @@ export function autoCommitBrainFile({ brainDir, filename, agentId, dateStr, mess
 }
 
 /**
+ * Bring the brain up to date before a compare-and-write, so a change
+ * pushed from the other machine is on disk when write-guard compares.
+ * Fast-forward only: never merges, never touches a dirty file. Best
+ * effort — returns a status string, never throws.
+ */
+export function fastForwardBrain(brainDir) {
+  try {
+    if (git(["rev-parse", "--is-inside-work-tree"], brainDir) !== "true")
+      return "not a git repo";
+  } catch {
+    return "not a git repo";
+  }
+  try {
+    const out = git(["pull", "--ff-only", "--quiet"], brainDir, { timeout: 15000 });
+    return out || "fast-forwarded";
+  } catch (err) {
+    return `pull --ff-only FAILED (${firstLine(err)})`;
+  }
+}
+
+/** One-line last commit for a brain file, for refusal context. Never throws. */
+export function lastCommitLine(brainDir, filename) {
+  try {
+    return git(
+      ["log", "-1", "--format=%h %an %ad %s", "--date=short", "--", filename],
+      brainDir
+    ) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * session_end's brain commit. Stages ONLY the ending agent's own files —
  * basename `<agent>.<ext>` or `<agent>-*` (lane, session archives,
  * archive index) — never the shared tree. The brain repo is shared by five

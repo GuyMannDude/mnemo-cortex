@@ -5,7 +5,7 @@ import { z } from "zod";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
 import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { execSync, execFileSync } from "node:child_process";
 import { DumpWriter } from "./dump.js";
 import { LatencyWriter } from "./latency.js";
@@ -17,7 +17,8 @@ import {
   getBootCuts,
   formatCutManifest,
 } from "./boot-budget.js";
-import { autoCommitBrainFile, sessionEndCommit } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, fastForwardBrain, lastCommitLine } from "./brain-git.js";
+import { recordSeen, isCurrent, staleWriteRefusal } from "./write-guard.js";
 import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
@@ -1213,6 +1214,9 @@ function recordBootCuts(agentId, cuts) {
 
 async function readBrainCapped(path, cap = STARTUP_FILE_CAP, label) {
   const content = await readFile(path, "utf-8");
+  // The FULL file is what this session has now seen (write-guard compares
+  // against the full disk copy, never the capped head).
+  recordSeen(basename(path), content);
   return capSection(
     content,
     cap,
@@ -1610,6 +1614,7 @@ server.registerTool(
     try {
       const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "");
       const content = await readFile(join(BRAIN_DIR, safe), "utf-8");
+      recordSeen(safe, content);
       return {
         content: [{ type: "text", text: content + (nudgeCheck() || "") }],
       };
@@ -1660,7 +1665,7 @@ server.registerTool(
 server.registerTool(
   "write_brain_file",
   {
-    description: "Write or update a file in the brain directory ($BRAIN_DIR). Use at session end to update your own lane file. Per the Lane Protocol convention, write only to your own lane (named after MNEMO_AGENT_ID, or the file MNEMO_LANE names), not other agents' lanes or shared docs.",
+    description: "Write or update a file in the brain directory ($BRAIN_DIR). Use at session end to update your own lane file. Per the Lane Protocol convention, write only to your own lane (named after MNEMO_AGENT_ID, or the file MNEMO_LANE names), not other agents' lanes or shared docs. Compare-and-write: an existing file is refused unless this session read it (agent_startup or read_brain_file) and it has not changed on disk since — on a refusal, re-read, merge your changes into the current text, and write again.",
     inputSchema: {
     filename: z
       .string()
@@ -1684,7 +1689,30 @@ server.registerTool(
           isError: true,
         };
       }
-      await writeFile(join(BRAIN_DIR, safe), content, "utf-8");
+      // Compare-and-write (snag-brain-file-clobber-concurrent-sessions):
+      // fast-forward first so the other machine's push is on disk, then
+      // refuse if this session never saw the file or it changed since.
+      const target = join(BRAIN_DIR, safe);
+      const sync = fastForwardBrain(BRAIN_DIR);
+      const onDisk = existsSync(target) ? await readFile(target, "utf-8") : null;
+      const refusal = staleWriteRefusal({
+        filename: safe,
+        onDisk,
+        lastCommit: onDisk === null ? null : lastCommitLine(BRAIN_DIR, safe),
+      });
+      if (refusal) {
+        const syncNote = sync.startsWith("pull --ff-only FAILED")
+          ? `\n(brain ${sync}; the disk copy may still be behind origin — resolve git by hand if the re-read looks stale)`
+          : "";
+        return { content: [{ type: "text", text: refusal + syncNote }], isError: true };
+      }
+      await writeFile(target, content, "utf-8");
+      recordSeen(safe, content);
+      // A failed fast-forward means the guard compared against the local
+      // copy only; say so even on success (a diverged branch fails every time).
+      const syncWarning = sync.startsWith("pull --ff-only FAILED")
+        ? `\n⚠️ brain ${sync}: stale-write check used the local copy only; origin may differ.`
+        : "";
       // Commit + push immediately so the write is visible fleet-wide even
       // if this session never reaches session_end (stranded-lane fix).
       const gitStatus = autoCommitBrainFile({
@@ -1715,6 +1743,7 @@ server.registerTool(
             type: "text",
             text:
               `Wrote ${safe} (${content.length} bytes); git: ${gitStatus}` +
+              syncWarning +
               (warning ? `\n\n${warning}` : ""),
           },
         ],
@@ -1834,6 +1863,12 @@ server.registerTool(
           agentId: AGENT_ID,
           dateStr: localDateOnly(),
         });
+        // The append changed the lane under this session's own feet: re-record
+        // it or the session-end write_brain_file gets refused. ONLY when the
+        // pre-append copy was what this session saw — if another writer got
+        // there first, keep the stale hash so the later write is refused and
+        // the agent re-reads (review finding, 2.31.0).
+        if (lane.lane && isCurrent(lane.lane, lane.before)) recordSeen(lane.lane, lane.after);
         results.push(
           lane.lane
             ? `Lane: appended '## CHECKPOINT ${ts}' to ${lane.lane}; git: ${lane.git}; lane-check ${lane.lane_check} (${lane.status})`

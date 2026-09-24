@@ -12,6 +12,30 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.31.0 — 2026-09-23 — `write_brain_file` is compare-and-write
+
+**Problem.** `write_brain_file` was last-writer-wins. On 2026-09-22 two Opie
+sessions (IGOR Cowork, IGOR-2) each read `guy-genealogy.md`, added facts,
+and rewrote the whole file; the second write dropped the first one's
+sections (`83d032f`). A "re-read before write" rule at the top of the file
+is jazz; the muscle belongs on the action
+(snag-brain-file-clobber-concurrent-sessions).
+
+**Fix.** The bridge remembers a SHA-256 of every brain file THIS session
+has seen — boot loads in `agent_startup`, `read_brain_file`, its own
+writes, and the lane after a `session_checkpoint` append — that last one
+only when the pre-append copy was what the session saw, so a foreign change
+followed by a checkpoint still refuses the session-end write (review
+finding). A write to an
+existing file is refused when the session never saw the file, or when the
+disk copy no longer hashes to what it saw. Before comparing, the bridge
+runs `git pull --ff-only` on the brain so the other machine's push is on
+disk; a failed fast-forward is reported in the refusal, never fatal. The
+refusal names the file's last commit and tells the agent to re-read,
+merge into the current text, and write again. New files pass. Nothing
+about the write path after the check changed (auto-commit + push, budget
+warning). New module `write-guard.js` + `write-guard.test.js`.
+
 ## 2.25.0 — 2026-09-05 — `mnemo_recall` mode gains `recent` (the boot lens)
 
 **Problem.** Mnemo 4.18.4 added a third recall lens, `recent`: the pool is

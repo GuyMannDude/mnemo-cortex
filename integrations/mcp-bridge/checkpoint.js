@@ -93,7 +93,8 @@ export function appendCheckpointToLane({ brainDir, ownedLanes, line, ts, agentId
     };
   }
   const path = join(brainDir, lane);
-  const after = appendBlock(readFileSync(path, "utf-8"), checkpointBlock(ts, line));
+  const before = readFileSync(path, "utf-8");
+  const after = appendBlock(before, checkpointBlock(ts, line));
   writeFileSync(path, after, "utf-8");
   const git = autoCommitBrainFile({
     brainDir,
@@ -104,5 +105,6 @@ export function appendCheckpointToLane({ brainDir, ownedLanes, line, ts, agentId
   });
   const committed = git.startsWith("auto-committed") || git.startsWith("committed locally");
   const verdict = laneVerdict({ filename: lane, content: after, ownedLanes });
-  return { lane, git, commit_sha: committed ? headSha(brainDir) : null, ...verdict };
+  // before/after let write_brain_file's guard judge the append without a re-read.
+  return { lane, git, commit_sha: committed ? headSha(brainDir) : null, before, after, ...verdict };
 }
