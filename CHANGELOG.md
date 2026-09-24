@@ -1,5 +1,84 @@
 # Changelog
 
+## v4.26.0 — Proposal envelope: one home for machine proposals, and the Jev shadow as its first writer (2026-09-24)
+
+**Problem.** Machine writers had different shapes and only one of them had a
+review path. The locked-fact proposals (v4.23) held a string of evidence; the
+planned Jev live-path shadow would have added a second machine opinion
+(`jev_category`) to the memory JSON with no review path at all. Spec:
+`brain/spec-blend-build1-proposal-envelope.md` (v1, Opie-approved #3823);
+why: `spec-fleet-memory-blend-v0.md` §3.3.
+
+**Fix.**
+- **One table, widened in place.** `fact_proposals` gains `target_kind`
+  (`fact` | `memory_category` | `memory_note`), `target_ref`,
+  `evidence_quotes` (JSON list, each quote passed through `redact_text`),
+  `confidence_score` (0–1) and `source_run`, through the existing idempotent
+  `_NEW_COLUMNS` ALTER path; plus `idx_proposals_target`. Old rows read as
+  `fact` with no quotes. `entity`/`attribute` stay NOT NULL: a memory proposal
+  writes the sentinel `entity='memory:<tenant>/<id>'` (facts.sqlite is global,
+  memory ids are per tenant), `attribute='category'|'note'`.
+- **`FactsStore.propose_memory`** refuses an unknown kind, no quotes, a quote
+  over 500 chars, a confidence outside 0–1, a category that is not one, or a
+  memory not on disk for the tenant. An identical pending proposal bumps
+  `seen_count`; one rejected within 30 days is held (`held_by_rejection`, no
+  row), so a nightly machine opinion is not refiled after Guy said no.
+- **Routes.** `POST /proposals` (memory kinds), `GET /proposals?kind=&status=`
+  (with `pending_by_kind`), `POST /proposals/{id}/resolve` (every kind),
+  `GET /proposals/jev-stats?days=`. `GET /facts/proposals` is now
+  `GET /proposals?kind=fact`; `POST /facts/proposals/{id}/resolve` is kept and
+  resolves every kind. **Master token only:** no `/proposals` route is in
+  `SCOPABLE_ENDPOINTS` — facts.sqlite is global, and a scoped GET would show
+  Guy's locked facts (the same reason `/facts` is not scopable).
+- **Resolution.** `fact` keeps its exact semantics. Accepting a
+  `memory_category` proposal is an append-only amendment: `category_original`
+  is written the first time only, `category` moves through the atomic writer,
+  `needs_reclassification` is cleared and `classified_by='proposal:#N'` so the
+  nightly reclassify pass never overwrites Guy's word, and `fact_history` gets
+  a `memory:<tenant>/<id>` row. If the proposal cannot close after the file
+  moved, the file is put back (file and proposal never disagree). After the
+  commit the vec index `category` column follows (recall pre-filter, #468) —
+  on the event loop, beside every other write to that one connection. Category is a filing field (outside
+  `SEALED_FIELDS`), so no re-seal: `ledger verify` stays intact. Accept is
+  manual only. `memory_note` lists but cannot be accepted yet.
+- **Jev live-path shadow** (`agentb/jev_live.py`). Off unless
+  `MNEMO_JEV_KEY_FILE` names a readable key (read once at startup; header only;
+  never logged, never in a URL, never in a repr). After a writeback commits, a
+  background task asks Jev for the category and files a `memory_category`
+  proposal only on disagreement; the stored category never changes. Only
+  tenants in `MNEMO_JEV_TENANTS` (default `cc`) are sent. `redact_text` runs on
+  the outbound payload. At most 8 calls in flight; overflow is dropped and
+  counted, never queued. A 5 s total deadline (`asyncio.wait_for`, since httpx
+  timeouts are per network operation). `session_log` and regex-placeholder
+  categories are skipped. Counters per UTC day × tenant × stored category ×
+  0.1 confidence band: `eligible, dropped, attempted, ok, timeout, error,
+  agree, disagree` (table `jev_shadow_stats`, counters only, no text). Every
+  call ends in exactly one terminal counter: a malformed answer, an unexpected
+  exception or a crash between counter writes is an `error`, never a silent
+  dead task; a lost proposal row is logged as LOST; held drop counts survive a
+  failed write. A day is RED when writebacks qualified but no call was made,
+  or when error+timeout exceed 20 % of calls. A key file that is named but
+  does not load reads RED, not OFF.
+- **Dream brief.** The proposals block reads `GET /proposals` — locked-fact
+  rows first, with the whole ten-row cap, so nightly Jev rows cannot crowd
+  them out — groups by kind, and its count line reads `Pending proposals: N fact · M category` (it
+  replaces the old "to locked facts" line). One `jev shadow` line sits second
+  in the block (the boot composer trims from the bottom); `OFF` when no key.
+- **Stick.** `memory:` audit rows stay on their host (`dump_history` skips
+  them): a memory's history belongs to its tenant.
+- **Bridge 2.33.0:** `mnemo_fact_proposals` gains `kind` (default `fact`, same
+  route and same text as 2.32.0) and shows quotes and score for memory kinds.
+
+**Known gap (not fixed here).** The redactor's generic `key=value` pattern
+needs a value of 16+ characters, so a short secret such as a 6-character
+`password=` value passes unredacted — into storage and, with the shadow on,
+out to TypeSafe. Tracked as `snag-redactor-short-kv-secret-passes.md` (batch
+2, leftover #4); it needs its own REDACTION_VERSION bump. The acceptance tests
+use an 18-character secret and prove the wiring, not the threshold.
+
+**Not in this build:** dreamer/analyst rerouting, auto-accept at any
+confidence, echo-guard on facts (#7), the cronalarm-report line.
+
 ## v4.25.4 — Re-scrub archived transcripts under the v4.25.3 redactor (2026-09-24)
 
 **Problem.** v4.25.3 fixed the redactor (JSON-key credentials, partial PEM) but

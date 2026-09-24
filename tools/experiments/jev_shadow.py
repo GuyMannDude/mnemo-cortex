@@ -19,6 +19,9 @@ and whether Jev's confidence separates its agreements from its disagreements
 (the calibration question). Disagreements are the rows worth a human look.
 
 Key: TYPESAFE_API_KEY in the environment, or --key-file <path>. Never printed.
+
+The LIVE server copy of build_request/parse_response is agentb/jev_live.py
+(4.26.0) — edit that one for the server; this file is the offline spike.
 """
 from __future__ import annotations
 

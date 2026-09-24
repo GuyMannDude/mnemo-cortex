@@ -14,14 +14,20 @@ confidence cannot silently overwrite higher.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import sqlite3
 import time
 
+from agentb.provenance import VALID_CATEGORIES
+from agentb.redact import redact_text
 from agentb.vec import prompt_words   # one tokeniser, both lanes (4.24.0)
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 CONFIDENCE_LEVELS = ("false", "high_probability", "verified")
 _CONFIDENCE_RANK = {c: i for i, c in enumerate(CONFIDENCE_LEVELS)}
@@ -40,6 +46,34 @@ _AUTHORITY_EVIDENCE = {
 }
 # Locking or unlocking a slot is itself a declared act.
 _AUTHORITY_CHANGE_EVIDENCE = ("statement:guy",)
+
+
+# 4.26.0 proposal envelope. A memory-kind proposal keys on a sentinel so the
+# NOT NULL entity/attribute columns stay honest: entity='memory:<tenant>/<id>'
+# (facts.sqlite is global, memory ids are per tenant), attribute='category'
+# or 'note'. Nothing but a proposal row or its fact_history row ever carries
+# the sentinel — the facts table never does.
+MEMORY_KINDS = {"memory_category": "category", "memory_note": "note"}
+PROPOSAL_KINDS = ("fact",) + tuple(MEMORY_KINDS)
+MEMORY_ENTITY_PREFIX = "memory:"
+MAX_QUOTE_CHARS = 500
+# A rejected memory-kind proposal holds identical re-proposals this long, so
+# a nightly machine opinion is not refiled every night after Guy said no.
+REJECTED_HOLD_SECONDS = 30 * 86400
+
+
+def memory_target_ref(tenant: str, memory_id: str) -> str:
+    return f"{MEMORY_ENTITY_PREFIX}{tenant}/{memory_id}"
+
+
+def parse_memory_target_ref(ref: str) -> tuple[str, str]:
+    """'memory:<tenant>/<id>' -> (tenant, id). Raises ValueError."""
+    if not ref.startswith(MEMORY_ENTITY_PREFIX) or "/" not in ref:
+        raise ValueError(f"not a memory target: {ref!r}")
+    tenant, _, memory_id = ref[len(MEMORY_ENTITY_PREFIX):].partition("/")
+    if not tenant or not memory_id:
+        raise ValueError(f"not a memory target: {ref!r}")
+    return tenant, memory_id
 
 
 def evidence_allowed(authority: str, evidence_source: str) -> bool:
@@ -134,6 +168,25 @@ class FactsStore:
         resolution_reason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_proposals_status ON fact_proposals(status);
+
+    -- 4.26.0: the Jev live-path shadow's counters. Counters only — no rows
+    -- per memory, no text. bucket is the 0.1-wide Jev confidence band for
+    -- ok/agree/disagree and '-' for counts taken before Jev answered.
+    CREATE TABLE IF NOT EXISTS jev_shadow_stats (
+        day             TEXT NOT NULL,
+        tenant          TEXT NOT NULL,
+        stored_category TEXT NOT NULL,
+        bucket          TEXT NOT NULL,
+        eligible        INTEGER NOT NULL DEFAULT 0,
+        dropped         INTEGER NOT NULL DEFAULT 0,
+        attempted       INTEGER NOT NULL DEFAULT 0,
+        ok              INTEGER NOT NULL DEFAULT 0,
+        timeout         INTEGER NOT NULL DEFAULT 0,
+        error           INTEGER NOT NULL DEFAULT 0,
+        agree           INTEGER NOT NULL DEFAULT 0,
+        disagree        INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, tenant, stored_category, bucket)
+    );
     """
 
     # v4.23: stores older than the authority columns get them on first open.
@@ -151,6 +204,13 @@ class FactsStore:
         "fact_proposals": (
             ("seen_count", "INTEGER NOT NULL DEFAULT 1"),
             ("last_seen", "REAL"),
+            # 4.26.0 proposal envelope: one table for every machine proposal.
+            # Existing rows read as target_kind='fact' with no quotes.
+            ("target_kind", "TEXT NOT NULL DEFAULT 'fact'"),
+            ("target_ref", "TEXT"),
+            ("evidence_quotes", "TEXT NOT NULL DEFAULT '[]'"),
+            ("confidence_score", "REAL"),
+            ("source_run", "TEXT"),
         ),
     }
 
@@ -160,6 +220,10 @@ class FactsStore:
             for name, decl in columns:
                 if name not in have:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        # 4.26.0: the index names envelope columns, so it can only be built
+        # after the ALTERs — never in SCHEMA, which runs first on old stores.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_proposals_target "
+                     "ON fact_proposals(target_kind, target_ref, status)")
 
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
@@ -295,8 +359,11 @@ class FactsStore:
         seen_count (the dreamer re-extracts the same sentence nightly; thirty
         rows a month would bury the brief's ten-row block). Only a NEW
         proposal gets a fact_history row — a repeat is not a new event."""
+        # 4.26.0 envelope: the evidence string is the row's one quote
+        quotes = json.dumps([redact_text(evidence_source)[0][:MAX_QUOTE_CHARS]])
         dup = conn.execute(
-            "SELECT id, seen_count FROM fact_proposals WHERE entity=? AND attribute=? "
+            "SELECT id, seen_count FROM fact_proposals WHERE target_kind='fact' "
+            "AND entity=? AND attribute=? "
             "AND proposed_value=? AND confidence=? AND status='pending'",
             (e, a, value, confidence),
         ).fetchone()
@@ -306,15 +373,18 @@ class FactsStore:
             # how many there were (review round 2, #4)
             conn.execute(
                 "UPDATE fact_proposals SET seen_count=?, last_seen=?, current_value=?, "
-                "evidence_source=?, source_agent=? WHERE id=?",
-                (seen, now, existing["value"], evidence_source, source_agent, dup["id"]),
+                "evidence_source=?, source_agent=?, evidence_quotes=?, source_run=? WHERE id=?",
+                (seen, now, existing["value"], evidence_source, source_agent, quotes,
+                 source_agent, dup["id"]),
             )
             return int(dup["id"]), seen
         cur = conn.execute(
             "INSERT INTO fact_proposals (entity, attribute, proposed_value, confidence, "
-            "evidence_source, source_agent, authority, current_value, created_at, last_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (e, a, value, confidence, evidence_source, source_agent, authority, existing["value"], now, now),
+            "evidence_source, source_agent, authority, current_value, created_at, last_seen, "
+            "target_kind, evidence_quotes, source_run) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fact', ?, ?)",
+            (e, a, value, confidence, evidence_source, source_agent, authority, existing["value"],
+             now, now, quotes, source_agent),
         )
         pid = int(cur.lastrowid)
         conn.execute(
@@ -649,29 +719,180 @@ class FactsStore:
         finally:
             conn.close()
 
-    def proposals(self, status: Optional[str] = "pending", limit: int = 50) -> list[dict]:
-        """Proposals against locked slots, newest first. status=None → all."""
+    def proposals(self, status: Optional[str] = "pending", limit: int = 50,
+                  kind: Optional[str] = None) -> list[dict]:
+        """Proposals, newest first. status=None → all; kind=None → every
+        kind (4.26.0). evidence_quotes comes back decoded, as a list."""
         limit = max(1, min(int(limit), 500))
+        if kind is not None and kind not in PROPOSAL_KINDS:
+            raise ValueError(f"kind must be one of {PROPOSAL_KINDS}")
+        clauses, params = [], []
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        if kind:
+            clauses.append("target_kind=?")
+            params.append(kind)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         conn = self._connect()
         try:
-            if status:
-                rows = conn.execute(
-                    "SELECT * FROM fact_proposals WHERE status=? ORDER BY created_at DESC LIMIT ?",
-                    (status, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM fact_proposals ORDER BY created_at DESC LIMIT ?", (limit,)
-                ).fetchall()
-            return [dict(r) for r in rows]
+            rows = conn.execute(
+                f"SELECT * FROM fact_proposals {where} ORDER BY created_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["evidence_quotes"] = json.loads(d.get("evidence_quotes") or "[]")
+            except ValueError:
+                d["evidence_quotes"] = []
+            out.append(d)
+        return out
+
+    def proposal(self, proposal_id: int) -> Optional[dict]:
+        """One proposal row by id, or None."""
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM fact_proposals WHERE id=?",
+                               (int(proposal_id),)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def pending_counts(self) -> dict[str, int]:
+        """{kind: pending count} for every kind, zeros included."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT target_kind, COUNT(*) AS n FROM fact_proposals "
+                "WHERE status='pending' GROUP BY target_kind").fetchall()
+        finally:
+            conn.close()
+        counts = {k: 0 for k in PROPOSAL_KINDS}
+        counts.update({r["target_kind"]: int(r["n"]) for r in rows})
+        return counts
+
+    # ── 4.26.0 proposal envelope: machine opinions about a memory ─────────
+
+    def propose_memory(
+        self,
+        target_kind: str,
+        tenant: str,
+        memory_id: str,
+        memory_dir: Path,
+        proposed_value: str,
+        evidence_quotes: list,
+        confidence_score: float,
+        source_run: str,
+        source_agent: Optional[str] = None,
+        current_value: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """Record a machine proposal about one memory. Never touches the
+        memory. Returns (proposal_id, seen_count):
+
+        - a new row → (id, 1)
+        - an identical PENDING proposal → that row, seen_count bumped
+        - an identical proposal REJECTED within 30 days → (rejected_id, 0):
+          held by the rejection, nothing written
+
+        Refuses (ValueError) an unknown kind, no quotes, a quote over 500
+        chars, a confidence outside 0-1, a category that is not one, or a
+        memory that is not on disk in `memory_dir` for this tenant. Quotes
+        (and a note's value) pass through redact_text before storage."""
+        if target_kind not in MEMORY_KINDS:
+            raise ValueError(f"target_kind must be one of {tuple(MEMORY_KINDS)}")
+        if not isinstance(evidence_quotes, list) or not evidence_quotes:
+            raise ValueError("evidence_quotes needs at least one quote")
+        for q in evidence_quotes:
+            if not isinstance(q, str) or not q.strip():
+                raise ValueError("every evidence quote must be non-empty text")
+            if len(q) > MAX_QUOTE_CHARS:
+                raise ValueError(f"evidence quote over {MAX_QUOTE_CHARS} chars")
+        try:
+            score = float(confidence_score)
+        except (TypeError, ValueError):
+            raise ValueError("confidence_score must be a number 0-1") from None
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("confidence_score must be between 0 and 1")
+        if not (source_run or "").strip():
+            raise ValueError("source_run is required")
+        value = (proposed_value or "").strip()
+        if target_kind == "memory_category":
+            if value not in VALID_CATEGORIES:
+                raise ValueError(f"proposed category {value!r} is not a category")
+        else:
+            if not value:
+                raise ValueError("proposed_value is required")
+            value = redact_text(value)[0]
+        if not (Path(memory_dir) / f"{memory_id}.json").is_file():
+            raise ValueError(f"no memory {memory_id} for tenant {tenant}")
+
+        ref = memory_target_ref(tenant, memory_id)
+        attribute = MEMORY_KINDS[target_kind]
+        quotes = json.dumps([redact_text(q)[0] for q in evidence_quotes])
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            dup = conn.execute(
+                "SELECT id, status, seen_count FROM fact_proposals WHERE target_kind=? "
+                "AND target_ref=? AND proposed_value=? AND (status='pending' OR "
+                "(status='rejected' AND resolved_at >= ?)) "
+                "ORDER BY status='pending' DESC, id DESC LIMIT 1",
+                (target_kind, ref, value, now - REJECTED_HOLD_SECONDS),
+            ).fetchone()
+            if dup is not None and dup["status"] == "rejected":
+                conn.rollback()
+                return int(dup["id"]), 0
+            if dup is not None:
+                seen = int(dup["seen_count"]) + 1
+                conn.execute(
+                    "UPDATE fact_proposals SET seen_count=?, last_seen=?, current_value=?, "
+                    "evidence_quotes=?, confidence_score=?, source_run=?, evidence_source=?, "
+                    "source_agent=? WHERE id=?",
+                    (seen, now, current_value, quotes, score, source_run, source_run,
+                     source_agent, dup["id"]),
+                )
+                conn.commit()
+                return int(dup["id"]), seen
+            cur = conn.execute(
+                "INSERT INTO fact_proposals (entity, attribute, proposed_value, confidence, "
+                "evidence_source, source_agent, authority, current_value, created_at, last_seen, "
+                "target_kind, target_ref, evidence_quotes, confidence_score, source_run) "
+                "VALUES (?, ?, ?, 'n/a', ?, ?, 'n/a', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ref, attribute, value, source_run, source_agent, current_value, now, now,
+                 target_kind, ref, quotes, score, source_run),
+            )
+            pid = int(cur.lastrowid or 0)
+            conn.execute(
+                "INSERT INTO fact_history (entity, attribute, old_value, new_value, "
+                "old_confidence, new_confidence, reason, changed_at, changed_by) "
+                "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)",
+                (ref, attribute, current_value, value,
+                 f"{target_kind} proposal #{pid} by {source_run}", now, source_agent),
+            )
+            conn.commit()
+            return pid, 1
         finally:
             conn.close()
 
-    def resolve_proposal(self, proposal_id: int, action: str, by: str, reason: str = "") -> FactWriteResult:
+    def resolve_proposal(self, proposal_id: int, action: str, by: str, reason: str = "",
+                         apply_memory=None) -> FactWriteResult:
         """Accept or reject a proposal. Accepting is Guy's word relayed by
         `by`: the proposed value lands as verified with `statement:guy`
         evidence naming the proposal — the one route past a lock. Rejecting
-        only closes it; the slot is untouched."""
+        only closes it; the slot is untouched.
+
+        4.26.0: a memory-kind proposal needs `apply_memory(tenant, memory_id,
+        new_value, proposal_id) -> (old_value, undo)` from the caller (the
+        server owns the memory files and the atomic writer). It runs inside
+        this transaction: a failed apply raises and the proposal stays
+        pending; if the proposal's own write fails after a successful apply,
+        `undo()` puts the memory back before the error propagates. Only
+        memory_category can be accepted yet."""
         if action not in ("accept", "reject"):
             raise ValueError("action must be 'accept' or 'reject'")
         if not (by or "").strip():
@@ -687,6 +908,8 @@ class FactsStore:
             if p["status"] != "pending":
                 conn.rollback()
                 return FactWriteResult(written=False, was_contradiction=False, reason=f"already {p['status']}")
+            if (p["target_kind"] or "fact") != "fact":
+                return self._resolve_memory(conn, p, action, by, reason, now, apply_memory)
             e, a = p["entity"], p["attribute"]
             existing = conn.execute(
                 "SELECT * FROM facts WHERE entity=? AND attribute=?", (e, a)
@@ -742,6 +965,100 @@ class FactsStore:
             )
         finally:
             conn.close()
+
+    def _resolve_memory(self, conn: sqlite3.Connection, p: sqlite3.Row, action: str,
+                        by: str, reason: str, now: float, apply_memory) -> FactWriteResult:
+        """The memory-kind half of resolve_proposal; conn holds BEGIN IMMEDIATE."""
+        kind, ref, attr = p["target_kind"], p["target_ref"], p["attribute"]
+        if action == "accept" and kind != "memory_category":
+            conn.rollback()
+            return FactWriteResult(written=False, was_contradiction=False,
+                                   reason="kind not promotable yet", proposal_id=p["id"])
+        if action == "reject":
+            old_value = p["current_value"]
+            status, note = "rejected", "rejected"
+        else:
+            if apply_memory is None:
+                conn.rollback()
+                raise ValueError("a memory proposal needs apply_memory to be accepted")
+            tenant, memory_id = parse_memory_target_ref(ref)
+            # a failed apply rolls back and raises: the proposal stays pending
+            try:
+                old_value, undo = apply_memory(tenant, memory_id, p["proposed_value"], int(p["id"]))
+            except Exception:
+                conn.rollback()
+                raise
+            status, note = "accepted", "accepted"
+        try:
+            conn.execute(
+                "UPDATE fact_proposals SET status=?, resolved_at=?, resolved_by=?, resolution_reason=? WHERE id=?",
+                (status, now, by, reason, p["id"]),
+            )
+            conn.execute(
+                "INSERT INTO fact_history (entity, attribute, old_value, new_value, "
+                "old_confidence, new_confidence, reason, changed_at, changed_by) "
+                "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)",
+                (ref, attr, old_value,
+                 p["proposed_value"] if action == "accept" else old_value,
+                 f"{kind} proposal #{p['id']} {note} by {by}: {reason}", now, by),
+            )
+            conn.commit()
+        except Exception:
+            # the memory moved but the proposal did not close: put it back,
+            # so file and proposal never disagree
+            conn.rollback()
+            if action == "accept":
+                try:
+                    undo()
+                except Exception as undo_exc:
+                    log.error(f"Proposal #{p['id']}: close failed AND undo failed "
+                              f"({type(undo_exc).__name__}) — {ref} holds the NEW "
+                              f"category while the proposal stays pending")
+            raise
+        return FactWriteResult(
+            written=action == "accept",
+            was_contradiction=action == "accept" and old_value != p["proposed_value"],
+            previous_value=old_value, reason=f"proposal #{p['id']} {note}",
+            proposal_id=p["id"], authority="n/a",
+        )
+
+    # ── 4.26.0 Jev shadow counters ────────────────────────────────────────
+
+    JEV_COUNTERS = ("eligible", "dropped", "attempted", "ok", "timeout",
+                    "error", "agree", "disagree")
+
+    def jev_bump(self, day: str, tenant: str, stored_category: str,
+                 bucket: str = "-", **counts: int) -> None:
+        """Add to one counter cell. Unknown counter names raise."""
+        bad = set(counts) - set(self.JEV_COUNTERS)
+        if bad:
+            raise ValueError(f"unknown jev counter(s): {sorted(bad)}")
+        if not counts:
+            return
+        cols = sorted(counts)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"INSERT INTO jev_shadow_stats (day, tenant, stored_category, bucket, "
+                f"{', '.join(cols)}) VALUES (?, ?, ?, ?, {', '.join('?' * len(cols))}) "
+                f"ON CONFLICT(day, tenant, stored_category, bucket) DO UPDATE SET "
+                + ", ".join(f"{c}={c}+excluded.{c}" for c in cols),
+                (day, tenant, stored_category, bucket, *(int(counts[c]) for c in cols)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def jev_stats(self, since_day: str) -> list[dict]:
+        """Every counter cell on or after `since_day` (YYYY-MM-DD)."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM jev_shadow_stats WHERE day >= ? "
+                "ORDER BY day, tenant, stored_category, bucket", (since_day,)).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
 
     def locked_for_prompt(self, prompt: str, limit: int = 3) -> list[Fact]:
         """Locked (probe/declared) facts whose entity the prompt names as a

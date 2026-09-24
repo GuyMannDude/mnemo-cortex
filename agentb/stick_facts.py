@@ -46,7 +46,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from agentb.facts_store import _CONFIDENCE_RANK, FactsStore
+from agentb.facts_store import _CONFIDENCE_RANK, MEMORY_ENTITY_PREFIX, FactsStore
 from agentb.fsutil import atomic_write_bytes
 
 FACTS_REL = "facts/facts.jsonl"
@@ -267,6 +267,12 @@ def _is_origin_row(row: dict) -> bool:
     return not str(row.get("changed_by") or "").startswith(_COURIER_PREFIX)
 
 
+def _is_fact_row(row: dict) -> bool:
+    """4.26.0: a 'memory:<tenant>/<id>' audit row belongs to one tenant's
+    memory, not to a fact — it stays on its host (under-share, never over)."""
+    return not str(row.get("entity") or "").startswith(MEMORY_ENTITY_PREFIX)
+
+
 def dump_history(db_path: Path) -> list[dict]:
     """Origin audit rows only (save/demote); courier rows stay local."""
     if not db_path.is_file():
@@ -286,7 +292,8 @@ def dump_history(db_path: Path) -> list[dict]:
             "SELECT * FROM fact_history ORDER BY changed_at, id").fetchall()
     finally:
         conn.close()
-    return [_history_canon(dict(r)) for r in rows if _is_origin_row(dict(r))]
+    return [_history_canon(dict(r)) for r in rows
+            if _is_origin_row(dict(r)) and _is_fact_row(dict(r))]
 
 
 def _encode_history_jsonl(rows: dict[str, dict]) -> bytes:

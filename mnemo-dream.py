@@ -1357,33 +1357,99 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     return all_valid
 
 
+_KIND_ORDER = ("fact", "memory_category", "memory_note")
+
+
+def _proposal_row(r: dict) -> str:
+    seen = int(r.get("seen_count") or 1)
+    head = f"#{r.get('id')}{f' x{seen}' if seen > 1 else ''}"
+    last = (f" · last {time.strftime('%Y-%m-%d', time.gmtime(float(r['last_seen'])))}"
+            if seen > 1 and r.get("last_seen") else "")
+    if (r.get("target_kind") or "fact") == "fact":
+        return (f"{head} {r.get('entity')}.{r.get('attribute')} ({r.get('authority')}) "
+                f"by {r.get('source_agent') or '?'} · proposed: {str(r.get('proposed_value'))[:120]} "
+                f"· current: {str(r.get('current_value'))[:120]} · evidence: {str(r.get('evidence_source'))[:80]}"
+                + last)
+    quotes = r.get("evidence_quotes") or []
+    score = r.get("confidence_score")
+    return (f"{head} {r.get('target_ref')} {r.get('attribute')}: {r.get('current_value')} -> "
+            f"{str(r.get('proposed_value'))[:120]}"
+            + (f" ({float(score):.2f})" if score is not None else "")
+            + f" by {r.get('source_run') or r.get('source_agent') or '?'}"
+            + (f" · evidence: {str(quotes[0])[:80]}" if quotes else "") + last)
+
+
+def jev_line(stats: dict, day: str) -> str:
+    """One line for one UTC day of the Jev shadow's counters. RED comes from
+    the server's verdict (one home for the rule: agentb.jev_live.day_verdict)."""
+    if stats.get("error"):
+        return f"jev shadow: RED — {stats['error']}"
+    if not stats.get("enabled"):
+        return "jev shadow: OFF"
+    d = next((x for x in stats.get("days") or [] if x.get("day") == day), None) or {
+        "attempted": 0, "agree": 0, "disagree": 0, "error": 0, "timeout": 0}
+    line = (f"jev shadow ({day} UTC): {d['attempted']} calls, {d['agree']} agree, "
+            f"{d['disagree']} disagree, {d['error'] + d['timeout']} err/timeout")
+    if d.get("dropped"):
+        line += f", {d['dropped']} dropped"
+    if stats.get("unflushed_drops"):
+        line += f", {stats['unflushed_drops']} drop(s) not yet written"
+    if d.get("red"):
+        line += " — RED: " + "; ".join(d.get("reasons") or [])
+    return line
+
+
 def proposals_block(limit: int = 10) -> str:
-    """v4.23 authority tiers: the writes a locked slot held this window,
-    as a brief section so every agent boots knowing a slot is contested.
-    Zero says zero — a block that only appears when non-empty is not a
+    """v4.23 authority tiers, widened in 4.26.0 (proposal envelope): every
+    pending machine proposal — locked-fact writes and opinions about a
+    memory — grouped by kind, so every agent boots knowing what waits on
+    Guy. Zero says zero — a block that only appears when non-empty is not a
     check. Log-don't-raise: the brief must not die on a facts hiccup."""
-    heading = "### Pending proposals to locked facts"
+    heading = "### Pending proposals"
+    # Locked-fact rows first, with the whole cap; other kinds fill what is
+    # left. One query across kinds would let the nightly Jev rows crowd the
+    # contested facts out of the ten.
+    pages = {}
+    for kind in ("fact", "all"):
+        try:
+            resp = httpx.get(f"{MNEMO_URL}/proposals",
+                             params={"status": "pending", "limit": limit, "kind": kind},
+                             headers=MNEMO_AUTH_HEADERS, timeout=10.0)
+            if resp.status_code != 200:
+                return f"{heading}\nUNKNOWN — /proposals returned {resp.status_code}"
+            pages[kind] = resp.json()
+        except Exception as e:  # noqa: BLE001 — unattended nightly job
+            return f"{heading}\nUNKNOWN — /proposals unreachable ({e.__class__.__name__})"
+    fact_rows = pages["fact"].get("proposals") or []
+    other_rows = [r for r in pages["all"].get("proposals") or [] if r.get("target_kind") != "fact"]
+    rows = fact_rows[:limit] + other_rows[:max(0, limit - len(fact_rows))]
+    by_kind = pages["all"].get("pending_by_kind")
+    if not isinstance(by_kind, dict):
+        counts = "UNKNOWN (no pending_by_kind from /proposals)"
+    else:
+        counts = f"{int(by_kind.get('fact') or 0)} fact · {int(by_kind.get('memory_category') or 0)} category"
+        if by_kind.get("memory_note"):
+            counts += f" · {int(by_kind['memory_note'])} note"
+    lines = [heading]
+    if not isinstance(by_kind, dict):
+        lines.append(f"Pending proposals: {counts}.")
+    elif not rows:
+        lines.append(f"Pending proposals: {counts}. Nothing waits on Guy's word.")
+    else:
+        lines.append(f"Pending proposals: {counts} — Guy's word resolves them (mnemo_fact_proposals).")
+    # the shadow's yesterday (the last whole UTC day of counters). Second
+    # line, not last: the boot composer trims a section from the bottom.
+    day = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
     try:
-        resp = httpx.get(f"{MNEMO_URL}/facts/proposals",
-                         params={"status": "pending", "limit": limit},
+        resp = httpx.get(f"{MNEMO_URL}/proposals/jev-stats", params={"days": 2},
                          headers=MNEMO_AUTH_HEADERS, timeout=10.0)
-        if resp.status_code != 200:
-            return f"{heading}\nUNKNOWN — /facts/proposals returned {resp.status_code}"
-        data = resp.json()
-    except Exception as e:  # noqa: BLE001 — unattended nightly job
-        return f"{heading}\nUNKNOWN — /facts/proposals unreachable ({e.__class__.__name__})"
-    rows = data.get("proposals") or []
-    count = int(data.get("count") or 0)
-    if not rows:
-        return f"{heading}\n0 pending. Every write to a probe/declared slot this window came from its own kind of evidence."
-    lines = [f"{heading}", f"{count} pending — a lock held these writes; Guy's word resolves them (mnemo_fact_proposals)."]
-    for r in rows:
-        seen = int(r.get("seen_count") or 1)
-        lines.append(f"#{r.get('id')}{f' x{seen}' if seen > 1 else ''} {r.get('entity')}.{r.get('attribute')} ({r.get('authority')}) "
-                     f"by {r.get('source_agent') or '?'} · proposed: {str(r.get('proposed_value'))[:120]} "
-                     f"· current: {str(r.get('current_value'))[:120]} · evidence: {str(r.get('evidence_source'))[:80]}"
-                     + (f" · last {time.strftime('%Y-%m-%d', time.gmtime(float(r['last_seen'])))}"
-                        if seen > 1 and r.get("last_seen") else ""))
+        lines.append(jev_line(resp.json(), day) if resp.status_code == 200
+                     else f"jev shadow: UNKNOWN — /proposals/jev-stats returned {resp.status_code}")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"jev shadow: UNKNOWN — /proposals/jev-stats unreachable ({e.__class__.__name__})")
+    rank = {k: i for i, k in enumerate(_KIND_ORDER)}
+    for r in sorted(rows, key=lambda r: rank.get(r.get("target_kind") or "fact", 99)):
+        lines.append(_proposal_row(r))
     return "\n".join(lines)
 
 
@@ -2186,8 +2252,8 @@ def main():
     log.info(f"Sending to {DREAM_MODEL} for synthesis...")
     dream_text = synthesize(all_memories, dry_run=args.dry_run)
 
-    # v4.23 authority tiers: what the locks held this window rides in the
-    # brief itself, so a contested slot is known at boot, not found later.
+    # v4.23 authority tiers (widened 4.26.0): every pending machine proposal
+    # rides in the brief itself, so a contested slot is known at boot.
     block = proposals_block()
     log.info(block)
     dream_text = dream_text.rstrip() + "\n\n" + block + "\n"

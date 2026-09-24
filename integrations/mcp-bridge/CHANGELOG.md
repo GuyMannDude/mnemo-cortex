@@ -12,6 +12,19 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.33.0 — 2026-09-24 — `mnemo_fact_proposals` gains `kind`
+
+Server 4.26.0 widened fact proposals into one envelope for every machine
+proposal. `mnemo_fact_proposals` takes `kind` (`fact` default,
+`memory_category`, `memory_note`, `all`). With no `kind` it calls the same
+route and prints byte-for-byte the same text as 2.32.0 (tested against the
+2.32.0 loop). Other kinds read `GET /proposals?kind=…` and show the target
+(`memory:<tenant>/<id>`), `confidence_score` and `evidence_quotes`. Resolve
+stays on `/facts/proposals/{id}/resolve`, which a 4.26.0 server resolves for
+every kind and a 4.25 server still has. The pure parts live in
+`proposals-format.js` (`node proposals-format.test.js`). The boot line lives
+in the dream brief, not here: nothing in `agent_startup` changed.
+
 ## 2.32.0 — 2026-09-23 — session id carries the `MNEMO_LANE` tag
 
 **Problem.** A shared-tenant agent (`MNEMO_AGENT_ID=cc` +

@@ -27,6 +27,7 @@ import {
   SESSION_KEY_RE, REPLY_BUDGET, searchPath, getPath,
   formatSearch, formatManifest, formatTurns,
 } from "./transcript-format.js";
+import { listPath, resolvePath, formatList, formatResolve } from "./proposals-format.js";
 import { searchScope } from "./search-scope.js";
 import { fetchUnrepliedBusSummary } from "./bus-startup.js";
 
@@ -2734,45 +2735,29 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_proposals",
   {
-    description: "List proposals against locked (probe/declared) fact slots, or resolve one. A proposal is a write that a lock held: the value some agent, the dreamer, or a seed script tried to put on a slot it may not write. Listing is safe. Resolving is Guy's word relayed by you: 'accept' writes the proposed value as verified (past the lock, evidence names the proposal), 'reject' closes it and leaves the slot alone. Only resolve with an actual ruling from Guy — cite it in reason.",
+    description: "List proposals, or resolve one. A proposal is a machine write that waits on Guy. kind 'fact' (the default): a write a lock held — the value some agent, the dreamer, or a seed script tried to put on a probe/declared slot. kind 'memory_category': a classifier (Jev shadow) disagrees with a memory's stored category; the memory is unchanged until accepted. kind 'memory_note': listed only, not yet acceptable. Listing is safe. Resolving is Guy's word relayed by you: 'accept' writes the proposed value (a fact lands verified past its lock; a category is amended, the first value kept as category_original), 'reject' closes it and leaves the target alone. Only resolve with an actual ruling from Guy — cite it in reason.",
     inputSchema: {
+      kind: z.enum(["fact", "memory_category", "memory_note", "all"]).optional().describe("Which proposals to list (default fact)."),
       status: z.enum(["pending", "accepted", "rejected", "all"]).optional().describe("Which proposals to list (default pending)."),
       limit: z.number().int().min(1).max(200).optional().describe("Max rows (default 50)."),
-      resolve_id: z.number().int().optional().describe("Proposal id to resolve. Omit to list."),
+      resolve_id: z.number().int().optional().describe("Proposal id to resolve (any kind). Omit to list."),
       action: z.enum(["accept", "reject"]).optional().describe("Required with resolve_id."),
       reason: z.string().optional().describe("Why — cite Guy's ruling. Logged to fact history."),
     },
     annotations: { "title": "Fact Proposals", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
   },
-  async ({ status, limit, resolve_id, action, reason }) => {
-    captureCall("mnemo_fact_proposals", resolve_id ? `${action} #${resolve_id}` : `list ${status || "pending"}`);
+  async ({ kind, status, limit, resolve_id, action, reason }) => {
+    captureCall("mnemo_fact_proposals", resolve_id ? `${action} #${resolve_id}` : `list ${kind || "fact"} ${status || "pending"}`);
     try {
       if (resolve_id) {
         if (!action) return { content: [{ type: "text", text: "action (accept|reject) is required with resolve_id" }], isError: true };
-        const data = await mnemoRequest("POST", `/facts/proposals/${resolve_id}/resolve`, {
+        const data = await mnemoRequest("POST", resolvePath(resolve_id), {
           action, by: AGENT_ID, reason: reason || "",
         });
-        const lines = [`Proposal #${resolve_id}: ${data.reason}`];
-        if (data.written) lines.push(`  slot now = proposed value [verified], was: ${data.previous_value} [${data.previous_confidence}]; tier stays ${data.authority}`);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: formatResolve(resolve_id, data) }] };
       }
-      const qs = new URLSearchParams();
-      if (status) qs.set("status", status);
-      if (limit) qs.set("limit", String(limit));
-      const q = qs.toString();
-      const data = await mnemoRequest("GET", `/facts/proposals${q ? "?" + q : ""}`);
-      if (!data.count) return { content: [{ type: "text", text: `No ${data.status} proposals.` }] };
-      const lines = [`${data.count} ${data.status} proposal(s):`];
-      for (const p of data.proposals) {
-        const ts = (p.seen_count > 1 && p.last_seen) ? p.last_seen : p.created_at;   // a repeat shows its latest date
-        const when = ts ? new Date(ts * 1000).toISOString().slice(0, 16) : "?";
-        lines.push(`  #${p.id}${p.seen_count > 1 ? ` x${p.seen_count}` : ""} [${p.status}] ${p.entity}.${p.attribute} (${p.authority}) ${when} by ${p.source_agent || "?"}`);
-        lines.push(`      proposed: ${p.proposed_value}`);
-        lines.push(`      current:  ${p.current_value}`);
-        lines.push(`      evidence: ${p.evidence_source}`);
-        if (p.resolved_by) lines.push(`      resolved by ${p.resolved_by}: ${p.resolution_reason || ""}`);
-      }
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      const data = await mnemoRequest("GET", listPath({ kind, status, limit }));
+      return { content: [{ type: "text", text: formatList(data) }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Fact proposals error: ${err.message}` }], isError: true };
     }

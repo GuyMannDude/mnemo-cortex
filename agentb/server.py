@@ -71,7 +71,10 @@ from agentb.vec import (
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
-from agentb.facts_store import FactsStore, CONFIDENCE_LEVELS
+from agentb.facts_store import (
+    FactsStore, CONFIDENCE_LEVELS, MEMORY_KINDS, PROPOSAL_KINDS, parse_memory_target_ref,
+)
+from agentb.jev_live import JevShadow, day_verdict, utc_day
 
 logging.basicConfig(
     level=logging.INFO,
@@ -916,6 +919,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     data_root = Path(config.data_dir or os.path.expanduser("~/.agentb"))
     facts_path = data_root / "facts.sqlite"
     facts = FactsStore(facts_path)
+    # 4.26.0: the Jev live-path shadow — None (off) unless MNEMO_JEV_KEY_FILE
+    # names a readable key. The key never leaves this object.
+    jev = JevShadow.from_env(facts)
+    # a key file that is named but did not load is a failure, not "off"
+    jev_key_failed = jev is None and bool((os.environ.get("MNEMO_JEV_KEY_FILE") or "").strip())
 
     # v4.1: capture pause gate — server-wide, file-backed, auto-resuming.
     gate = CaptureGate(data_root)
@@ -999,6 +1007,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         log.warning("Shutdown: transcript reprocess sweep still running; "
                                     "sessions it had not reached are redone at next start")
             finally:
+                if jev is not None:
+                    await jev.aclose()
                 tenants.close()
 
     app = FastAPI(
@@ -1946,6 +1956,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         except Exception as e:
             log.error(f"Writeback indexing failed: {e}")
 
+        # 4.26.0: the save is committed (file + seal). The shadow runs as a
+        # background task; submit() never awaits and never raises into here.
+        if jev is not None:
+            try:
+                jev.submit(req.agent_id or "default", memory_dir, memory_entry)
+            except Exception as exc:  # degrade to raw: the save already landed
+                log.error(f"Jev shadow submit failed: {type(exc).__name__}")
+
         return WritebackResponse(
             status="archived", memory_id=memory_id, agent_id=req.agent_id,
             l1_bundles_updated=0,  # wire compatibility: the L1 tier is gone
@@ -2738,22 +2756,72 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "reason": result.reason,
         }
 
-    @app.get("/facts/proposals")
-    async def facts_proposals(status: Optional[str] = "pending", limit: int = 50):
+    def _proposal_status(status: Optional[str]) -> Optional[str]:
         if status in ("", "all"):
-            status = None
+            return None
         if status is not None and status not in ("pending", "accepted", "rejected"):
             raise HTTPException(400, "status must be pending, accepted, rejected or all")
-        rows = facts.proposals(status=status, limit=limit)
+        return status
+
+    # 4.26.0: GET /facts/proposals is GET /proposals?kind=fact
+    @app.get("/facts/proposals")
+    async def facts_proposals(status: Optional[str] = "pending", limit: int = 50):
+        status = _proposal_status(status)
+        rows = facts.proposals(status=status, limit=limit, kind="fact")
         return {"proposals": rows, "count": len(rows), "status": status or "all"}
 
-    @app.post("/facts/proposals/{proposal_id}/resolve")
-    async def facts_proposal_resolve(proposal_id: int, req: ProposalResolveRequest):
+    def _tenant_for(name: str) -> dict:
+        return tenants.get(None if name == "default" else name)
+
+    def _memory_category_applier(tenant_name: str, memory_dir: Path):
+        """The accept of a memory_category proposal, as an append-only
+        amendment of the memory FILE. category_original is written the first
+        time only; category moves through the atomic writer; the reclassify
+        pass is told this is Guy's word, not a regex guess. Category is
+        FILING (outside SEALED_FIELDS): no re-seal. Runs in a worker thread
+        inside the facts transaction, so it touches only the file — the
+        tenant and the vec index stay on the loop (one VecStore connection)."""
+        def apply(tenant: str, memory_id: str, new_cat: str, pid: int):
+            if tenant != tenant_name:
+                raise ValueError(f"proposal #{pid} changed tenant under the resolve")
+            if _bad_memory_ids([memory_id]):
+                raise ValueError(f"invalid memory id {memory_id!r}")
+            path = memory_dir / f"{memory_id}.json"
+            if not path.is_file():
+                raise ValueError(f"no memory {memory_id} for tenant {tenant}")
+            original = path.read_text(encoding="utf-8")
+            mem = json.loads(original)
+            old = mem.get("category")
+            if "category_original" not in mem:
+                mem["category_original"] = old
+            mem["category"] = new_cat
+            mem["classified_by"] = f"proposal:#{pid}"
+            mem.pop("needs_reclassification", None)
+            _atomic_write_text(path, json.dumps(mem, indent=2, default=str))
+
+            def undo():
+                _atomic_write_text(path, original)
+                log.error(f"Proposal #{pid}: its close failed after the memory file "
+                          f"moved; {memory_id} restored to category {old!r}")
+            return old, undo
+        return apply
+
+    async def _resolve(proposal_id: int, req: "ProposalResolveRequest") -> dict:
+        p = await asyncio.to_thread(facts.proposal, proposal_id)
+        apply, tenant = None, None
+        if p is not None and p.get("target_kind") == "memory_category" and req.action == "accept":
+            try:
+                tenant_name, _ = parse_memory_target_ref(p["target_ref"] or "")
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            tenant = _tenant_for(tenant_name)
+            apply = _memory_category_applier(tenant_name, tenant["memory_dir"])
         try:
-            result = facts.resolve_proposal(proposal_id, req.action, req.by, reason=req.reason)
+            result = await asyncio.to_thread(
+                facts.resolve_proposal, proposal_id, req.action, req.by, req.reason, apply)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {
+        out = {
             "written": result.written,
             "was_contradiction": result.was_contradiction,
             "previous_value": result.previous_value,
@@ -2762,6 +2830,104 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "authority": result.authority,
             "proposal_id": result.proposal_id,
         }
+        if result.written and tenant is not None:
+            # the recall pre-filter column follows disk truth (#468). Derived
+            # index: a failure here is loud, never a reason to undo Guy's word.
+            _, memory_id = parse_memory_target_ref(p["target_ref"])
+            try:
+                tenant["vec"].update_category(memory_id, p["proposed_value"])
+            except Exception as exc:
+                log.error(f"Proposal #{proposal_id}: vec category not updated for "
+                          f"{memory_id} ({type(exc).__name__}) — category recall may miss it")
+                out["warning"] = "vec index category not updated; see server log"
+        return out
+
+    @app.post("/facts/proposals/{proposal_id}/resolve")
+    async def facts_proposal_resolve(proposal_id: int, req: ProposalResolveRequest):
+        return await _resolve(proposal_id, req)
+
+    # ── 4.26.0 proposal envelope: every machine proposal, every kind ──
+    # Master token only: facts.sqlite is global like /facts, so no /proposals
+    # route is in SCOPABLE_ENDPOINTS (a GET would show Guy's locked facts).
+    class ProposalRequest(BaseModel):
+        target_kind: str
+        agent_id: Optional[str] = None
+        memory_id: str
+        proposed_value: str
+        evidence_quotes: list[str]
+        confidence_score: float
+        source_run: str
+        source_agent: Optional[str] = None
+
+    @app.post("/proposals")
+    async def proposals_create(req: ProposalRequest):
+        if req.target_kind not in MEMORY_KINDS:
+            raise HTTPException(400, f"target_kind must be one of {tuple(MEMORY_KINDS)} "
+                                     "(a fact proposal comes from POST /facts on a locked slot)")
+        if _bad_memory_ids([req.memory_id]):
+            raise HTTPException(400, f"invalid memory_id {req.memory_id!r}")
+        tenant_name = req.agent_id or "default"
+        memory_dir = _tenant_for(tenant_name)["memory_dir"]
+        current = None
+        if req.target_kind == "memory_category":
+            path = memory_dir / f"{req.memory_id}.json"
+            if path.is_file():
+                current = json.loads(path.read_text(encoding="utf-8")).get("category")
+        try:
+            pid, seen = await asyncio.to_thread(
+                facts.propose_memory, req.target_kind, tenant_name, req.memory_id, memory_dir,
+                req.proposed_value, req.evidence_quotes, req.confidence_score, req.source_run,
+                req.source_agent, current)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"proposal_id": pid, "seen_count": seen,
+                "status": "held_by_rejection" if seen == 0 else ("new" if seen == 1 else "repeat"),
+                "held_by_rejection": seen == 0}
+
+    @app.get("/proposals")
+    async def proposals_list(kind: Optional[str] = None, status: Optional[str] = "pending",
+                             limit: int = 50):
+        status = _proposal_status(status)
+        if kind in ("", "all"):
+            kind = None
+        if kind is not None and kind not in PROPOSAL_KINDS:
+            raise HTTPException(400, f"kind must be one of {PROPOSAL_KINDS} or all")
+        rows = facts.proposals(status=status, limit=limit, kind=kind)
+        return {"proposals": rows, "count": len(rows), "status": status or "all",
+                "kind": kind or "all", "pending_by_kind": facts.pending_counts()}
+
+    @app.get("/proposals/jev-stats")
+    async def proposals_jev_stats(days: int = 7):
+        days = max(1, min(int(days), 90))
+        unflushed = 0
+        if jev is not None:
+            try:
+                await jev.flush()
+            except Exception as exc:  # held drops are kept and retried next time
+                log.error(f"Jev shadow: drop counts not written ({type(exc).__name__})")
+                unflushed = jev.pending_drops
+        since = utc_day(time.time() - (days - 1) * 86400)
+        cells = await asyncio.to_thread(facts.jev_stats, since)
+        by_day: dict[str, dict] = {}
+        for c in cells:
+            t = by_day.setdefault(c["day"], {k: 0 for k in FactsStore.JEV_COUNTERS})
+            for k in FactsStore.JEV_COUNTERS:
+                t[k] += int(c[k])
+        out = []
+        for day in sorted(by_day):
+            red, reasons = day_verdict(by_day[day])
+            out.append({"day": day, **by_day[day], "red": red, "reasons": reasons})
+        return {"enabled": jev is not None,
+                "error": ("MNEMO_JEV_KEY_FILE is set but the key did not load (see server log)"
+                          if jev_key_failed else None),
+                "unflushed_drops": unflushed,
+                "tenants": sorted(jev.tenants) if jev is not None else [],
+                "in_flight": jev.in_flight if jev is not None else 0,
+                "days": out, "cells": cells}
+
+    @app.post("/proposals/{proposal_id}/resolve")
+    async def proposals_resolve(proposal_id: int, req: ProposalResolveRequest):
+        return await _resolve(proposal_id, req)
 
     # ── v4.23: demote a memory by id (the route #3533 had to fake with a
     # supersedes-save). Filing change, not testimony: the JSON stays, the
