@@ -10,18 +10,27 @@ out to TypeSafe (`snag-redactor-short-kv-secret-passes.md`, batch 2 leftover
 
 **Fix.**
 - New kind `credential-assignment`: a value of **6+** characters after a
-  credential-NAMED key (the v4.25.3 `_CREDENTIAL_NAME` list: `*password`,
-  `*token`, `*secret`, `api_key`, …, and UPPERCASE `*_KEY`). Two shapes: a
-  quoted literal with any spacing (`password = "abc123"`, escaped quotes in raw
-  JSONL too), and an unquoted value with no spaces that ends at whitespace,
-  `&`, `;`, a quote, a backslash or the end (env files, CLI flags,
-  `?token=` in a URL). Generic names keep the 16-character floor; the 16+
-  patterns still fire first, so a long secret reports the kind it did before.
-- Most code keeps its right-hand sides: a kwarg ends at `,` or `)`, a call
-  at `(`, an index at `[`, a comparison is `==`, and a `x = y` assignment has
-  spaces. A spaceless `token=self.access_token` IS redacted (same shape as a
-  secret), and so is an UPPERCASE `*_KEY` config name (`SORT_KEY=created_at`)
-  — the `*_KEY` catch-all is part of the credential-name list.
+  credential-NAMED key (`*password`, `*passphrase`, `*token`, `*secret`,
+  `credentials`, `authorization`, `cookie`, and `*_KEY` only after a
+  credential word: api/access/secret/private/client/signing/encryption/
+  master/auth/session/service, any case). Two shapes: a quoted literal with
+  any spacing (`password = "abc123"`, escaped quotes in raw JSONL too), and
+  an unquoted value with no spaces that ends at whitespace, `&`, `;`, `,`,
+  `)`, a quote, a backslash or the end (env files, CLI flags, `?token=` in a
+  URL, kwargs). Generic names keep the 16-character floor; the 16+ patterns
+  still fire first, so a long secret reports the kind it did before.
+- CC rulings (#3837). **I1:** a bare UPPERCASE `*_KEY` (`SORT_KEY`,
+  `PRIMARY_KEY`, `PUBLIC_KEY`, `CACHE_KEY`) does not get the 6 floor; it
+  keeps 16, which `env-credential` now enforces (`SHOPIFY_KEY=<16+>` was not
+  redacted in text before this release). **I2:** a spaceless
+  `token=self.access_token` IS redacted — fail closed. **D4:** `,` and `)`
+  end a value instead of failing it open, so `f(password=pw_var1, x=1)` loses
+  the argument, and a comma between value characters stays inside the value
+  (`PASSWORD=abc,123` goes whole) unless the next chunk starts a new
+  `name=`, a call, an index or a comparison. The 6 floor counts non-comma
+  characters (it may count into a following `name=`, erring toward redaction).
+- Code that still keeps its right-hand side: a call (`(`), an index (`[`), a
+  comparison (`==`) and an `x = y` assignment (spaces).
 - New kind `cookie`: the whole value of a `Cookie:` / `Set-Cookie:` header,
   when it starts with `name=value` (prose about cookies survives); a quoted
   cookie value goes whole. `cookie` joins the credential field names, so a
@@ -33,8 +42,9 @@ out to TypeSafe (`snag-redactor-short-kv-secret-passes.md`, batch 2 leftover
   100k characters; now about 0.1 s at 200k).
 - `REDACTION_VERSION` 4 → 5: the startup sweep re-scrubs archived transcripts.
 
-**Tests.** 12 short-assignment and 5 Cookie cases plus the JSON shapes (all failing on 00309b6), a
-45-line false-positive corpus that must come back byte-identical (config
+**Tests.** 12 short-assignment and 5 Cookie cases plus the JSON shapes (all failing on 00309b6),
+17 ruling cases and a bare-`*_KEY` 16-floor test (#3837), a
+49-line false-positive corpus that must come back byte-identical (config
 lines, names that merely contain a credential word, code, placeholders, prose
 about cookies), a linear-time check on 200k-char name runs and the review's
 rescan inputs, and a transcript

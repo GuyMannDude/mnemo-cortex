@@ -45,7 +45,15 @@ _CREDENTIAL_KEY_RE = re.compile(_CREDENTIAL_NAME)
 # that also ends the next restart's reach (review of the 4.26.1 draft: a
 # value class that allowed `=` rescanned `password=password=…` to the end
 # from every name, 12 s at 100k chars).
-_ASSIGN_NAME = rf"(?<![A-Za-z0-9_.-]){_CREDENTIAL_NAME}"
+# CC ruling I1 (#3837): no bare UPPERCASE *_KEY here -- SORT_KEY=created_at
+# is config, not a secret. A *_KEY gets the 6 floor only after a credential
+# word (any case); a bare *_KEY keeps 16 (env-credential).
+_ASSIGN_NAME = (
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?i:[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credentials?|"
+    r"authorization|cookie|(?:api|access|secret|private|client|signing|encryption|"
+    r"master|auth|session|service)[_-]?key))"
+)
 
 # Each entry: (kind, compiled pattern). Order matters only for overlapping
 # matches (first pattern wins via the combined scan below); more specific
@@ -121,7 +129,7 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("env-credential", re.compile(
         r"""(?x)\b
         [A-Z0-9_]*
-        (TOKEN|SECRET|PRIVATE[_-]?KEY|PASSPHRASE)
+        (TOKEN|SECRET|PRIVATE[_-]?KEY|PASSPHRASE|_KEY)
         \s*[=:]\s*["']?
         (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
         """)),
@@ -140,18 +148,24 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     #  - quoted literal, any spacing: password = "abc123" (escaped quotes too,
     #    as in raw JSONL text);
     #  - unquoted, no spaces, ending at whitespace / & ; / a quote / a
-    #    backslash / end: env files, CLI flags, query strings. Most code
-    #    keeps its right-hand sides: a kwarg ends at , or ), a call at (, an
-    #    index at [, and `x = y` has spaces. NOT kept: a spaceless
-    #    `token=self.access_token` (it is shaped exactly like a secret).
-    #    `=` is not a value character (linear time), except as base64
+    #    backslash / , / ) / end: env files, CLI flags, query strings, and
+    #    (CC ruling D4, #3837: fail closed) kwargs and call arguments. A
+    #    comma between value characters stays inside the value
+    #    (PASSWORD=abc,123 goes whole) unless the next chunk starts a new
+    #    name= (token=abc123,page=2), a call, an index or a comparison --
+    #    then the comma ends it. The 6 floor counts non-comma chars ahead
+    #    and may count into a following name=, which errs toward redacting.
+    #    Code that survives: a call RHS ends at (, an index at [, and
+    #    `x = y` has spaces. `token=self.access_token` is redacted (ruling
+    #    I2). `=` is not a value character (linear time), except as base64
     #    padding at the end.
     ("credential-assignment", re.compile(
         rf"{_ASSIGN_NAME}\s*=\s*\\?(?P<q>[\"'])"
         r"(?P<val>(?:(?!(?P=q))[^\\\n]){6,})\\?(?P=q)")),
     ("credential-assignment", re.compile(
         rf"{_ASSIGN_NAME}=(?![=\"'])"
-        r"(?P<val>[^\s&;,=\"'\\()\[\]{}<>]{6,}+=*+)(?=[\s&;\"'\\<>]|$)")),
+        r"(?P<val>(?=_V(?:,*+_V){5})_V++(?:,++_V++(?![(\[{=]))*+=*+)(?=[\s&;,)\"'\\<>]|$)"
+        .replace("_V", r"[^\s&;,=\"'\\()\[\]{}<>]"))),
     # JSON credential field: "password": "…", "api_key": "…" (v4.25.3,
     # inspection #1). Any non-empty value -- the field name is the evidence.
     ("credential-field", re.compile(

@@ -323,7 +323,6 @@ FALSE_POSITIVE_CORPUS = [
     "primary_key=user_id", "public_key=ssh-ed25519", "tokenizer=cl100k",
     "author=guy", "keyword=memory", "monkey=banana1",
     # code: the right-hand side is a variable, a call, or a comparison
-    "login(password=db_password)", "connect(host=h, password=pw_var, port=5432)",
     "if password==hashed_pw:", "token = self.access_token",
     "password = get_password()", "api_key=os.environ['API_KEY']",
     "token=tok.strip()", "password: str", "password: Optional[str] = None",
@@ -334,6 +333,9 @@ FALSE_POSITIVE_CORPUS = [
     # prose about cookies (no name=value after the colon)
     "the cookie: chocolate chip", "Set-Cookie headers are not logged",
     "Cookie:", "cookies=enabled",
+    # UPPERCASE *_KEY without a credential word (CC ruling I1, #3837)
+    "SORT_KEY=created_at", "PRIMARY_KEY=user_id", "CACHE_KEY=memories",
+    "PUBLIC_KEY=ssh-ed25519", "PARTITION_KEY=tenant", "FOREIGN_KEY=user_id",
     # a whole config block
     "[server]\nhost=0.0.0.0\nport=50001\nworkers=4\nlog_level=INFO\n",
 ]
@@ -362,3 +364,52 @@ def test_short_assignment_linear_on_long_name_runs():
         t0 = time.perf_counter()
         redact_text(blob)
         assert time.perf_counter() - t0 < 2.0, blob[:8]
+
+
+# ── CC rulings #3837: *_KEY needs a credential word for the 6 floor (I1);
+#    , and ) end a value instead of failing it open (D4) ──
+
+@pytest.mark.parametrize("text, out", [
+    ("API_KEY=" + SHORT, "API_KEY=[REDACTED:credential-assignment]"),
+    ("SECRET_KEY=" + SHORT, "SECRET_KEY=[REDACTED:credential-assignment]"),
+    ("PRIVATE_KEY=" + SHORT, "PRIVATE_KEY=[REDACTED:credential-assignment]"),
+    ("session_key=" + SHORT, "session_key=[REDACTED:credential-assignment]"),
+    ("MY_SERVICE_KEY=" + SHORT, "MY_SERVICE_KEY=[REDACTED:credential-assignment]"),
+    ("Auth-Key=" + SHORT, "Auth-Key=[REDACTED:credential-assignment]"),
+    # D4: a comma inside the value no longer fails the whole value open
+    ("PASSWORD=abc," + "123", "PASSWORD=[REDACTED:credential-assignment]"),
+    ("PASSWORD=abc," + "123,x9", "PASSWORD=[REDACTED:credential-assignment]"),
+    ("PASSWORD=ab,," + "cd12", "PASSWORD=[REDACTED:credential-assignment]"),
+    # D4: a kwarg / call argument ends at , or ) and is redacted (fail closed)
+    ("f(password=" + SHORT + ", x=1)", "f(password=[REDACTED:credential-assignment], x=1)"),
+    ("login(password=db_password)", "login(password=[REDACTED:credential-assignment])"),
+    ("connect(host=h, password=pw_var1, port=5432)",
+     "connect(host=h, password=[REDACTED:credential-assignment], port=5432)"),
+    ("user=guy,token=" + SHORT + ",page=2", "user=guy,token=[REDACTED:credential-assignment],page=2"),
+    # the next argument is a call / index / brace / comparison (light review)
+    ("f(password=hunt" + "er22,g(x))", "f(password=[REDACTED:credential-assignment],g(x))"),
+    ("f(token=" + SHORT + ",items[0])", "f(token=[REDACTED:credential-assignment],items[0])"),
+    ("x(secret=" + SHORT + ",y{", "x(secret=[REDACTED:credential-assignment],y{"),
+    ("token=" + SHORT + ",x==y", "token=[REDACTED:credential-assignment],x==y"),
+])
+def test_cc_rulings_3837_presence(text, out):
+    assert redact_text(text) == (out, {"credential-assignment": 1})
+    assert redact_text(out) == (out, {})
+
+
+def test_bare_upper_key_keeps_the_16_floor():
+    """I1: a bare *_KEY (no credential word) is not short-redacted, but a
+    16+ value under it still goes (it did at f04e97d via the 6 floor)."""
+    assert redact_text("SHOPIFY_KEY=abc123") == ("SHOPIFY_KEY=abc123", {})
+    long_secret = "Zx9qR4tLm2Vb7Kp1Wd"
+    out, found = redact_text("SHOPIFY_KEY=" + long_secret)
+    assert long_secret not in out and sum(found.values()) == 1
+
+
+def test_comma_values_stay_linear():
+    import time
+    for blob in ("password=a," * 20_000, "PASSWORD=" + "ab," * 60_000 + "(",
+                 "token=" + "a" * 5 + "," * 100_000):
+        t0 = time.perf_counter()
+        redact_text(blob)
+        assert time.perf_counter() - t0 < 2.0, blob[:12]
