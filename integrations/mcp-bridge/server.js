@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createHarnessToolGate } from "./harness-tool-filter.js";
 import { z } from "zod";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import { execSync, execFileSync } from "node:child_process";
@@ -30,6 +30,8 @@ import {
 import { listPath, resolvePath, formatList, formatResolve } from "./proposals-format.js";
 import { searchScope } from "./search-scope.js";
 import { fetchUnrepliedBusSummary } from "./bus-startup.js";
+import { spoolFile, persistSpool, orphanSpools } from "./capture-spool.js";
+import { createCaptureBuffer } from "./capture-buffer.js";
 
 // ── Configuration ──────────────────────────────────────────────
 // MNEMO_URL: where your Mnemo Cortex API lives
@@ -50,6 +52,8 @@ const LANE_CANDIDATES = laneCandidates(AGENT_ID, process.env.MNEMO_LANE);
 // Session ids start with this: the tenant, plus the lane tag when MNEMO_LANE
 // is set (cc + cc3-igor.md → "cc-cc3"). See lane-candidates.js.
 const SESSION_PREFIX = sessionPrefix(AGENT_ID, process.env.MNEMO_LANE);
+// Bridge-side state that outlives a process: boot-cut log, capture spool.
+const MNEMO_STATE_DIR = join(process.env.HOME || homedir(), ".mnemo-cortex");
 // MNEMO_AUTH_TOKEN: optional bearer token for the Mnemo Cortex API. Read from
 // env first, else from ~/.mnemo-auth-token (mode 0600) so the secret lives in
 // one file rather than every agent's MCP config. Sent as X-API-KEY on every
@@ -420,11 +424,16 @@ function trackSave() {
 
 const BUFFER_FLUSH_SIZE = 8;
 const BUFFER_FLUSH_IDLE_MS = 120_000;
-// Cap on re-queued entries during a /writeback outage so a long server-side
-// outage can't grow this buffer unboundedly (keeps the most recent activity).
+// Cap on held entries during a /writeback outage so a long server-side
+// outage can't grow the buffer unboundedly (keeps the most recent activity).
 const MAX_BUFFER_BACKLOG = 200;
-const captureBuffer = [];
-let flushTimer = null;
+
+// On-disk mirror of the buffer (capture-spool.js): rewritten on every change,
+// removed when empty, so a bridge that dies with unsent entries leaves a file
+// for the next same-agent bridge to replay. Two flush cycles untouched = no
+// writer behind it.
+const CAPTURE_SPOOL = spoolFile(MNEMO_STATE_DIR, AGENT_ID, process.pid);
+const SPOOL_STALE_MS = BUFFER_FLUSH_IDLE_MS * 2;
 
 const TOOL_CAPTURE = {
   mnemo_recall: "summary",
@@ -451,74 +460,93 @@ const TOOL_CAPTURE = {
   passport_forget_or_override: "skip",
 };
 
+async function sendCaptureBatch(entries) {
+  const narrative = entries.map((e) => `- [${e.tool}] ${e.summary}`).join("\n");
+  const keyFacts = entries
+    .filter((e) => TOOL_CAPTURE[e.tool] === "full")
+    .map((e) => e.summary.slice(0, 100));
+  const sid = sessionId || `${SESSION_PREFIX}-auto-${Date.now()}`;
+  await mnemoRequest("POST", "/writeback", {
+    session_id: sid,
+    summary: `[AUTO-CAPTURE] ${entries.length} tool calls:\n${narrative}`,
+    key_facts: keyFacts.length > 0 ? keyFacts : ["auto_capture_flush"],
+    projects_referenced: [],
+    decisions_made: [],
+    agent_id: AGENT_ID,
+    // Mnemo v3 — mechanical ambient capture, not agent inference. Tag
+    // accordingly so default recalls don't drown in tool-call narratives.
+    source: "tool",
+    category: "session_log",
+  });
+}
+
+// The state machine lives in capture-buffer.js (tested against a stubbed
+// sender). Entries leave it only after /writeback accepts them.
+const capture = createCaptureBuffer({
+  send: sendCaptureBatch,
+  spool: { persist: (entries) => persistSpool(CAPTURE_SPOOL, entries) },
+  log: (line) => process.stderr.write(`${line}\n`),
+  flushSize: BUFFER_FLUSH_SIZE,
+  idleMs: BUFFER_FLUSH_IDLE_MS,
+  maxBacklog: MAX_BUFFER_BACKLOG,
+});
+
 function captureCall(toolName, summary) {
   trackCall();
 
   const policy = TOOL_CAPTURE[toolName] || "skip";
   if (policy === "skip") return;
 
-  captureBuffer.push({
+  capture.capture({
     tool: toolName,
     summary,
     ts: new Date().toISOString(),
   });
-
-  if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = setTimeout(() => flushBuffer(), BUFFER_FLUSH_IDLE_MS);
-
-  if (captureBuffer.length >= BUFFER_FLUSH_SIZE) {
-    flushBuffer();
-  }
 }
 
-async function flushBuffer() {
-  if (captureBuffer.length === 0) return;
-  if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = null;
-
-  const entries = captureBuffer.splice(0);
-  const narrative = entries.map((e) => `- [${e.tool}] ${e.summary}`).join("\n");
-  const keyFacts = entries
-    .filter((e) => TOOL_CAPTURE[e.tool] === "full")
-    .map((e) => e.summary.slice(0, 100));
-
-  const sid = sessionId || `${SESSION_PREFIX}-auto-${Date.now()}`;
-
+// Replay spools left by same-agent bridges that died with entries unsent
+// (reboot, route loss, SIGKILL). Called at startup; logs a line either way so
+// the Desktop log can answer "did it run". The claimed files are removed only
+// once our own spool holds the entries, so a crash in between duplicates
+// rather than loses.
+function replayOrphanSpools() {
+  let found;
   try {
-    await mnemoRequest("POST", "/writeback", {
-      session_id: sid,
-      summary: `[AUTO-CAPTURE] ${entries.length} tool calls:\n${narrative}`,
-      key_facts: keyFacts.length > 0 ? keyFacts : ["auto_capture_flush"],
-      projects_referenced: [],
-      decisions_made: [],
-      agent_id: AGENT_ID,
-      // Mnemo v3 — mechanical ambient capture, not agent inference. Tag
-      // accordingly so default recalls don't drown in tool-call narratives.
-      source: "tool",
-      category: "session_log",
-    });
+    found = orphanSpools(MNEMO_STATE_DIR, { agentId: AGENT_ID, ownFile: CAPTURE_SPOOL, staleMs: SPOOL_STALE_MS });
   } catch (err) {
-    // Re-queue instead of dropping the trail (this was a silent-loss bug: the
-    // spliced-out batch was discarded on failure). Put the failed batch back at
-    // the front to preserve order, cap the backlog so a prolonged /writeback
-    // outage can't grow memory unboundedly, and self-schedule a retry so
-    // recovery doesn't depend on the next captureCall arriving.
-    process.stderr.write(`[auto-capture] flush failed (will retry): ${err.message}\n`);
-    captureBuffer.unshift(...entries);
-    if (captureBuffer.length > MAX_BUFFER_BACKLOG) {
-      captureBuffer.splice(0, captureBuffer.length - MAX_BUFFER_BACKLOG);
+    process.stderr.write(`[auto-capture] spool scan failed: ${err.message}\n`);
+    return;
+  }
+  const entries = [];
+  for (const { file, entries: got, bad } of found) {
+    if (bad) process.stderr.write(`[auto-capture] ${bad} unreadable line(s) dropped from ${basename(file)}\n`);
+    entries.push(...got);
+  }
+  process.stderr.write(
+    `[auto-capture] spool ${basename(CAPTURE_SPOOL)}; orphaned spools replayed: ${found.length} (${entries.length} entries)\n`
+  );
+  if (!capture.replay(entries)) {
+    // Our own spool could not be written, so the claimed files are the only
+    // durable copy. Leave them; they are re-claimed once this process is gone.
+    process.stderr.write(`[auto-capture] keeping ${found.length} claimed spool(s): own spool write failed\n`);
+    return;
+  }
+  for (const { file } of found) {
+    try {
+      unlinkSync(file);
+    } catch (err) {
+      process.stderr.write(`[auto-capture] could not remove replayed spool ${basename(file)}: ${err.message}\n`);
     }
-    if (!flushTimer) flushTimer = setTimeout(() => flushBuffer(), BUFFER_FLUSH_IDLE_MS);
   }
 }
 
 // Graceful shutdown — drain the buffer before exit
 process.on("SIGTERM", async () => {
-  if (captureBuffer.length > 0) await flushBuffer();
+  await capture.drain();
   process.exit(0);
 });
 process.on("SIGINT", async () => {
-  if (captureBuffer.length > 0) await flushBuffer();
+  await capture.drain();
   process.exit(0);
 });
 
@@ -542,8 +570,13 @@ process.on("SIGPIPE", () => {
   process.stderr.write(`[mnemo-mcp] SIGPIPE received — exiting\n`);
   process.exit(0);
 });
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
   process.stderr.write(`[mnemo-mcp] stdin EOF — parent disconnected\n`);
+  // Drain, then leave. A failed attempt arms a retry timer that would
+  // otherwise keep an orphaned bridge alive after its parent quit; the spool
+  // already holds anything unsent, so exiting loses nothing.
+  await capture.drain();
+  process.exit(0);
 });
 
 // ── MCP Server ─────────────────────────────────────────────────
@@ -1193,7 +1226,7 @@ const STARTUP_FILE_CAP = 40_000; // fallback for files without a named budget
 // distinguished from a logger that has stopped working.
 function recordBootCuts(agentId, cuts) {
   try {
-    const dir = join(process.env.HOME || homedir(), ".mnemo-cortex");
+    const dir = MNEMO_STATE_DIR;
     mkdirSync(dir, { recursive: true });
     appendFileSync(
       join(dir, "boot-cuts.jsonl"),
@@ -1237,10 +1270,10 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
   sessionId = `${sessionPrefix}-${localTimestamp()}`;
   toolCallCount = 0;
   sessionToolCalls = 0;
-  captureBuffer.length = 0;
+  // The capture buffer is deliberately NOT cleared: unsent entries are unsent
+  // whichever session captured them.
   checkpointIds = [];
-  if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = null;
+  replayOrphanSpools();
 
   // Pull the brain repo so we read the freshest cross-agent state,
   // not whatever was last on disk. Best-effort — if pull fails (no
@@ -1815,7 +1848,7 @@ server.registerTool(
       return { content: [{ type: "text", text: refusal }], isError: true };
     }
     trackSave();
-    await flushBuffer();
+    await capture.drain();
     const results = [];
     // No agent_startup this process → mint the session id HERE, once, so the
     // later checkpoints and session_end land under it ("same session_id").
@@ -1930,7 +1963,7 @@ server.registerTool(
     annotations: { "title": 'End Session (Save & Commit)', "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true },
   },
   async ({ summary, key_facts }) => {
-    await flushBuffer();
+    await capture.drain();
     trackSave();
     const results = [];
 

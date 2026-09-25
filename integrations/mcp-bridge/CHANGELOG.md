@@ -12,6 +12,54 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.34.0 — 2026-09-25 — auto-capture spools to disk; a dead bridge's trail is replayed
+
+**Problem.** The auto-capture trail lived only in `captureBuffer`, a
+process-memory array, and was drained on SIGTERM. On IGOR's 2026-09-21
+reboot Tailscale tore down its routes one second before Claude Desktop's
+bridge was stopped: the drain had no route, re-queued, and `process.exit(0)`
+killed the retry. `stdin` EOF never flushed at all, and a successful flush
+wrote no log line, so the Desktop log could not say whether an idle flush
+had ever run (snag-mnemo-bridge-capture-buffer-dies-on-host-shutdown).
+
+**Fix.** Two new modules, both tested without a server.
+`capture-spool.js`: the buffer is mirrored to
+`~/.mnemo-cortex/capture-spool-<agent>-<pid>-<start>.jsonl` after every
+change (written beside, renamed over, so a power cut cannot truncate it) and
+removed when the buffer empties, so a leftover file always means unsent
+entries. `_runStartup` scans for THIS agent's spools only (all bridges share
+the state dir; another agent's trail must not land under our `agent_id`),
+skips any untouched for less than two flush cycles (240 s — a live bridge
+touches its spool at least that often) or whose pid is still running (a
+laptop that slept has stale mtimes and a live writer — and on Linux the pid
+must also have started before the spool was recorded, read from
+`/proc/<pid>/stat`, so a pid handed to some daemon after the reboot does not
+hold the orphan hostage), claims each by an atomic rename to
+`.claimed-<claimerPid>-<ms>` so two bridges starting together cannot both
+replay one file, replays, and removes the claimed file only once our own
+spool holds the entries (if that write fails the claimed files stay, and a
+claimed file whose claimer is gone is a candidate again, so nothing is
+stranded for good). A torn line is counted and skipped; one unreadable file
+is skipped, not fatal to the scan. `capture-buffer.js`: the flush
+state machine with the sender injected. Entries leave the buffer only after
+`/writeback` accepts the batch they were in, and are removed by identity, so
+a trim or replay that reshapes the buffer mid-send cannot make the success
+path delete unsent entries. One send in flight at a time; a second `flush()`
+gets the same promise; `drain()` (SIGTERM, SIGINT, stdin EOF,
+`session_checkpoint`, `session_end`) waits for the in-flight send and then
+sends whatever arrived meanwhile, stopping at the first failure (a retry is
+armed by then). stdin EOF drains and exits — a failed attempt used to arm a
+retry timer that would have kept an orphaned bridge alive after its parent
+quit. Startup no longer clears the buffer: unsent is unsent whichever
+session captured it. Every startup logs `spool <file>; orphaned spools
+replayed: N (M entries)` and every successful flush logs `flushed N entries`.
+Replayed entries go in front, so a trim drops the oldest first; an idle
+timer that fires into an in-flight send clears its handle, so the retry it
+stands for still gets armed; whatever is left after a send always has a
+timer. Tests: `capture-spool.test.js` (26), `capture-buffer.test.js` (18); the
+replay + failure + success paths were smoke-run against a dead port and a
+fake `/writeback`. Inert until each host's bridge restarts.
+
 ## 2.33.0 — 2026-09-24 — `mnemo_fact_proposals` gains `kind`
 
 Server 4.26.0 widened fact proposals into one envelope for every machine
