@@ -76,6 +76,15 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("aws", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b")),
     # Google API key.
     ("google", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}")),
+    # Leading HALF of a key standing alone (v4.26.3): `ls: cannot access
+    # 'AIzaSyB…nxcN'` prints each half of a space-split file name on its own
+    # line, and 14 characters are not a key by the strict shape. Every
+    # Google key starts `AIzaSy`, every current Anthropic key `sk-ant-api`
+    # + digits + `-`: those prefixes plus a SHORT tail are a fragment of a
+    # real key, not prose ("AIzaSy" alone, 6 chars, survives). The trailing
+    # half has no prefix and no shape; that stays a hand fix at the source.
+    ("google", re.compile(r"\bAIzaSy[0-9A-Za-z_-]{6,29}(?![0-9A-Za-z_-])")),
+    ("anthropic", re.compile(r"\bsk-ant-api\d+-[0-9A-Za-z_-]{4,19}(?![0-9A-Za-z_-])")),
     # Slack tokens (bot/user/app/refresh) + webhook URLs.
     ("slack", re.compile(r"\bxox[abeprs]-[A-Za-z0-9-]{10,}")),
     ("slack-webhook", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+")),

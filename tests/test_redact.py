@@ -449,7 +449,6 @@ def test_split_vendor_key_redacted(text, out):
     "the AIza prefix marks a Google key",
     "hf_ models and npm_ tokens are prefixes",
     "sk-or- then nothing much",
-    f"{_G1} short",                      # a half plus a word: 19 chars, not a key
     "[REDACTED-AIza-dYNs-20260925] marker text",   # CC2's marker shape
     # prose after a prefix (review of the first draft: words joined into a body)
     "sk-ant- keys are rotated automatically every quarter",
@@ -458,4 +457,24 @@ def test_split_vendor_key_redacted(text, out):
     "The sk-proj- prefix identifies project scoped credentials",
 ])
 def test_split_scan_leaves_prose(text):
+    assert redact_text(text) == (text, {})
+
+
+# ── v4.26.3: a LEADING half of a key standing alone ──
+@pytest.mark.parametrize("text,out", [
+    ("ls: cannot access 'AIzaSyB1234567': No such file", "ls: cannot access '[REDACTED:google]': No such file"),
+    ("half sk-ant-api03-a1B2 here", "half [REDACTED:anthropic] here"),
+    (f"{_G1} short", "[REDACTED:google] short"),   # was a 4.26.2 negative: a lone half IS a fragment now
+])
+def test_leading_half_alone_redacted(text, out):
+    clean, found = redact_text(text)
+    assert clean == out and sum(found.values()) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "keys start with AIzaSy and are 39 chars",     # the bare 6-char prefix is prose
+    "sk-ant-api keys",                             # no digits-dash body
+    "the AIzaSy- prefix",                          # 1 char after: below the floor of 6
+])
+def test_leading_half_floor_leaves_prose(text):
     assert redact_text(text) == (text, {})

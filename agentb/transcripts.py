@@ -64,7 +64,8 @@ SCHEMA_VERSION = 1
 # 3 = 4.25.2 (collision-safe keys, no text redaction over serialized JSON).
 # 4 = 4.25.4 (the v4.25.3 redactor). 5 = 4.26.1 (short credential-named
 # key=value, Cookie headers). 6 = 4.26.2 (keys split by whitespace).
-REDACTION_VERSION = 6
+# 7 = 4.26.3 (a leading half of a key standing alone).
+REDACTION_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);

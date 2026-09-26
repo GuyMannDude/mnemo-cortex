@@ -1,5 +1,21 @@
 # Changelog
 
+## v4.26.3 — Redactor: a leading half of a key standing alone (2026-09-25)
+
+**Problem.** 4.26.2 joins a split key when both halves sit next to each
+other. The same `ls` that listed the key-named file also printed
+`ls: cannot access 'AIzaSyB…nxcN'` -- each half on its own line -- and 14
+characters are not a key by the strict shape, so the halves survived the
+v6 re-scrub (CC2 #3902).
+
+**Fix.** Two fragment patterns: `AIzaSy` + 6..29 key characters (every
+Google key starts `AIzaSy`; the bare prefix survives as prose) and
+`sk-ant-api<digits>-` + 4..19. `REDACTION_VERSION` 6 → 7 re-scrubs stored
+transcripts. The TRAILING half has no prefix and no shape: it is a hand fix
+at the source `.jsonl.gz`, never at the index (the index is rebuilt from
+the gz on every reprocess, which is how the two hand-redacted index rows
+came back).
+
 ## v4.26.2 — Redactor: keys split by whitespace or a file name (2026-09-25)
 
 **Problem.** Every vendor pattern matches a key as ONE unbroken run of
