@@ -1,5 +1,37 @@
 # Changelog
 
+## v4.26.2 — Redactor: keys split by whitespace or a file name (2026-09-25)
+
+**Problem.** Every vendor pattern matches a key as ONE unbroken run of
+characters. A key broken by a space passed every scrub, the v5 re-scrub
+included: on 2026-09-24 an `ls ~/Downloads` tool_result listed a file NAMED
+with a (dead) Google key that had a space in it, and the two halves (14 + 25
+characters) sat in the cc session archive until a loose byte scan found
+them by hand (`snag-redactor-misses-whitespace-split-keys.md`, CC2 #3891).
+The same shape arrives from a wrapped terminal line or a JSON-escaped
+newline in raw JSONL.
+
+**Fix.**
+- A loose pass at the end of `redact_text`: a vendor prefix (`AIza`,
+  `sk-or-`, `sk-ant-`, `sk-proj-`, `gh*_`, `github_pat_`, AWS, `xox*-`,
+  Stripe, `tskey-`, `hf_`, `npm_`, Shopify), then key-character runs
+  separated by whitespace or a literal `\n` `\r` `\t`, up to four gaps.
+  It runs before the strict patterns. Leading fragments are joined while
+  the strict vendor pattern accepts the join and the next fragment is not a
+  plain lowercase word; the longest such span goes as one
+  `[REDACTED:<kind>]`. Prose after the key survives (`sk-ant- keys are
+  rotated` is prose), a wrapped tail goes with its head, a join that never
+  passes is left alone and the scan restarts inside it. A code-like token
+  right after a key (`AIza… v2`) may be taken with it -- fail toward
+  redaction.
+- `REDACTION_VERSION` 5 → 6, so `reprocess_all` re-scrubs every stored
+  transcript on the next start.
+
+**Not covered (by design).** A lone fragment with no vendor prefix has no
+shape to match; the 09-24 row also held the halves separately (`ls: cannot
+access` splits at the space) and those were redacted by hand. A generic
+prefix-less split stays a human job.
+
 ## v4.26.1 — Redactor: short secrets after a credential name, and Cookie headers (2026-09-24)
 
 **Problem.** The `name=value` patterns needed a value of 16+ characters, so

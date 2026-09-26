@@ -181,6 +181,60 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 REPLACEMENT_FMT = "[REDACTED:{kind}]"
 
+# ── Split keys (v4.26.2, snag-redactor-misses-whitespace-split-keys) ──
+# A vendor key broken by whitespace -- a file NAME with a space in it echoed
+# by `ls`, a wrapped terminal line, a JSON-escaped newline in raw JSONL --
+# fails every vendor pattern above: each fragment is too short on its own
+# (the 09-24 leak: 14 + 25 characters of a Google key, missed by the v5
+# re-scrub). The loose scan takes a vendor prefix, then key-character runs
+# separated by whitespace or a literal \n \r \t, up to four gaps. It runs
+# BEFORE the strict loop (review of the first draft: strict-first redacts
+# the long first half of a wrapped key and the tail leaks). The callback
+# joins leading fragments while the strict vendor pattern accepts the join
+# and the next fragment is not a plain lowercase word, and redacts the
+# longest such span: prose after the key survives ("sk-ant- keys are
+# rotated" is prose; a key's fragments carry digits and capitals), a wrapped
+# tail is taken, a join that never passes is left alone and the scan
+# restarts one character in (a prefix in prose must not hide a key behind
+# it). Bounded runs keep a hostile run of prefixes linear-ish. A lone
+# fragment with no prefix is not findable by shape.
+_VENDOR_KINDS = frozenset({"openrouter", "anthropic", "openai", "github", "aws",
+                           "google", "slack", "stripe", "tailscale",
+                           "huggingface", "npm", "shopify"})
+_VENDOR_STRICT = [(k, p) for k, p in SECRET_PATTERNS if k in _VENDOR_KINDS]
+_KEY_GAP = r"(?:\s|\\[nrt])+"
+_KEY_GAP_RE = re.compile(_KEY_GAP)
+_PROSE_FRAG_RE = re.compile(r"[a-z]+(?:[-_][a-z]+)*")
+_SPLIT_KEY_RE = re.compile(
+    r"\b(?:AIza|sk-(?:or|ant|proj|svcacct|None)-|gh[pousr]_|github_pat_"
+    r"|(?:AKIA|ASIA|ABIA|ACCA)|xox[abeprs]-|[rs]k_(?:live|test)_|tskey-"
+    r"|hf_|npm_|shp(?:at|ca|pa|ss)_)"
+    r"[A-Za-z0-9_-]{0,256}(?:" + _KEY_GAP + r"[A-Za-z0-9_-]{1,256}){1,4}")
+
+
+def _redact_split_keys(text: str, found: dict[str, int]) -> str:
+    def _sub(m: re.Match) -> str:
+        raw = m.group(0)
+        gaps = list(_KEY_GAP_RE.finditer(raw))
+        starts = [0] + [g.end() for g in gaps]
+        ends = [g.start() for g in gaps] + [len(raw)]
+        frags = [raw[a:b] for a, b in zip(starts, ends)]
+        best = None
+        for k in range(1, len(frags) + 1):
+            if k > 1 and _PROSE_FRAG_RE.fullmatch(frags[k - 1]):
+                break
+            joined = "".join(frags[:k])
+            for kind, pat in _VENDOR_STRICT:
+                if pat.fullmatch(joined):
+                    best = (kind, k)
+                    break
+        if best is None:
+            return raw[:1] + _SPLIT_KEY_RE.sub(_sub, raw[1:])
+        kind, k = best
+        found[kind] = found.get(kind, 0) + 1
+        return REPLACEMENT_FMT.format(kind=kind) + raw[ends[k - 1]:]
+    return _SPLIT_KEY_RE.sub(_sub, text)
+
 # Values that look secret-shaped to the generic-assignment pattern but are
 # clearly not credentials (paths, placeholders, env-var references).
 _GENERIC_VALUE_ALLOWLIST = re.compile(
@@ -201,6 +255,8 @@ def redact_text(text: str) -> tuple[str, dict[str, int]]:
     if not text:
         return text, {}
     found: dict[str, int] = {}
+    if _SPLIT_KEY_RE.search(text):
+        text = _redact_split_keys(text, found)
     for kind, pattern in SECRET_PATTERNS:
         if "val" in pattern.groupindex:
             # Value-capturing patterns: redact only the value, and skip values

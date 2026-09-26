@@ -413,3 +413,49 @@ def test_comma_values_stay_linear():
         t0 = time.perf_counter()
         redact_text(blob)
         assert time.perf_counter() - t0 < 2.0, blob[:12]
+
+
+# ── v4.26.2: keys split by whitespace (snag-redactor-misses-whitespace-split-keys) ──
+_G1, _G2 = "AIzaSyB1234567", "890abcdefghijklmnopqrstuv"   # 14 + 25 = 39, a Google shape once joined
+assert len(_G1 + _G2) == 39
+
+
+@pytest.mark.parametrize("text,out", [
+    # the 09-24 leak: a file NAMED with the key, a space inside, echoed by ls
+    (f"-rw-r--r-- 1 guy guy 290 Apr 14 13:43 {_G1} {_G2}.md\n",
+     "-rw-r--r-- 1 guy guy 290 Apr 14 13:43 [REDACTED:google].md\n"),
+    # a wrapped terminal line, and its JSON-escaped form in raw JSONL
+    (f"key {_G1}\n{_G2} done", "key [REDACTED:google] done"),
+    (f"key {_G1}\\n{_G2} done", "key [REDACTED:google] done"),
+    ("token sk-ant-api03-" + "a1B" * 4 + "\n" + "c2D" * 7 + " next", "token [REDACTED:anthropic] next"),
+    # prose after the key survives (a lowercase word ends the join)
+    (f"{_G1} {_G2} and then some", "[REDACTED:google] and then some"),
+    ("AIza" + "Q1w2e3r4t5" * 3 + "Zz9zz is my key", "[REDACTED:google] is my key"),
+    # a LONG key wrapped mid-line: the first half is a key on its own, the
+    # tail must go with it (review of the first draft)
+    ("sk-ant-api03-" + "a1B" * 20 + "\n" + "c2D" * 16 + " next", "[REDACTED:anthropic] next"),
+    # three fragments
+    ("AIza" + "Q1w2e3r4t5" + " " + "Q1w2e3r4t5" + " " + "Q1w2e3r4t5Xy" + " ok", "[REDACTED:google] ok"),
+    # a prefix in prose must not hide the key behind it
+    (f"hf_ x {_G1} {_G2}", "hf_ x [REDACTED:google]"),
+])
+def test_split_vendor_key_redacted(text, out):
+    clean, found = redact_text(text)
+    assert clean == out
+    assert sum(found.values()) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "the AIza prefix marks a Google key",
+    "hf_ models and npm_ tokens are prefixes",
+    "sk-or- then nothing much",
+    f"{_G1} short",                      # a half plus a word: 19 chars, not a key
+    "[REDACTED-AIza-dYNs-20260925] marker text",   # CC2's marker shape
+    # prose after a prefix (review of the first draft: words joined into a body)
+    "sk-ant- keys are rotated automatically every quarter",
+    "tskey- auth keys expire after ninety days",
+    "xoxb- tokens are bot tokens here",
+    "The sk-proj- prefix identifies project scoped credentials",
+])
+def test_split_scan_leaves_prose(text):
+    assert redact_text(text) == (text, {})
