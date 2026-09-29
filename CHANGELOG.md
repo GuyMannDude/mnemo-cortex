@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — tools: transcript-ship keeps an unresolved conflict red (2026-09-29)
+
+**Problem.** After a 409 the shipper cached `status: conflict` in its state
+file and, on every later run, counted the unchanged file as `skipped_same`
+and exited 0. The cron alerted once (CC #3989) and then went green for as
+long as the archive and the file disagreed -- a silent degradation. Tools
+only; the server is unchanged.
+
+**Fix.** `_count_unchanged`: an unchanged file whose last ship was a
+conflict is reported again (`CONFLICT ... unresolved since <at>`, counted,
+EXIT_PARTIAL) without re-POSTing. Test updated to lock the new verdict.
+
+**Specimen.** Opie's Cowork transcript `b6014bf8`: Cowork rewrote the export
+as a post-compaction fragment; the archive held the full transcript and
+refused it. Resolved by merging full + fragment (prefix-verified) -> REPLACED.
+
 ## v4.26.3 — Redactor: a leading half of a key standing alone (2026-09-25)
 
 **Problem.** 4.26.2 joins a split key when both halves sit next to each

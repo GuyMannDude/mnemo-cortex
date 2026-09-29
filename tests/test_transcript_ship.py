@@ -117,8 +117,10 @@ def test_ship_conflict_is_partial_and_not_reposted(app_client, tmp_path, capsys)
     assert _run(app_client, root, state) == ship.EXIT_PARTIAL
     assert "conflict=1" in capsys.readouterr().out
     os.utime(f, None)                                     # touched, same bytes
-    assert _run(app_client, root, state) == ship.EXIT_CLEAN
-    assert "conflict=0" in capsys.readouterr().out
+    assert _run(app_client, root, state) == ship.EXIT_PARTIAL   # still red, not re-POSTed
+    out = capsys.readouterr()
+    assert "conflict=1" in out.out and "unresolved since" in out.err
+    assert _run(app_client, root, state) == ship.EXIT_PARTIAL   # untouched: same verdict
 
 
 def test_ship_pause_is_partial_and_state_untouched(app_client, tmp_path, capsys):

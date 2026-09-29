@@ -89,6 +89,19 @@ def ascii_only(text: str) -> str:
     return text.encode("ascii", "replace").decode("ascii")
 
 
+def _count_unchanged(prev: dict, key: str, counts: dict) -> None:
+    """An unchanged file is 'same' -- unless its last ship was a 409. A conflict
+    the archive still holds is not resolved by time passing: report it again
+    (no re-POST, the bytes have not changed) so the run stays PARTIAL until
+    someone fixes the file or the archive (S373: a cached conflict went green)."""
+    if prev.get("status") == "conflict":
+        print(f"CONFLICT {key}: unresolved since {prev.get('at', '?')} -- file unchanged "
+              f"since the 409; fix the file or the archive", file=sys.stderr)
+        counts["conflict"] += 1
+    else:
+        counts["skipped_same"] += 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Ship Claude Code / Cowork session transcripts to Mnemo's archive tier.")
@@ -158,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             prev = files_state.get(spath)
             if prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size:
-                counts["skipped_same"] += 1
+                _count_unchanged(prev, key, counts)
                 continue
             try:
                 raw = path.read_bytes()
@@ -171,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
                 prev.update(mtime=st.st_mtime, size=st.st_size)
                 if not args.dry_run:
                     save_state(state_path, state)
-                counts["skipped_same"] += 1
+                _count_unchanged(prev, key, counts)
                 continue
             if args.dry_run:
                 print(f"WOULD SHIP {key} {len(raw)} bytes {spath}")
