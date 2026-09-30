@@ -20,3 +20,6 @@ tests/ongoing/*-results.md
 # experiment data — names memory topics; keep private
 tools/experiments/**/recalls.jsonl
 tools/experiments/**/queries.txt
+
+# archive-file.sh copies (brain doctrine: archive before destructive) live beside originals; never commit them
+*.bak-*
