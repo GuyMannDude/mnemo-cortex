@@ -1,5 +1,18 @@
 # Changelog
 
+## v4.26.4 — redact: bounded credential-name prefixes, hostile runs stay linear (2026-10-02)
+
+**Problem.** `redact_text("-hf_" * 20000)` (80k chars) took ~93 s. The snag
+blamed the strict vendor patterns; timing each pattern alone showed the whole
+cost in `generic-assignment`, whose name prefix `[a-z0-9_-]*` swallowed the
+entire run and backtracked a character at a time from every `\b` -- O(n^2).
+`env-credential` had the same unbounded `[A-Z0-9_]*` for uppercase runs.
+Ingest is synchronous, so one pathological paste stalled a writeback.
+
+**Fix.** Both prefixes bounded to `{0,64}` (the bound is on the part BEFORE the keyword; no real name carries 65+ chars there; `credential-assignment` still catches an over-long `NAME=` form).
+80k hostile chars now redact in ~0.4 s (uppercase run ~0.2 s); every existing redaction test
+unchanged. Regression: `test_hostile_prefix_run_stays_linear` (< 1 s).
+
 ## Unreleased — tools: transcript-ship keeps an unresolved conflict red (2026-09-29)
 
 **Problem.** After a 409 the shipper cached `status: conflict` in its state

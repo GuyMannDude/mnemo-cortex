@@ -478,3 +478,16 @@ def test_leading_half_alone_redacted(text, out):
 ])
 def test_leading_half_floor_leaves_prose(text):
     assert redact_text(text) == (text, {})
+
+
+def test_hostile_prefix_run_stays_linear():
+    """snag-redactor-strict-patterns-quadratic: an 80k-char run of vendor
+    prefixes took ~93 s because the generic-assignment name prefix was an
+    unbounded `[a-z0-9_-]*` that backtracked from every word boundary.
+    Bounded to {0,64}, the whole pass takes ~0.4 s; 5 s leaves CI headroom."""
+    import time
+    text = "-hf_" * 20000
+    t0 = time.monotonic()
+    clean, counts = redact_text(text)
+    assert time.monotonic() - t0 < 5.0   # fixed code ~0.4 s; the bug took ~93 s
+    assert clean == text and counts == {}

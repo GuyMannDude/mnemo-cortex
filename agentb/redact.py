@@ -121,9 +121,12 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     # ── Generic assignment forms (lower confidence — require a long opaque
     #    value right after a credential-ish name to keep false positives low).
     #    The name may be prefixed (MNEMO_AUTH_TOKEN, SHOPIFY_API_KEY, …). ──
+    #    The name prefix is BOUNDED ({0,64}): unbounded `*` ate a whole hostile
+    #    run of key characters and backtracked from every \b -- O(n^2), 93 s on
+    #    an 80k-char "-hf_" repeat (snag-redactor-strict-patterns-quadratic).
     ("generic-assignment", re.compile(
         r"""(?ix)\b
-        [a-z0-9_-]*
+        [a-z0-9_-]{0,64}
         (api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|
          secret[_-]?key|client[_-]?secret|webhook[_-]?secret|password|passwd)
         \s*[=:]\s*["']?
@@ -137,7 +140,7 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     # are the env-var convention where real secrets actually live.
     ("env-credential", re.compile(
         r"""(?x)\b
-        [A-Z0-9_]*
+        [A-Z0-9_]{0,64}
         (TOKEN|SECRET|PRIVATE[_-]?KEY|PASSPHRASE|_KEY)
         \s*[=:]\s*["']?
         (?P<val>[A-Za-z0-9_\-./+]{16,})["']?
