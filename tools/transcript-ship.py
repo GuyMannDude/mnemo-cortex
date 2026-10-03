@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             candidates.append((p, key))
 
     counts = {"archived": 0, "replaced": 0, "unchanged": 0, "skipped_same": 0,
-              "conflict": 0, "paused": 0, "failed": 0, "would_ship": 0}
+              "conflict": 0, "paused": 0, "failed": 0, "would_ship": 0, "gone": 0}
     redactions = 0
     bad_lines = 0
     down = False
@@ -165,6 +165,16 @@ def main(argv: list[str] | None = None) -> int:
             spath = str(path)
             try:
                 st = path.stat()
+            except FileNotFoundError:
+                # Listed by the walk, gone by the time we reach it: Claude
+                # Code sweeps old sessions while the shipper runs. Nothing to
+                # ship and nothing broken -- forget it, do not count it red
+                # (2026-10-02: 8 of these made an hourly cron FAIL).
+                if files_state.pop(spath, None) is not None and not args.dry_run:
+                    save_state(state_path, state)
+                print(f"GONE {key}: vanished after listing, dropped from state")
+                counts["gone"] += 1
+                continue
             except OSError as e:
                 print(f"FAIL {key}: stat {ascii_only(str(e))}", file=sys.stderr)
                 counts["failed"] += 1

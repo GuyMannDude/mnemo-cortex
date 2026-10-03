@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — tools: transcript-ship counts a vanished file as GONE, not FAIL (2026-10-02)
+
+**Problem.** The walk lists every `*.jsonl`, then stats each one; Claude Code
+sweeps old sessions while that runs, so a listed file can be gone by stat
+time. The shipper counted the ENOENT as `failed` and exited PARTIAL -- the
+17:12 hourly cron went red on 8 of them with nothing to ship and nothing broken.
+Tools only; the server is unchanged.
+
+**Fix.** `FileNotFoundError` at stat is `GONE`: dropped from the state file,
+counted (`gone=N`), exit unaffected. Any other stat error is still `FAIL`.
+Test: `test_ship_file_vanished_after_listing_is_gone_not_failed`.
+
 ## v4.26.4 — redact: bounded credential-name prefixes, hostile runs stay linear (2026-10-02)
 
 **Problem.** `redact_text("-hf_" * 20000)` (80k chars) took ~93 s. The snag

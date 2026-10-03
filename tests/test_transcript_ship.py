@@ -108,6 +108,33 @@ def test_ship_end_to_end_then_skip_then_grow(app_client, tmp_path, capsys):
     assert saved[str(f)]["status"] == "replaced"
 
 
+def test_ship_file_vanished_after_listing_is_gone_not_failed(app_client, tmp_path, capsys):
+    """Claude Code sweeps old sessions while the shipper runs: a file the walk
+    listed can be gone by stat time. That is GONE (dropped from state, exit
+    clean), never FAIL (2026-10-02: 8 of these turned an hourly cron red)."""
+    root = _tree(tmp_path)
+    state = tmp_path / "state.json"
+    assert _run(app_client, root, state) == ship.EXIT_CLEAN
+    capsys.readouterr()
+
+    victim = root / "proj" / f"{OTHER_SID}.jsonl"
+    real_key = ship.session_key
+
+    def key_then_vanish(path):
+        key = real_key(path)
+        if path == victim:
+            victim.unlink()          # between the walk and the stat
+        return key
+
+    with patch.object(ship, "session_key", key_then_vanish):
+        assert _run(app_client, root, state) == ship.EXIT_CLEAN
+    out = capsys.readouterr().out
+    assert f"GONE {OTHER_SID}" in out
+    assert "gone=1" in out and "failed=0" in out and "skipped_same=2" in out
+    saved = json.loads(state.read_text(encoding="utf-8"))["files"]
+    assert str(victim) not in saved
+
+
 def test_ship_conflict_is_partial_and_not_reposted(app_client, tmp_path, capsys):
     root = _tree(tmp_path)
     state = tmp_path / "state.json"
