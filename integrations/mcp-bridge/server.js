@@ -17,7 +17,7 @@ import {
   getBootCuts,
   formatCutManifest,
 } from "./boot-budget.js";
-import { autoCommitBrainFile, sessionEndCommit, fastForwardBrain, lastCommitLine } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, fastForwardBrain, lastCommitLine } from "./brain-git.js";
 import { recordSeen, isCurrent, staleWriteRefusal } from "./write-guard.js";
 import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates, sessionPrefix } from "./lane-candidates.js";
@@ -2005,13 +2005,22 @@ server.registerTool(
     // reports anything left dirty — the old `git add -A` swept every other
     // agent's in-progress edits into a commit under this agent's name
     // (snag-session-end-git-add-all). Never throws.
-    results.push(
-      ...sessionEndCommit({
-        brainDir: BRAIN_DIR,
-        agentId: AGENT_ID,
-        dateStr: localDateOnly(),
-      })
-    );
+    const commitLines = sessionEndCommit({
+      brainDir: BRAIN_DIR,
+      agentId: AGENT_ID,
+      dateStr: localDateOnly(),
+    });
+    results.push(...commitLines);
+    // v2.35.0: a red pre-commit gate used to be reported ONLY here, to the
+    // agent that is ending — and die with it, lane staged, every other
+    // agent's pull --rebase blocked (snag-rocky-session-end-swallowed-red-gate).
+    // Page CC on the bus so the verdict has an audience outside this session.
+    const page = await pageCommitBlocked({
+      dispatcher: DISCOBUS_DISPATCHER,
+      agent: DISCOBUS_AGENT,
+      lines: commitLines,
+    });
+    if (page) results.push(page);
 
     // v2.15.0: advisory line when this session (bridge lifetime) never
     // touched the agent's own lane file — the Lane Protocol step agents

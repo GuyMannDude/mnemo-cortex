@@ -30,6 +30,42 @@ function firstLine(err) {
 }
 
 /**
+ * The line that says WHY a commit was refused. Git runs hooks with their
+ * stdout folded into stderr, so a red gate's stderr opens with the gate's
+ * BANNER ("Lane boot budget: 11,000 UTF-16 units...") and ends with the
+ * verdict ("GATE RED: lane rocky -- COMMIT BLOCKED"). firstLine() reported
+ * the banner and lost the verdict (snag-rocky-session-end-swallowed-red-gate;
+ * doctrine-tail-is-the-error). Prefer explicit verdict lines; else the LAST
+ * non-empty line; else whatever firstLine finds.
+ */
+const GATE_LINE = /GATE RED|COMMIT BLOCKED|\[OVER|FAIL\b/;
+
+function stderrLines(err) {
+  const msg = String((err && (err.stderr || err.message)) || err || "");
+  return msg.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
+/** True when the failure carries a gate verdict (a hook refused the commit). */
+export function gateRefused(err) {
+  return stderrLines(err).some((l) => GATE_LINE.test(l));
+}
+
+export function gateVerdict(err) {
+  const nonEmpty = stderrLines(err);
+  const verdicts = nonEmpty.filter((l) => GATE_LINE.test(l));
+  if (verdicts.length) return verdicts.join(" | ");
+  // Git's own errors put the cause on a `fatal:`/`error:` line (an index.lock
+  // failure ends with "remove the file manually to continue." — useless alone).
+  const gitErr = nonEmpty.filter((l) => /^(fatal|error):/.test(l));
+  if (gitErr.length) return gitErr[gitErr.length - 1];
+  if (nonEmpty.length) return nonEmpty[nonEmpty.length - 1];
+  return firstLine(err);
+}
+
+/** Marker every blocked-commit status line starts with; pageCommitBlocked keys on it. */
+export const COMMIT_BLOCKED = "🔴 Brain commit BLOCKED";
+
+/**
  * Stage, commit, and push a single brain file. Commits ONLY the named
  * path (pathspec commit), so unrelated staged changes are never swept up.
  *
@@ -71,7 +107,7 @@ export function autoCommitBrainFile({ brainDir, filename, agentId, dateStr, mess
       brainDir
     );
   } catch (err) {
-    return `auto-commit FAILED (${firstLine(err)}) — file IS written to disk; commit + push manually or via session_end`;
+    return `auto-commit FAILED (${gateVerdict(err)}) — file IS written to disk; commit + push manually or via session_end`;
   }
 
   try {
@@ -221,8 +257,20 @@ export function sessionEndCommit({ brainDir, agentId, dateStr }) {
         );
       }
     } catch (err) {
+      // The gate did its job; make sure the verdict cannot be swallowed:
+      // name the verdict (not the banner), say the file is STAGED and
+      // blocking everyone's pull --rebase, and tell the agent not to end
+      // on this line. pageCommitBlocked() then reports it OUTWARD to CC —
+      // the ending agent is the one party guaranteed not to act on it
+      // (doctrine-loss-invisible).
+      // STAGED / pull --rebase is only true when a HOOK refused the commit;
+      // an index.lock or identity error may have staged nothing.
       lines.push(
-        `Brain commit FAILED (${firstLine(err)}) — still on disk, uncommitted: ${mine.join(", ")}`
+        gateRefused(err)
+          ? `${COMMIT_BLOCKED} (${gateVerdict(err)}) — ${mine.join(", ")}: on disk and STAGED, NOT committed. ` +
+              `Every other agent's pull --rebase is blocked until it lands. Trim or fix NOW and commit again — do not end the session on this line.`
+          : `${COMMIT_BLOCKED} (${gateVerdict(err)}) — ${mine.join(", ")}: on disk, NOT committed. ` +
+              `Fix the git error and commit again — do not end the session on this line.`
       );
     }
   } else {
@@ -244,4 +292,54 @@ export function sessionEndCommit({ brainDir, agentId, dateStr }) {
     }
   }
   return lines;
+}
+
+/**
+ * Report a blocked session-end commit OUTWARD: a bus ping to CC (fleet
+ * steward) from the ending agent. The agent that hit the red gate is
+ * ending its session, so its own tool response is the one place the
+ * verdict is guaranteed to die (snag-rocky-session-end-swallowed-red-gate:
+ * the ritual "ended silently"). Best effort, never throws; returns a status
+ * line for the tool response, or null when nothing was blocked.
+ *
+ * @param {object} opts
+ * @param {string}   opts.dispatcher  DISCOBUS_DISPATCHER base URL ("" = no bus)
+ * @param {string}   opts.agent       bus sender name (DISCOBUS_AGENT)
+ * @param {string[]} opts.lines       sessionEndCommit() output
+ * @param {Function} [opts.fetchImpl] fetch (tests inject)
+ * @param {number}   [opts.timeoutMs]
+ * @returns {Promise<string|null>}
+ */
+export async function pageCommitBlocked({ dispatcher, agent, lines, fetchImpl = fetch, timeoutMs = 3_000 }) {
+  const blocked = (lines || []).filter((l) => String(l).startsWith(COMMIT_BLOCKED));
+  if (!blocked.length) return null;
+  if (!dispatcher) return "CC NOT paged (no DISCOBUS_DISPATCHER) — tell CC yourself before you end";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(`${String(dispatcher).replace(/\/$/, "")}/mesh/ping`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        mesh_version: "0.5",
+        from: agent,
+        to: "CC",
+        subject: `brain-commit-BLOCKED-${agent}`,
+        body: {
+          agent,
+          blocked,
+          action: "the lane is staged but uncommitted in the shared brain — every pull --rebase is blocked; land or trim it",
+        },
+      }),
+    });
+    if (!res.ok) return `CC page FAILED (HTTP ${res.status}) — tell CC yourself before you end`;
+    let id = "?";
+    try { id = (await res.json()).id ?? "?"; } catch { /* body optional */ }
+    return `CC paged on the bus (#${id}) — the blocked commit is now visible outside this session`;
+  } catch (err) {
+    return `CC page FAILED (${firstLine(err)}) — tell CC yourself before you end`;
+  } finally {
+    clearTimeout(timer);
+  }
 }

@@ -12,6 +12,34 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.35.0 — 2026-10-07 — a red session-end gate is reported outward, with its verdict
+
+**Problem.** When the brain's pre-commit gate refused `session_end`'s lane
+commit (lane over the boot budget), `sessionEndCommit` reported
+`Brain commit FAILED (<first stderr line>)` — and git folds hook stdout into
+stderr, so that first line was the gate's BANNER ("Lane boot budget: 11,000
+UTF-16 units…"), not the verdict. The lane stayed STAGED, which blocks every
+other agent's `pull --rebase`, and the only reader of the status line was the
+agent that was ending its session. Rocky's 08-26 ritual ended on exactly that
+line and the brain sat blocked until CC found it by hand
+(snag-rocky-session-end-swallowed-red-gate; doctrine-tail-is-the-error,
+doctrine-loss-invisible). Same banner-not-verdict defect in `write_brain_file`'s
+auto-commit status.
+
+**Fix.** `gateVerdict(err)` prefers the GATE RED / COMMIT BLOCKED / [OVER /
+[FAIL lines, else the LAST non-empty line; both commit paths use it. The
+session-end line now starts with `🔴 Brain commit BLOCKED`, names the staged
+file and the consequence, and tells the agent not to end on it. New
+`pageCommitBlocked()` posts that line to **CC on the disco-bus** from the
+ending agent (`DISCOBUS_DISPATCHER` / `DISCOBUS_AGENT`, same env the boot
+inbox summary uses); no dispatcher or a dead bus is a visible "NOT paged" /
+"page FAILED" line, never silence. Tests: red-gate verdict + staged state,
+`gateVerdict` tail rule, page posted / nothing blocked / no dispatcher /
+bus down.
+
+**Wiring.** Opie's bridge already carries both env vars; Rocky's and CC's are
+set alongside this release (bridge change is inert until each client restarts).
+
 ## 2.34.0 — 2026-09-25 — auto-capture spools to disk; a dead bridge's trail is replayed
 
 **Problem.** The auto-capture trail lived only in `captureBuffer`, a

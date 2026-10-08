@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoCommitBrainFile, sessionEndCommit } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, gateVerdict, gateRefused, COMMIT_BLOCKED } from "./brain-git.js";
 
 let passed = 0;
 let failed = 0;
@@ -243,6 +243,94 @@ test("non-repo dir → skipped, never throws", () => {
   mkdirSync(plain);
   const lines = sessionEndCommit({ ...seOpts, brainDir: plain });
   assert(lines[0].includes("not a git repo"), lines.join(" | "));
+});
+
+
+// ── red pre-commit gate (snag-rocky-session-end-swallowed-red-gate) ──
+
+test("red pre-commit gate → BLOCKED line carries the gate VERDICT, not the banner; file left staged", () => {
+  const hooks = join(root, "red-hooks");
+  mkdirSync(hooks, { recursive: true });
+  writeFileSync(
+    join(hooks, "pre-commit"),
+    "#!/bin/sh\necho 'Lane boot budget: 11,000 UTF-16 units (banner)'\necho '  [OVER ] test-agent  11,075 units   75 OVER'\necho '' >&2\necho 'GATE RED: lane test-agent -- COMMIT BLOCKED. Fix or trim, then commit again.' >&2\nexit 1\n",
+    { mode: 0o755 }
+  );
+  git(["config", "core.hooksPath", hooks], clone);
+  try {
+    writeFileSync(join(clone, "test-agent.md"), "over budget lane\n");
+    const lines = sessionEndCommit({ brainDir: clone, agentId: "test-agent", dateStr: "2026-10-07" });
+    assert(lines[0].startsWith(COMMIT_BLOCKED), `line0: ${lines[0]}`);
+    assert(lines[0].includes("GATE RED") && lines[0].includes("[OVER"), `verdict missing: ${lines[0]}`);
+    assert(!lines[0].includes("(Lane boot budget"), `banner leaked as the reason: ${lines[0]}`);
+    assert(lines[0].includes("STAGED") && lines[0].includes("pull --rebase"), `consequence missing: ${lines[0]}`);
+    const staged = git(["diff", "--cached", "--name-only"], clone);
+    assert(staged === "test-agent.md", `staged: ${staged}`);
+    const head = git(["log", "-1", "--format=%s"], clone);
+    assert(!head.includes("2026-10-07"), `commit landed despite red gate: ${head}`);
+  } finally {
+    git(["config", "--unset", "core.hooksPath"], clone);
+    git(["reset", "-q", "--", "test-agent.md"], clone);
+    rmSync(join(clone, "test-agent.md"), { force: true });
+  }
+});
+
+test("gateVerdict: no verdict pattern → LAST non-empty line, never the banner", () => {
+  const v = gateVerdict({ stderr: "banner line\n\nsomething went wrong at the end\n" });
+  assert(v === "something went wrong at the end", v);
+  const w = gateVerdict({ message: "only one line" });
+  assert(w === "only one line", w);
+});
+
+test("gateVerdict: plain git error → the fatal: line, not the trailing hint (index.lock)", () => {
+  const lock = { stderr: "fatal: Unable to create '/brain/.git/index.lock': File exists.\n\nAnother git process seems to be running.\nremove the file manually to continue.\n" };
+  const v = gateVerdict(lock);
+  assert(v.startsWith("fatal: Unable to create") && v.includes("index.lock"), v);
+  assert(!gateRefused(lock), "index.lock is not a gate refusal");
+  assert(gateRefused({ stderr: "banner\nGATE RED: lane x -- COMMIT BLOCKED.\n" }), "GATE RED must count as refused");
+});
+
+const blockedLines = [`${COMMIT_BLOCKED} (GATE RED: lane rocky -- COMMIT BLOCKED) — rocky.md: on disk and STAGED, NOT committed.`];
+
+async function asyncTest(name, fn) {
+  try {
+    await fn();
+    console.log(`  PASS  ${name}`);
+    passed++;
+  } catch (err) {
+    console.log(`  FAIL  ${name}: ${err.message}`);
+    failed++;
+  }
+}
+
+await asyncTest("pageCommitBlocked: posts the blocked line to CC on the bus and returns the ping id", async () => {
+  let seen = null;
+  const fetchImpl = async (url, init) => {
+    seen = { url, body: JSON.parse(init.body) };
+    return { ok: true, status: 200, json: async () => ({ id: 4242 }) };
+  };
+  const line = await pageCommitBlocked({ dispatcher: "http://bus.test:9100/", agent: "Rocky", lines: blockedLines, fetchImpl });
+  assert(seen && seen.url === "http://bus.test:9100/mesh/ping", `url: ${seen && seen.url}`);
+  assert(seen.body.to === "CC" && seen.body.from === "Rocky", JSON.stringify(seen.body));
+  assert(seen.body.subject === "brain-commit-BLOCKED-Rocky", seen.body.subject);
+  assert(seen.body.body.blocked[0] === blockedLines[0], "blocked line not carried");
+  assert(line.includes("#4242"), line);
+});
+
+await asyncTest("pageCommitBlocked: nothing blocked → null (no ping)", async () => {
+  let called = false;
+  const line = await pageCommitBlocked({ dispatcher: "http://bus.test", agent: "Rocky", lines: ["Brain commit + push: OK (rocky.md)"], fetchImpl: async () => { called = true; } });
+  assert(line === null && !called, `line=${line} called=${called}`);
+});
+
+await asyncTest("pageCommitBlocked: no dispatcher → says CC was NOT paged (never silent)", async () => {
+  const line = await pageCommitBlocked({ dispatcher: "", agent: "Rocky", lines: blockedLines });
+  assert(line && line.includes("NOT paged"), line);
+});
+
+await asyncTest("pageCommitBlocked: bus down → loud FAILED, never throws", async () => {
+  const line = await pageCommitBlocked({ dispatcher: "http://bus.test", agent: "Rocky", lines: blockedLines, fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
+  assert(line.includes("FAILED") && line.includes("ECONNREFUSED"), line);
 });
 
 rmSync(root, { recursive: true, force: true });
