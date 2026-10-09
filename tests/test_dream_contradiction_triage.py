@@ -47,11 +47,13 @@ REAL_CONFLICT = _flag("decommissioned 2026-06-26", "active production host", ent
 
 def _judge(monkeypatch, responder):
     """Install a fake _call_llm; returns the call-count holder."""
-    calls = {"n": 0, "user_content": None}
+    calls = {"n": 0, "user_content": None, "effort": None, "max_tokens": None}
 
-    def fake(system_prompt, user_content, max_tokens=4096):
+    def fake(system_prompt, user_content, max_tokens=4096, effort=None):
         calls["n"] += 1
         calls["user_content"] = user_content
+        calls["effort"] = effort
+        calls["max_tokens"] = max_tokens
         return responder(user_content), {}
 
     monkeypatch.setattr(dream, "_call_llm", fake)
@@ -129,6 +131,15 @@ def test_judge_none_content_keeps_all_flags(monkeypatch):
     survivors, drift = dream.triage_contradictions([OPIE_ROLE, REAL_CONFLICT])
     assert survivors == [OPIE_ROLE, REAL_CONFLICT]
     assert drift == []
+
+
+def test_judge_runs_at_low_effort(monkeypatch):
+    """CC ruling 10-09: the compatibility judge is a short JSON verdict list."""
+    calls = _judge(monkeypatch, lambda _: json.dumps([{"i": 1, "verdict": "conflict", "reason": "real"}]))
+    dream.triage_contradictions([REAL_CONFLICT])
+    assert calls["n"] == 1
+    assert calls["effort"] == "low"
+    assert calls["max_tokens"] == 1024
 
 
 def test_judge_http_error_keeps_all_flags(monkeypatch):

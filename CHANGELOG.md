@@ -26,7 +26,13 @@ ANTHROPIC_API_KEY unset` warning per run; its default model stays
 (same halving loop) also treats Anthropic's oversize answers as size errors: 400
 "prompt is too long" and 413 `request_too_large`. The startup check accepts
 either key. SUNSET: delete the OpenRouter path after the first green Anthropic
-dream. Tests: `tests/test_dream_provider.py` (14, HTTP faked); `test_dream_cap`
+dream. Effort and caps (CC ruling 10-09; Haiku 5.5's adaptive thinking
+spends from `max_tokens`): the contradiction judge sends `output_config:
+{"effort": "low"}` (cap 1024 unchanged). Per-agent briefs and the rollup keep
+the default effort with doubled caps: per-agent 2048 → 4096, rollup and its
+retry 4096 → 8192. Fact extraction (8192) and strategy distill (16384) are
+unchanged. `effort` is Claude API only; the OpenRouter path ignores it.
+Tests: `tests/test_dream_provider.py` (18, HTTP faked); `test_dream_cap`
 and `test_dream_contradiction_triage` patch the renamed functions.
 
 **Deploy note.** `MNEMO_DREAM_MODEL` must name a model of the provider in

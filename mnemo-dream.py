@@ -725,24 +725,35 @@ def _check_dream_model() -> None:
         DREAM_MODEL = "claude-haiku-5-5"
 
 
-def _call_llm(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
+def _call_llm(system_prompt: str, user_content: str, max_tokens: int = 4096,
+              effort: str | None = None) -> tuple[str, dict]:
     """Single LLM call on the env-selected provider. Returns (text, usage) with
-    usage in prompt_tokens/completion_tokens keys whatever the provider."""
+    usage in prompt_tokens/completion_tokens keys whatever the provider.
+    `effort` is Claude API only (OpenRouter ignores it); None = model default."""
     global _openrouter_warned
     if ANTHROPIC_API_KEY:
-        return _call_anthropic(system_prompt, user_content, max_tokens=max_tokens)
+        return _call_anthropic(system_prompt, user_content, max_tokens=max_tokens, effort=effort)
     if not _openrouter_warned:
         log.warning("dreamer on OpenRouter fallback — ANTHROPIC_API_KEY unset")
         _openrouter_warned = True
     return _call_openrouter(system_prompt, user_content, max_tokens=max_tokens)
 
 
-def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
+def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 4096,
+                    effort: str | None = None) -> tuple[str, dict]:
     """Single Claude API call (Messages API over raw httpx). Raises RuntimeError
     on non-200, a refusal, or a 200 that carries no answer text."""
     # No temperature: Haiku 5.5 answers 400 to any non-default sampling value.
     # Transport and body-parse failures surface as RuntimeError: every caller's
     # per-stage isolation catches exactly that, so one timeout costs one call.
+    body = {
+        "model": DREAM_MODEL,
+        "max_tokens": max_tokens,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_content}],
+    }
+    if effort:
+        body["output_config"] = {"effort": effort}
     try:
         response = httpx.post(
             ANTHROPIC_URL,
@@ -751,12 +762,7 @@ def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 409
                 "anthropic-version": ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
-            json={
-                "model": DREAM_MODEL,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_content}],
-            },
+            json=body,
             timeout=180.0,
         )
     except httpx.HTTPError as e:
@@ -953,7 +959,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         section = _build_agent_section(agent_id, agent_memories)
         log.info(f"  stage 1 [{agent_id}]: {len(agent_memories)} entries, {len(section):,} chars")
         try:
-            brief, usage = _call_llm_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=2048)
+            brief, usage = _call_llm_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=4096)
         except RuntimeError as e:
             # Isolate per-agent failures: one agent's LLM error must not abort the
             # whole run and suppress the notification that the OTHER agents' good
@@ -973,7 +979,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
     rollup_input = "# Per-agent briefs to synthesize\n\n" + "\n\n---\n\n".join(per_agent_briefs)
     log.info(f"  stage 2 rollup: {len(per_agent_briefs)} briefs, {len(rollup_input):,} chars")
     try:
-        dream_text, usage = _call_llm_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=4096)
+        dream_text, usage = _call_llm_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=8192)
     except RuntimeError as e:
         log.error(f"  stage 2 failed: {e}")
         sys.exit(1)
@@ -1007,7 +1013,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
                 "verb).")
             try:
                 retry_text, usage = _call_llm_adaptive(
-                    ROLLUP_SYSTEM_PROMPT, retry_input, max_tokens=4096)
+                    ROLLUP_SYSTEM_PROMPT, retry_input, max_tokens=8192)
             except RuntimeError as retry_call_err:
                 _quarantine_rejected(dream_text, str(first_err),
                                      "the corrective retry CALL itself failed, so the preserved "
@@ -1685,7 +1691,8 @@ def _triage_contradictions_inner(contradictions: list[dict]) -> tuple[list[dict]
         for i, c in enumerate(llm_queue, 1)
     )
     try:
-        raw, _ = _call_llm(_TRIAGE_SYSTEM_PROMPT, items, max_tokens=1024)
+        # Effort low: a short JSON verdict list (CC ruling 10-09).
+        raw, _ = _call_llm(_TRIAGE_SYSTEM_PROMPT, items, max_tokens=1024, effort="low")
         verdicts = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```"))
         by_index = {v["i"]: v for v in verdicts if isinstance(v, dict) and v.get("verdict") in ("conflict", "compatible")}
     except (RuntimeError, httpx.HTTPError, json.JSONDecodeError, TypeError, KeyError, AttributeError) as e:

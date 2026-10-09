@@ -205,3 +205,54 @@ def test_non_json_200_is_a_runtime_error(monkeypatch):
     _capture_post(monkeypatch, dream, [_Html(200, {})])
     with pytest.raises(RuntimeError, match="not JSON"):
         dream._call_llm("s", "u")
+
+
+# ── Effort + caps (CC ruling 10-09: thinking spends from max_tokens) ──
+
+def test_effort_is_sent_only_when_asked(monkeypatch):
+    dream = _load(monkeypatch, "k")
+    sent = _capture_post(monkeypatch, dream, [_reply("a"), _reply("b")])
+    dream._call_llm("s", "u", max_tokens=1024, effort="low")
+    dream._call_llm("s", "u")
+    assert sent[0][1]["json"]["output_config"] == {"effort": "low"}
+    assert "output_config" not in sent[1][1]["json"]  # model default (medium)
+
+
+def test_openrouter_fallback_ignores_effort(monkeypatch):
+    dream = _load(monkeypatch, None)
+    reply = _Resp(200, {"choices": [{"message": {"content": "hi"}}], "usage": {}})
+    sent = _capture_post(monkeypatch, dream, [reply])
+    dream._call_llm("s", "u", effort="low")
+    assert "output_config" not in sent[0][1]["json"]
+
+
+def test_synthesis_calls_keep_default_effort_with_doubled_caps(monkeypatch, tmp_path):
+    """Stage 1 per-agent brief 2048 -> 4096, stage 2 rollup 4096 -> 8192; no effort."""
+    dream = _load(monkeypatch, "k")
+    monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
+    monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
+    monkeypatch.setattr(dream, "_validate_stated_lines", lambda payload: None)
+    sent = _capture_post(monkeypatch, dream, [_reply("agent brief"), _reply("rollup")])
+    dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}])
+
+    bodies = [kw["json"] for _, kw in sent]
+    assert [b["system"] for b in bodies] == [dream.PER_AGENT_SYSTEM_PROMPT, dream.ROLLUP_SYSTEM_PROMPT]
+    assert [b["max_tokens"] for b in bodies] == [4096, 8192]
+    assert all("output_config" not in b for b in bodies)
+
+
+def test_rollup_retry_cap_is_doubled_too(monkeypatch, tmp_path):
+    dream = _load(monkeypatch, "k")
+    monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
+    monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
+
+    def validate(payload):
+        if payload == "bad rollup":
+            raise RuntimeError("stated-line validation failed:\nSUBJECT claim starts lowercase: cc")
+
+    monkeypatch.setattr(dream, "_validate_stated_lines", validate)
+    sent = _capture_post(monkeypatch, dream,
+                         [_reply("agent brief"), _reply("bad rollup"), _reply("good rollup")])
+    assert dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}]) == "good rollup"
+    assert [kw["json"]["max_tokens"] for _, kw in sent] == [4096, 8192, 8192]
+    assert all("output_config" not in kw["json"] for _, kw in sent)
