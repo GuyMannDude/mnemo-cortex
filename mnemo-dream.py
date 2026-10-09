@@ -179,9 +179,19 @@ def _compose_boot_dream(text: str, budget: int) -> str:
         raise RuntimeError("boot dream composer exceeded its reserved budget")
     return result
 
+# Provider by env (2026-10-09): ANTHROPIC_API_KEY set -> Claude API direct
+# (native Messages API); unset -> OpenRouter, the pre-10-09 path, with a loud
+# warning. SUNSET: remove the OpenRouter path after the first green Anthropic dream.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Each provider's default is ITS model id; MNEMO_DREAM_MODEL overrides either,
+# so it must name a model the selected provider serves.
+DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL") or (
+    "claude-haiku-5-5" if ANTHROPIC_API_KEY else "google/gemini-2.5-flash"
+)
 
 # Phase 3: facts extraction + contradiction notification config
 MNEMO_URL = os.getenv("MNEMO_URL", "http://localhost:50001")
@@ -702,6 +712,88 @@ def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: st
         log.error(f"  could not preserve rejected rollup: {e}")
 
 
+_openrouter_warned = False
+
+
+def _check_dream_model() -> None:
+    """An OpenRouter vendor/model id left in MNEMO_DREAM_MODEL would 404 every
+    Claude API call and kill the whole run: scream, dream on the default."""
+    global DREAM_MODEL
+    if ANTHROPIC_API_KEY and "/" in DREAM_MODEL:
+        log.error(f"MNEMO_DREAM_MODEL={DREAM_MODEL!r} is an OpenRouter id but ANTHROPIC_API_KEY "
+                  "is set — using claude-haiku-5-5; fix the env")
+        DREAM_MODEL = "claude-haiku-5-5"
+
+
+def _call_llm(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
+    """Single LLM call on the env-selected provider. Returns (text, usage) with
+    usage in prompt_tokens/completion_tokens keys whatever the provider."""
+    global _openrouter_warned
+    if ANTHROPIC_API_KEY:
+        return _call_anthropic(system_prompt, user_content, max_tokens=max_tokens)
+    if not _openrouter_warned:
+        log.warning("dreamer on OpenRouter fallback — ANTHROPIC_API_KEY unset")
+        _openrouter_warned = True
+    return _call_openrouter(system_prompt, user_content, max_tokens=max_tokens)
+
+
+def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
+    """Single Claude API call (Messages API over raw httpx). Raises RuntimeError
+    on non-200, a refusal, or a 200 that carries no answer text."""
+    # No temperature: Haiku 5.5 answers 400 to any non-default sampling value.
+    # Transport and body-parse failures surface as RuntimeError: every caller's
+    # per-stage isolation catches exactly that, so one timeout costs one call.
+    try:
+        response = httpx.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json={
+                "model": DREAM_MODEL,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_content}],
+            },
+            timeout=180.0,
+        )
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Anthropic transport error: {type(e).__name__}: {e}") from e
+    if response.status_code != 200:
+        raise RuntimeError(f"Anthropic {response.status_code}: {response.text[:500]}")
+    try:
+        result = response.json()
+    except ValueError as e:
+        raise RuntimeError(f"Anthropic 200 but body is not JSON: {response.text[:500]}") from e
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Anthropic 200 but body is not an object: {response.text[:500]}")
+    stop = result.get("stop_reason")
+    if stop == "refusal":
+        # Haiku has no server-side fallback model: the refusal IS the answer.
+        log.error(f"  Anthropic refusal: {json.dumps(result.get('stop_details'))}")
+        raise RuntimeError(f"Anthropic refusal: {json.dumps(result.get('stop_details'))[:500]}")
+    blocks = result.get("content")
+    # Thinking blocks (adaptive thinking is on by default) come first and carry
+    # no answer; only text blocks do.
+    text = "".join(
+        b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
+    ) if isinstance(blocks, list) else ""
+    if not text.strip():
+        # Same guard as OpenRouter's "200 but no choices": a catchable
+        # RuntimeError, never an empty brief. Thinking can spend the whole
+        # max_tokens budget and leave no text at all (stop_reason=max_tokens).
+        raise RuntimeError(f"Anthropic 200 but empty text (stop_reason={stop}): {json.dumps(result)[:500]}")
+    if stop in ("max_tokens", "model_context_window_exceeded"):
+        log.warning(f"  Anthropic reply TRUNCATED (stop_reason={stop}, {len(text):,} chars)")
+    usage = result.get("usage") or {}
+    return text, {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+    }
+
+
 def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
     """Single OpenRouter call. Returns (text, usage). Raises on non-200."""
     response = httpx.post(
@@ -736,10 +828,10 @@ def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 40
     return result["choices"][0]["message"]["content"], result.get("usage", {})
 
 
-def _call_openrouter_adaptive(
+def _call_llm_adaptive(
     system_prompt: str, user_content: str, max_tokens: int = 4096, min_chars: int = 20000
 ) -> tuple[str, dict]:
-    """_call_openrouter, but halve the input and retry on a context-length 400.
+    """_call_llm, but halve the input and retry on a context-length 400.
 
     The per-agent char cap (MAX_AGENT_SECTION_CHARS) prevents overflow in the
     normal case; this is the belt-and-suspenders for token-density spikes —
@@ -750,16 +842,22 @@ def _call_openrouter_adaptive(
     content = user_content
     while True:
         try:
-            return _call_openrouter(system_prompt, content, max_tokens=max_tokens)
+            return _call_llm(system_prompt, content, max_tokens=max_tokens)
         except RuntimeError as e:
             msg = str(e).lower()
             # Size-related failures worth retrying smaller: explicit context-length
             # errors, plus the provider-side 400 that OpenRouter wraps in a 200
             # ("no choices" / "provider returned error", code 400) — a large opie
-            # section hits the latter before the former.
+            # section hits the latter before the former. Anthropic: input over
+            # the context window is a 400 invalid_request_error "prompt is too
+            # long" (platform.claude.com/docs/en/build-with-claude/context-windows,
+            # "Context window overflow behavior"; the errors page does not
+            # print the message); a body over 32 MB is a 413 request_too_large
+            # (platform.claude.com/docs/en/api/errors, "Request size limits").
             is_oversize = (
                 "context length" in msg or "maximum context" in msg or "context_length" in msg
                 or "no choices" in msg or "provider returned error" in msg
+                or "prompt is too long" in msg or "request_too_large" in msg
             )
             if is_oversize and len(content) > min_chars:
                 new_len = max(min_chars, len(content) // 2)
@@ -842,8 +940,8 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
     if dry_run:
         return f"[DRY RUN] Would map-reduce {len(memories)} memories from {len(by_agent)} agents ({total_chars:,} chars)"
 
-    if not OPENROUTER_API_KEY:
-        log.error("No OPENROUTER_API_KEY set — cannot call LLM")
+    if not (ANTHROPIC_API_KEY or OPENROUTER_API_KEY):
+        log.error("No ANTHROPIC_API_KEY or OPENROUTER_API_KEY set — cannot call LLM")
         sys.exit(1)
 
     # Stage 1: per-agent briefs
@@ -855,7 +953,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         section = _build_agent_section(agent_id, agent_memories)
         log.info(f"  stage 1 [{agent_id}]: {len(agent_memories)} entries, {len(section):,} chars")
         try:
-            brief, usage = _call_openrouter_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=2048)
+            brief, usage = _call_llm_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=2048)
         except RuntimeError as e:
             # Isolate per-agent failures: one agent's LLM error must not abort the
             # whole run and suppress the notification that the OTHER agents' good
@@ -875,7 +973,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
     rollup_input = "# Per-agent briefs to synthesize\n\n" + "\n\n---\n\n".join(per_agent_briefs)
     log.info(f"  stage 2 rollup: {len(per_agent_briefs)} briefs, {len(rollup_input):,} chars")
     try:
-        dream_text, usage = _call_openrouter_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=4096)
+        dream_text, usage = _call_llm_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=4096)
     except RuntimeError as e:
         log.error(f"  stage 2 failed: {e}")
         sys.exit(1)
@@ -908,7 +1006,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
                 "Opie, Rocky, Dave — never lowercase agent ids, never a bare "
                 "verb).")
             try:
-                retry_text, usage = _call_openrouter_adaptive(
+                retry_text, usage = _call_llm_adaptive(
                     ROLLUP_SYSTEM_PROMPT, retry_input, max_tokens=4096)
             except RuntimeError as retry_call_err:
                 _quarantine_rejected(dream_text, str(first_err),
@@ -1247,7 +1345,7 @@ def _extract_facts_from_section(agent_id: str, section: str, label: str = "") ->
     agent's facts (the bug that lost all 585 cc entries' facts on 2026-06-13).
     """
     try:
-        raw, _ = _call_openrouter_adaptive(
+        raw, _ = _call_llm_adaptive(
             FACT_EXTRACTION_SYSTEM_PROMPT, section, max_tokens=FACT_EXTRACTION_MAX_TOKENS
         )
     except RuntimeError as e:
@@ -1333,7 +1431,7 @@ def extract_facts_for_agent(agent_id: str, agent_memories: list[dict]) -> list[d
     for i, chunk in enumerate(chunks):
         label = f" chunk {i + 1}/{len(chunks)}" if len(chunks) > 1 else ""
         # Never-silent: a lone entry over the budget can't be split further here;
-        # _call_openrouter_adaptive may halve (and drop the tail of) its input on a
+        # _call_llm_adaptive may halve (and drop the tail of) its input on a
         # context-400, so facts in that dropped tail are lost. Surface it.
         if len(chunk) == 1 and (only_chars := len(_render_memory(chunk[0]))) > FACT_EXTRACTION_CHUNK_CHARS:
             log.warning(
@@ -1587,7 +1685,7 @@ def _triage_contradictions_inner(contradictions: list[dict]) -> tuple[list[dict]
         for i, c in enumerate(llm_queue, 1)
     )
     try:
-        raw, _ = _call_openrouter(_TRIAGE_SYSTEM_PROMPT, items, max_tokens=1024)
+        raw, _ = _call_llm(_TRIAGE_SYSTEM_PROMPT, items, max_tokens=1024)
         verdicts = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```"))
         by_index = {v["i"]: v for v in verdicts if isinstance(v, dict) and v.get("verdict") in ("conflict", "compatible")}
     except (RuntimeError, httpx.HTTPError, json.JSONDecodeError, TypeError, KeyError, AttributeError) as e:
@@ -1802,7 +1900,7 @@ def distill_strategies_for_agent(agent_id: str, agent_streams: dict[str, list[di
     for sid in sorted(agent_streams):
         section = _build_session_section(agent_id, sid, agent_streams[sid], narrative)
         try:
-            raw, _ = _call_openrouter_adaptive(
+            raw, _ = _call_llm_adaptive(
                 STRATEGY_DISTILL_SYSTEM_PROMPT, section, max_tokens=STRATEGY_MAX_TOKENS
             )
         except RuntimeError as e:
@@ -2155,6 +2253,7 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="[mnemo-dream] %(levelname)s %(message)s",
     )
+    _check_dream_model()
 
     # Determine time window
     if args.hours > 0:

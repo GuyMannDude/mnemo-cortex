@@ -8,7 +8,7 @@ test rather than waiting for the next stuck-window incident to exercise it.
 
   - _build_agent_section: bounds one agent's brief to MAX_AGENT_SECTION_CHARS,
     recency-first (drop oldest), announcing the drop (never silent truncation).
-  - _call_openrouter_adaptive: belt-and-suspenders for token-density spikes —
+  - _call_llm_adaptive: belt-and-suspenders for token-density spikes —
     halve the input and retry on a context-length 400 (incl. the provider-side
     400 OpenRouter wraps in a 200), keeping the most-recent tail.
 """
@@ -226,7 +226,7 @@ def test_section_no_cap_when_under_budget(monkeypatch):
     assert "# Agent: cc (5 entries)" in section
 
 
-# ── _call_openrouter_adaptive: the halving backstop ──
+# ── _call_llm_adaptive: the halving backstop ──
 
 def _big_content() -> str:
     """200KB with distinct head/tail markers so we can prove the tail is kept."""
@@ -248,8 +248,8 @@ def test_adaptive_halves_until_under_limit(monkeypatch):
         final["content"] = content
         return "synthesized brief", {"prompt_tokens": 100}
 
-    monkeypatch.setattr(dream, "_call_openrouter", fake_call)
-    out, usage = dream._call_openrouter_adaptive("sys", _big_content(), max_tokens=2048)
+    monkeypatch.setattr(dream, "_call_llm", fake_call)
+    out, usage = dream._call_llm_adaptive("sys", _big_content(), max_tokens=2048)
 
     assert out == "synthesized brief"
     assert seen == [200_000, 100_000, 50_000], f"unexpected halving path: {seen}"
@@ -267,8 +267,8 @@ def test_adaptive_retries_on_200_wrapped_400(monkeypatch):
             raise RuntimeError('OpenRouter 200 but no choices: {"error": {"code": 400}}')
         return "ok", {}
 
-    monkeypatch.setattr(dream, "_call_openrouter", fake_call)
-    out, _ = dream._call_openrouter_adaptive("sys", _big_content())
+    monkeypatch.setattr(dream, "_call_llm", fake_call)
+    out, _ = dream._call_llm_adaptive("sys", _big_content())
 
     assert out == "ok"
     assert calls["n"] > 1, "the 200-wrapped-400 must trigger a smaller retry"
@@ -282,9 +282,9 @@ def test_adaptive_reraises_non_size_error(monkeypatch):
         calls["n"] += 1
         raise RuntimeError("network exploded")
 
-    monkeypatch.setattr(dream, "_call_openrouter", fake_call)
+    monkeypatch.setattr(dream, "_call_llm", fake_call)
     with pytest.raises(RuntimeError, match="network exploded"):
-        dream._call_openrouter_adaptive("sys", _big_content())
+        dream._call_llm_adaptive("sys", _big_content())
     assert calls["n"] == 1, "must not retry on a non-size error"
 
 
@@ -296,9 +296,9 @@ def test_adaptive_gives_up_at_min_chars(monkeypatch):
         calls["n"] += 1
         raise RuntimeError("maximum context length exceeded")
 
-    monkeypatch.setattr(dream, "_call_openrouter", fake_call)
+    monkeypatch.setattr(dream, "_call_llm", fake_call)
     with pytest.raises(RuntimeError, match="maximum context"):
-        dream._call_openrouter_adaptive("sys", "x" * 10_000, min_chars=20_000)
+        dream._call_llm_adaptive("sys", "x" * 10_000, min_chars=20_000)
     assert calls["n"] == 1, "content below min_chars must not be halved again"
 
 
@@ -442,7 +442,7 @@ def test_extract_section_salvages_truncated_call(monkeypatch):
     """End-to-end: a truncated LLM response yields the complete facts, not None."""
     truncated = ('[{"entity":"a","attribute":"b","value":"v1"},'
                  '{"entity":"c","attribute":"d","value":"v2"},{"entity":"e","attr')
-    monkeypatch.setattr(dream, "_call_openrouter_adaptive", lambda *a, **k: (truncated, {}))
+    monkeypatch.setattr(dream, "_call_llm_adaptive", lambda *a, **k: (truncated, {}))
     facts = dream._extract_facts_from_section("cc", "section", label=" chunk 1/4")
     assert facts is not None
     assert [f["value"] for f in facts] == ["v1", "v2"]
@@ -533,7 +533,7 @@ def _synthesize_with_fakes(monkeypatch, tmp_path, rollup_results, failing_texts)
         if payload in failing_texts:
             raise RuntimeError("stated-line validation failed:\nSUBJECT claim starts lowercase: cc")
 
-    monkeypatch.setattr(dream, "_call_openrouter_adaptive", fake_call)
+    monkeypatch.setattr(dream, "_call_llm_adaptive", fake_call)
     monkeypatch.setattr(dream, "_validate_stated_lines", fake_validate)
     return dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}]), rollup_inputs
 
@@ -589,7 +589,7 @@ def test_rollup_double_failure_drops_only_named_bad_lines(monkeypatch, tmp_path)
     monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
     responses = iter(["agent brief", "bad first", "# Decisions\ngood line\nbad line"])
     monkeypatch.setattr(
-        dream, "_call_openrouter_adaptive",
+        dream, "_call_llm_adaptive",
         lambda *args, **kwargs: (next(responses), {}))
 
     def validate(payload):

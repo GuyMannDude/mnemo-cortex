@@ -195,9 +195,14 @@ agents:
 # The Dreamer script runs as a nightly cron, not from this YAML. It reads
 # environment variables for its config. Set these in your cron's env file:
 #
-#   OPENROUTER_API_KEY    — for synthesis + fact extraction LLM calls
+#   ANTHROPIC_API_KEY     — Claude API key for every Dreamer LLM call; when
+#                           set the Dreamer calls the Claude API directly
+#   OPENROUTER_API_KEY    — fallback only, used when ANTHROPIC_API_KEY is unset
+#                           (logs a warning; this path is due to be removed)
 #   MNEMO_URL             — Mnemo HTTP base (default http://localhost:50001)
-#   MNEMO_DREAM_MODEL     — synthesis model (default google/gemini-2.5-flash)
+#   MNEMO_DREAM_MODEL     — synthesis model; must be an id the selected provider
+#                           serves (default claude-haiku-5-5 on the Claude API,
+#                           google/gemini-2.5-flash on OpenRouter)
 #   MNEMO_DREAM_AGENTS    — comma-separated agent allowlist; omit to
 #                           auto-discover from ~/.agentb/agents/*/memory/
 #   DREAM_SKIP_FACTS      — set to 1 to disable Stage 0.5 fact extraction

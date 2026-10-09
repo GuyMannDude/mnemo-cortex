@@ -46,7 +46,7 @@ REAL_CONFLICT = _flag("decommissioned 2026-06-26", "active production host", ent
 
 
 def _judge(monkeypatch, responder):
-    """Install a fake _call_openrouter; returns the call-count holder."""
+    """Install a fake _call_llm; returns the call-count holder."""
     calls = {"n": 0, "user_content": None}
 
     def fake(system_prompt, user_content, max_tokens=4096):
@@ -54,7 +54,7 @@ def _judge(monkeypatch, responder):
         calls["user_content"] = user_content
         return responder(user_content), {}
 
-    monkeypatch.setattr(dream, "_call_openrouter", fake)
+    monkeypatch.setattr(dream, "_call_llm", fake)
     return calls
 
 
@@ -135,7 +135,7 @@ def test_judge_http_error_keeps_all_flags(monkeypatch):
     def boom(*a, **k):
         raise dream.httpx.ConnectError("bus unreachable")
 
-    monkeypatch.setattr(dream, "_call_openrouter", boom)
+    monkeypatch.setattr(dream, "_call_llm", boom)
     survivors, drift = dream.triage_contradictions([OPIE_ROLE])
     assert survivors == [OPIE_ROLE] and drift == []
 
@@ -169,7 +169,7 @@ def test_judge_failure_keeps_all_flags(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("OpenRouter 500")
 
-    monkeypatch.setattr(dream, "_call_openrouter", boom)
+    monkeypatch.setattr(dream, "_call_llm", boom)
     survivors, drift = dream.triage_contradictions([OPIE_ROLE, REAL_CONFLICT])
     assert survivors == [OPIE_ROLE, REAL_CONFLICT]
     assert drift == []

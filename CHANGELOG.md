@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — dreamer: Claude API direct, Haiku 5.5, OpenRouter as a loud fallback (2026-10-09)
+
+**Problem.** Every Dreamer LLM call went through OpenRouter to
+`google/gemini-2.5-flash`. The fleet's cheap bulk LLM jobs now run on the
+Claude API (Guy, 10-09; spec `spec-haiku-direct-2026-10-09.md`). The key lands
+on IGOR-2 AFTER this code pulls, so a dream run in between must not break.
+
+**Fix.** `_call_openrouter` → `_call_llm`, provider chosen by env.
+`ANTHROPIC_API_KEY` set → `_call_anthropic`: native Messages API over `httpx`
+(`x-api-key`, `anthropic-version: 2023-06-01`, top-level `system`, no
+`temperature`, since Haiku 5.5 400s on a non-default value). The default model
+is `claude-haiku-5-5` (`MNEMO_DREAM_MODEL` still overrides). The answer is the
+join of `text` blocks (adaptive thinking may put an empty `thinking` block
+first). Usage is mapped to `prompt_tokens`/`completion_tokens`, so the
+run's usage line keeps working. A `refusal` (no server-side fallback on Haiku)
+logs an error and raises; a transport error (timeout, connect) or a 200 whose
+body is not a JSON object raises RuntimeError too, so each stage's existing
+`except RuntimeError` costs one call, not the night's run; a 200 with no text (e.g. thinking spent the
+whole `max_tokens`) raises, the same guard as OpenRouter's "200 but no choices";
+`max_tokens` with text returns it with a `TRUNCATED` warning. Unset → today's
+OpenRouter path, byte-for-byte, with ONE `dreamer on OpenRouter fallback —
+ANTHROPIC_API_KEY unset` warning per run; its default model stays
+`google/gemini-2.5-flash`. `_call_openrouter_adaptive` → `_call_llm_adaptive`
+(same halving loop) also treats Anthropic's oversize answers as size errors: 400
+"prompt is too long" and 413 `request_too_large`. The startup check accepts
+either key. SUNSET: delete the OpenRouter path after the first green Anthropic
+dream. Tests: `tests/test_dream_provider.py` (14, HTTP faked); `test_dream_cap`
+and `test_dream_contradiction_triage` patch the renamed functions.
+
+**Deploy note.** `MNEMO_DREAM_MODEL` must name a model of the provider in
+use. If the env still pins an OpenRouter id (`vendor/model`, e.g. `google/...`)
+while `ANTHROPIC_API_KEY` is set, `main()` logs an ERROR and dreams on
+`claude-haiku-5-5` instead of letting every call 404. Fix the env when you see it.
+
 ## Unreleased — tools: transcript-ship counts a vanished file as GONE, not FAIL (2026-10-02)
 
 **Problem.** The walk lists every `*.jsonl`, then stats each one; Claude Code
