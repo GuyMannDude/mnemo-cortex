@@ -1244,6 +1244,7 @@ DREAMER_OUTPUT_SIGNATURES = (
                               # entity-attribute-value evidence stage 0.5 wants
     "verified-vs-extracted",  # contradiction vocabulary only the dreamer emits
     "dream brief",            # boot-block section header agents quote back
+    "· truncated: ",          # provider/model/truncated stamp line (S413)
 )
 
 
