@@ -975,7 +975,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
         section = _build_agent_section(agent_id, agent_memories)
         log.info(f"  stage 1 [{agent_id}]: {len(agent_memories)} entries, {len(section):,} chars")
         try:
-            brief, usage = _call_llm_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=4096)
+            brief, usage = _call_llm_adaptive(PER_AGENT_SYSTEM_PROMPT, section, max_tokens=8192)
         except RuntimeError as e:
             # Isolate per-agent failures: one agent's LLM error must not abort the
             # whole run and suppress the notification that the OTHER agents' good
@@ -994,8 +994,12 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
     # Stage 2: cross-agent rollup
     rollup_input = "# Per-agent briefs to synthesize\n\n" + "\n\n---\n\n".join(per_agent_briefs)
     log.info(f"  stage 2 rollup: {len(per_agent_briefs)} briefs, {len(rollup_input):,} chars")
+    # max_tokens covers thinking AND text on Haiku 5.5 (adaptive thinking is on
+    # by default, budget_tokens is rejected). 2026-10-10 03:15: the rollup hit
+    # max_tokens=8192 with a thinking block and ZERO text -> run exit 1, no brief.
+    # Platform guidance for non-streaming calls is ~16k; unused tokens cost nothing.
     try:
-        dream_text, usage = _call_llm_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=8192)
+        dream_text, usage = _call_llm_adaptive(ROLLUP_SYSTEM_PROMPT, rollup_input, max_tokens=16384)
     except RuntimeError as e:
         log.error(f"  stage 2 failed: {e}")
         sys.exit(1)
@@ -1029,7 +1033,7 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
                 "verb).")
             try:
                 retry_text, usage = _call_llm_adaptive(
-                    ROLLUP_SYSTEM_PROMPT, retry_input, max_tokens=8192)
+                    ROLLUP_SYSTEM_PROMPT, retry_input, max_tokens=16384)
             except RuntimeError as retry_call_err:
                 _quarantine_rejected(dream_text, str(first_err),
                                      "the corrective retry CALL itself failed, so the preserved "

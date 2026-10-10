@@ -32,6 +32,12 @@ spends from `max_tokens`): the contradiction judge sends `output_config:
 the default effort with doubled caps: per-agent 2048 → 4096, rollup and its
 retry 4096 → 8192. Fact extraction (8192) and strategy distill (16384) are
 unchanged. `effort` is Claude API only; the OpenRouter path ignores it.
+**Follow-up 2026-10-10.** First real night: stage 2 rollup returned a 200 with
+`stop_reason=max_tokens`, one thinking block, no text — adaptive thinking spent
+the whole 8192 — and the guard above ended the run (no brief, exit 1). Caps
+raised to the platform's non-streaming guidance: per-agent 4096 → 8192, rollup
+and its retry 8192 → 16384. Unused tokens cost nothing. The two cap-pinning
+tests follow.
 Tests: `tests/test_dream_provider.py` (18, HTTP faked); `test_dream_cap`
 and `test_dream_contradiction_triage` patch the renamed functions.
 

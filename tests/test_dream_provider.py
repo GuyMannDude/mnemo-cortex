@@ -227,7 +227,8 @@ def test_openrouter_fallback_ignores_effort(monkeypatch):
 
 
 def test_synthesis_calls_keep_default_effort_with_doubled_caps(monkeypatch, tmp_path):
-    """Stage 1 per-agent brief 2048 -> 4096, stage 2 rollup 4096 -> 8192; no effort."""
+    """Stage 1 per-agent brief 4096 -> 8192, stage 2 rollup 8192 -> 16384 (2026-10-10:
+    thinking spent all 8192 rollup tokens and returned no text); no effort."""
     dream = _load(monkeypatch, "k")
     monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
     monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
@@ -237,7 +238,7 @@ def test_synthesis_calls_keep_default_effort_with_doubled_caps(monkeypatch, tmp_
 
     bodies = [kw["json"] for _, kw in sent]
     assert [b["system"] for b in bodies] == [dream.PER_AGENT_SYSTEM_PROMPT, dream.ROLLUP_SYSTEM_PROMPT]
-    assert [b["max_tokens"] for b in bodies] == [4096, 8192]
+    assert [b["max_tokens"] for b in bodies] == [8192, 16384]
     assert all("output_config" not in b for b in bodies)
 
 
@@ -254,7 +255,7 @@ def test_rollup_retry_cap_is_doubled_too(monkeypatch, tmp_path):
     sent = _capture_post(monkeypatch, dream,
                          [_reply("agent brief"), _reply("bad rollup"), _reply("good rollup")])
     assert dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}]) == "good rollup"
-    assert [kw["json"]["max_tokens"] for _, kw in sent] == [4096, 8192, 8192]
+    assert [kw["json"]["max_tokens"] for _, kw in sent] == [8192, 16384, 16384]
     assert all("output_config" not in kw["json"] for _, kw in sent)
 
 
