@@ -9,8 +9,8 @@ test rather than waiting for the next stuck-window incident to exercise it.
   - _build_agent_section: bounds one agent's brief to MAX_AGENT_SECTION_CHARS,
     recency-first (drop oldest), announcing the drop (never silent truncation).
   - _call_llm_adaptive: belt-and-suspenders for token-density spikes —
-    halve the input and retry on a context-length 400 (incl. the provider-side
-    400 OpenRouter wraps in a 200), keeping the most-recent tail.
+    halve the input and retry on Claude's oversize errors (400 "prompt is too
+    long", 413 request_too_large), keeping the most-recent tail.
 """
 from __future__ import annotations
 
@@ -242,8 +242,8 @@ def test_adaptive_halves_until_under_limit(monkeypatch):
         seen.append(len(content))
         if len(content) > 60_000:
             raise RuntimeError(
-                "OpenRouter 400: This endpoint's maximum context length is "
-                "1048576 tokens. However, you requested about 4926022 tokens."
+                'Anthropic 400: {"type":"error","error":{"type":"invalid_request_error",'
+                '"message":"prompt is too long: 4926022 tokens > 1000000 maximum"}}'
             )
         final["content"] = content
         return "synthesized brief", {"prompt_tokens": 100}
@@ -257,21 +257,21 @@ def test_adaptive_halves_until_under_limit(monkeypatch):
     assert "HEAD-MARKER" not in final["content"], "oldest head should be dropped on halving"
 
 
-def test_adaptive_retries_on_200_wrapped_400(monkeypatch):
-    """OpenRouter's provider-side 400 wrapped in a 200 ('no choices') is oversize too."""
-    calls = {"n": 0}
+def test_adaptive_does_not_retry_retired_fallback_shapes(monkeypatch):
+    """The retired fallback's oversize shapes ('no choices', generic 'maximum
+    context length') are no longer size errors: re-raised, not halved."""
+    for shape in ('Provider 200 but no choices: {"error": {"code": 400}}',
+                  "Provider 400: maximum context length is 1048576 tokens"):
+        calls = {"n": 0}
 
-    def fake_call(system, content, max_tokens=4096):
-        calls["n"] += 1
-        if len(content) > 60_000:
-            raise RuntimeError('OpenRouter 200 but no choices: {"error": {"code": 400}}')
-        return "ok", {}
+        def fake_call(system, content, max_tokens=4096, _shape=shape):
+            calls["n"] += 1
+            raise RuntimeError(_shape)
 
-    monkeypatch.setattr(dream, "_call_llm", fake_call)
-    out, _ = dream._call_llm_adaptive("sys", _big_content())
-
-    assert out == "ok"
-    assert calls["n"] > 1, "the 200-wrapped-400 must trigger a smaller retry"
+        monkeypatch.setattr(dream, "_call_llm", fake_call)
+        with pytest.raises(RuntimeError):
+            dream._call_llm_adaptive("sys", _big_content())
+        assert calls["n"] == 1, shape
 
 
 def test_adaptive_reraises_non_size_error(monkeypatch):
@@ -294,10 +294,12 @@ def test_adaptive_gives_up_at_min_chars(monkeypatch):
 
     def fake_call(system, content, max_tokens=4096):
         calls["n"] += 1
-        raise RuntimeError("maximum context length exceeded")
+        raise RuntimeError(
+            'Anthropic 400: {"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"prompt is too long: 300000 tokens > 200000 maximum"}}')
 
     monkeypatch.setattr(dream, "_call_llm", fake_call)
-    with pytest.raises(RuntimeError, match="maximum context"):
+    with pytest.raises(RuntimeError, match="prompt is too long"):
         dream._call_llm_adaptive("sys", "x" * 10_000, min_chars=20_000)
     assert calls["n"] == 1, "content below min_chars must not be halved again"
 
@@ -514,7 +516,7 @@ def _synthesize_with_fakes(monkeypatch, tmp_path, rollup_results, failing_texts)
     failing_texts: payloads the fake validator rejects.
     Returns (result, rollup_inputs).
     """
-    monkeypatch.setattr(dream, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(dream, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
     monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
     remaining = list(rollup_results)
@@ -573,18 +575,18 @@ def test_rollup_double_failure_quarantines_and_raises(monkeypatch, tmp_path):
 def test_rollup_retry_call_failure_quarantines_first_attempt(monkeypatch, tmp_path):
     # The retry API call dying must not masquerade as a validation failure:
     # the FIRST attempt's text is preserved and labeled as such.
-    with pytest.raises(RuntimeError, match="OpenRouter 502"):
+    with pytest.raises(RuntimeError, match="Anthropic 502"):
         _synthesize_with_fakes(
             monkeypatch, tmp_path,
-            ["bad one", RuntimeError("OpenRouter 502: bad gateway")], {"bad one"})
+            ["bad one", RuntimeError("Anthropic 502: bad gateway")], {"bad one"})
     body = _read_single_quarantine(tmp_path)
     assert "bad one" in body
     assert "FIRST attempt" in body
-    assert "OpenRouter 502" in body
+    assert "Anthropic 502" in body
 
 
 def test_rollup_double_failure_drops_only_named_bad_lines(monkeypatch, tmp_path):
-    monkeypatch.setattr(dream, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(dream, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(dream, "_build_agent_section", lambda a, m: "section")
     monkeypatch.setattr(dream, "DREAM_DIR", tmp_path)
     responses = iter(["agent brief", "bad first", "# Decisions\ngood line\nbad line"])

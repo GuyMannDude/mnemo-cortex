@@ -1,5 +1,5 @@
-"""Dreamer LLM provider (2026-10-09): Claude API direct when ANTHROPIC_API_KEY
-is set, else the old OpenRouter path with ONE loud warning.
+"""Dreamer LLM provider: Claude API direct (2026-10-09); the fallback path
+was retired 2026-10-10, so no key or a non-Claude model id exits 1 up front.
 
 HTTP is faked at httpx.post throughout: no test makes a live call.
 """
@@ -61,10 +61,57 @@ def _capture_post(monkeypatch, dream, responses):
     return sent
 
 
-def test_default_model_follows_the_provider(monkeypatch):
+def test_default_model_is_haiku_and_env_overrides_it(monkeypatch):
     assert _load(monkeypatch, "k").DREAM_MODEL == "claude-haiku-5-5"
-    assert _load(monkeypatch, None).DREAM_MODEL == "google/gemini-2.5-flash"
+    assert _load(monkeypatch, None).DREAM_MODEL == "claude-haiku-5-5"
     assert _load(monkeypatch, "k", model="claude-sonnet-5-5").DREAM_MODEL == "claude-sonnet-5-5"
+
+
+def test_no_key_exits_1_loudly_before_any_work(monkeypatch, caplog):
+    dream = _load(monkeypatch, None)
+    monkeypatch.setattr(dream.httpx, "post", lambda *a, **k: pytest.fail("called the API without a key"))
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        dream._require_claude()
+    assert exc.value.code == 1
+    assert any("ANTHROPIC_API_KEY not set" in r.getMessage() for r in caplog.records)
+
+
+def test_non_claude_model_id_exits_1_loudly(monkeypatch, caplog):
+    dream = _load(monkeypatch, "k", model="google/gemini-2.5-flash")
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        dream._require_claude()
+    assert exc.value.code == 1
+    assert any("not a Claude model id" in r.getMessage() for r in caplog.records)
+
+
+def test_key_and_claude_model_pass_the_gate(monkeypatch):
+    dream = _load(monkeypatch, "k", model="claude-sonnet-5-5")
+    dream._require_claude()  # no exit
+
+
+def test_main_gates_before_any_work_but_dry_run_skips_the_gate(monkeypatch):
+    """main() runs _require_claude before harvesting. A --dry-run skips it unless
+    Stage 0.7 (strategies) is on, which calls the API even on a dry run."""
+    cases = ((["mnemo-dream.py"], False, "gate"),
+             (["mnemo-dream.py", "--dry-run"], False, "work"),
+             (["mnemo-dream.py", "--dry-run"], True, "gate"))
+    for argv, strategies, expected in cases:
+        dream = _load(monkeypatch, None)
+        monkeypatch.setattr(dream, "MNEMO_DREAM_STRATEGIES", strategies)
+        events = []
+
+        def stop(event):
+            def hook():
+                events.append(event)
+                raise SystemExit(1)
+            return hook
+
+        monkeypatch.setattr(dream.sys, "argv", argv)
+        monkeypatch.setattr(dream, "_require_claude", stop("gate"))
+        monkeypatch.setattr(dream, "get_last_dream_time", stop("work"))
+        with pytest.raises(SystemExit):
+            dream.main()
+        assert events == [expected], (argv, strategies)
 
 
 def test_anthropic_request_shape_and_usage_mapping(monkeypatch):
@@ -147,42 +194,6 @@ def test_other_anthropic_error_is_not_retried(monkeypatch):
     assert len(sent) == 1
 
 
-def test_openrouter_fallback_warns_once_and_keeps_old_path(monkeypatch, caplog):
-    dream = _load(monkeypatch, None)
-    calls = []
-    monkeypatch.setattr(dream, "_call_openrouter",
-                        lambda s, u, max_tokens=4096: (calls.append(u), ("or", {}))[1])
-    monkeypatch.setattr(dream, "_call_anthropic",
-                        lambda *a, **k: pytest.fail("Anthropic path used without a key"))
-    with caplog.at_level(logging.WARNING):
-        dream._call_llm("s", "one")
-        dream._call_llm("s", "two")
-    assert calls == ["one", "two"]
-    warnings = [r for r in caplog.records if "OpenRouter fallback" in r.getMessage()]
-    assert len(warnings) == 1
-
-
-def test_openrouter_path_unchanged(monkeypatch):
-    """The fallback still sends today's OpenRouter request, temperature included."""
-    dream = _load(monkeypatch, None)
-    reply = _Resp(200, {"choices": [{"message": {"content": "hi"}}],
-                        "usage": {"prompt_tokens": 1, "completion_tokens": 2}})
-    sent = _capture_post(monkeypatch, dream, [reply])
-    assert dream._call_llm("s", "u") == ("hi", {"prompt_tokens": 1, "completion_tokens": 2})
-    url, kw = sent[0]
-    assert url == "https://openrouter.ai/api/v1/chat/completions"
-    assert kw["json"]["model"] == "google/gemini-2.5-flash"
-    assert kw["json"]["temperature"] == 0.3
-
-
-def test_openrouter_model_id_with_anthropic_key_screams_and_uses_haiku(monkeypatch, caplog):
-    dream = _load(monkeypatch, "k", model="google/gemini-2.5-flash")
-    with caplog.at_level(logging.ERROR):
-        dream._check_dream_model()
-    assert dream.DREAM_MODEL == "claude-haiku-5-5"
-    assert any("OpenRouter id" in r.getMessage() for r in caplog.records)
-
-
 def test_transport_error_is_a_runtime_error(monkeypatch):
     """Per-stage isolation catches RuntimeError only: a timeout must cost one call."""
     dream = _load(monkeypatch, "k")
@@ -216,14 +227,6 @@ def test_effort_is_sent_only_when_asked(monkeypatch):
     dream._call_llm("s", "u")
     assert sent[0][1]["json"]["output_config"] == {"effort": "low"}
     assert "output_config" not in sent[1][1]["json"]  # model default (medium)
-
-
-def test_openrouter_fallback_ignores_effort(monkeypatch):
-    dream = _load(monkeypatch, None)
-    reply = _Resp(200, {"choices": [{"message": {"content": "hi"}}], "usage": {}})
-    sent = _capture_post(monkeypatch, dream, [reply])
-    dream._call_llm("s", "u", effort="low")
-    assert "output_config" not in sent[0][1]["json"]
 
 
 def test_synthesis_calls_keep_default_effort_with_doubled_caps(monkeypatch, tmp_path):
@@ -288,17 +291,6 @@ def test_brief_header_stamps_anthropic_provider_model_untruncated(monkeypatch, t
     assert "_Provider: anthropic · Model: claude-haiku-5-5 · Truncated: no_" in _header(md)
     assert (entry["provider"], entry["model"], entry["truncated"]) == (
         "anthropic", "claude-haiku-5-5", False)
-
-
-def test_brief_header_stamps_openrouter_truncation_as_unchecked(monkeypatch, tmp_path):
-    # The OpenRouter path never inspects finish_reason, so "no" would be a
-    # claim nobody checked: the stamp says so instead.
-    dream = _load(monkeypatch, None)
-    md, entry = _write_brief(monkeypatch, tmp_path, dream)
-    assert ("_Provider: openrouter · Model: google/gemini-2.5-flash · Truncated: unchecked_"
-            in _header(md))
-    assert (entry["provider"], entry["model"], entry["truncated"]) == (
-        "openrouter", "google/gemini-2.5-flash", None)
 
 
 def test_brief_header_truncated_flips_to_yes_after_a_max_tokens_call(monkeypatch, tmp_path):

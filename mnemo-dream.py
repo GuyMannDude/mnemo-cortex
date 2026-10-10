@@ -179,19 +179,14 @@ def _compose_boot_dream(text: str, budget: int) -> str:
         raise RuntimeError("boot dream composer exceeded its reserved budget")
     return result
 
-# Provider by env (2026-10-09): ANTHROPIC_API_KEY set -> Claude API direct
-# (native Messages API); unset -> OpenRouter, the pre-10-09 path, with a loud
-# warning. SUNSET: remove the OpenRouter path after the first green Anthropic dream.
+# Provider: Claude API direct (native Messages API) since 2026-10-09; the old
+# fallback path was retired 2026-10-10 after the first green Anthropic dream.
+# ANTHROPIC_API_KEY unset = the run exits 1 before any work (_require_claude).
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-# Each provider's default is ITS model id; MNEMO_DREAM_MODEL overrides either,
-# so it must name a model the selected provider serves.
-DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL") or (
-    "claude-haiku-5-5" if ANTHROPIC_API_KEY else "google/gemini-2.5-flash"
-)
+# MNEMO_DREAM_MODEL overrides the default; it must be a Claude model id.
+DREAM_MODEL = os.getenv("MNEMO_DREAM_MODEL") or "claude-haiku-5-5"
 
 # Phase 3: facts extraction + contradiction notification config
 MNEMO_URL = os.getenv("MNEMO_URL", "http://localhost:50001")
@@ -712,7 +707,6 @@ def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: st
         log.error(f"  could not preserve rejected rollup: {e}")
 
 
-_openrouter_warned = False
 # Set by any Claude API reply that stopped on a length cap; stamped into the
 # brief so a truncation reaches what agents boot on, not only the log.
 _truncated = False
@@ -720,36 +714,26 @@ _truncated = False
 
 def _brief_stamp() -> dict:
     """Provider, model, truncated for the brief (snag-dream-brief-header-no-
-    model-stamp). OpenRouter never inspects finish_reason, so its truncation
-    is None (unchecked), never a false "no"."""
-    anthropic = bool(ANTHROPIC_API_KEY)
-    return {"provider": "anthropic" if anthropic else "openrouter",
-            "model": DREAM_MODEL,
-            "truncated": _truncated if anthropic else None}
+    model-stamp). The provider stays named (doctrine-name-your-source)."""
+    return {"provider": "anthropic", "model": DREAM_MODEL, "truncated": _truncated}
 
 
-def _check_dream_model() -> None:
-    """An OpenRouter vendor/model id left in MNEMO_DREAM_MODEL would 404 every
-    Claude API call and kill the whole run: scream, dream on the default."""
-    global DREAM_MODEL
-    if ANTHROPIC_API_KEY and "/" in DREAM_MODEL:
-        log.error(f"MNEMO_DREAM_MODEL={DREAM_MODEL!r} is an OpenRouter id but ANTHROPIC_API_KEY "
-                  "is set — using claude-haiku-5-5; fix the env")
-        DREAM_MODEL = "claude-haiku-5-5"
+def _require_claude() -> None:
+    """Fail loud before any work: no key, or a model id that is not Claude's,
+    would only 401/404 every call later and leave a run with no brief."""
+    if not ANTHROPIC_API_KEY:
+        log.error("ANTHROPIC_API_KEY not set — the dreamer calls the Claude API only; cannot dream")
+        sys.exit(1)
+    if not DREAM_MODEL.startswith("claude-"):
+        log.error(f"MNEMO_DREAM_MODEL={DREAM_MODEL!r} is not a Claude model id — fix the env")
+        sys.exit(1)
 
 
 def _call_llm(system_prompt: str, user_content: str, max_tokens: int = 4096,
               effort: str | None = None) -> tuple[str, dict]:
-    """Single LLM call on the env-selected provider. Returns (text, usage) with
-    usage in prompt_tokens/completion_tokens keys whatever the provider.
-    `effort` is Claude API only (OpenRouter ignores it); None = model default."""
-    global _openrouter_warned
-    if ANTHROPIC_API_KEY:
-        return _call_anthropic(system_prompt, user_content, max_tokens=max_tokens, effort=effort)
-    if not _openrouter_warned:
-        log.warning("dreamer on OpenRouter fallback — ANTHROPIC_API_KEY unset")
-        _openrouter_warned = True
-    return _call_openrouter(system_prompt, user_content, max_tokens=max_tokens)
+    """Single Claude API call. Returns (text, usage) with usage in
+    prompt_tokens/completion_tokens keys. `effort`: None = model default."""
+    return _call_anthropic(system_prompt, user_content, max_tokens=max_tokens, effort=effort)
 
 
 def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 4096,
@@ -803,8 +787,7 @@ def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 409
         b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
     ) if isinstance(blocks, list) else ""
     if not text.strip():
-        # Same guard as OpenRouter's "200 but no choices": a catchable
-        # RuntimeError, never an empty brief. Thinking can spend the whole
+        # A catchable RuntimeError, never an empty brief. Thinking can spend the whole
         # max_tokens budget and leave no text at all (stop_reason=max_tokens).
         raise RuntimeError(f"Anthropic 200 but empty text (stop_reason={stop}): {json.dumps(result)[:500]}")
     if stop in ("max_tokens", "model_context_window_exceeded"):
@@ -814,40 +797,6 @@ def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 409
         "prompt_tokens": usage.get("input_tokens", 0),
         "completion_tokens": usage.get("output_tokens", 0),
     }
-
-
-def _call_openrouter(system_prompt: str, user_content: str, max_tokens: int = 4096) -> tuple[str, dict]:
-    """Single OpenRouter call. Returns (text, usage). Raises on non-200."""
-    response = httpx.post(
-        OPENROUTER_URL,
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/GuyMannDude/mnemo-cortex",
-            "X-Title": "Mnemo Dreaming",
-        },
-        json={
-            "model": DREAM_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.3,
-        },
-        timeout=180.0,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"OpenRouter {response.status_code}: {response.text[:500]}")
-    result = response.json()
-    # OpenRouter can return HTTP 200 with an error/empty body (provider error,
-    # moderation, output-too-long, transient upstream). Validate before indexing
-    # so this surfaces as a catchable RuntimeError — not a raw KeyError that
-    # escapes the per-stage handlers and crashes the whole run.
-    if not isinstance(result.get("choices"), list) or not result["choices"]:
-        err = result.get("error", result)
-        raise RuntimeError(f"OpenRouter 200 but no choices: {json.dumps(err)[:500]}")
-    return result["choices"][0]["message"]["content"], result.get("usage", {})
 
 
 def _call_llm_adaptive(
@@ -867,19 +816,14 @@ def _call_llm_adaptive(
             return _call_llm(system_prompt, content, max_tokens=max_tokens)
         except RuntimeError as e:
             msg = str(e).lower()
-            # Size-related failures worth retrying smaller: explicit context-length
-            # errors, plus the provider-side 400 that OpenRouter wraps in a 200
-            # ("no choices" / "provider returned error", code 400) — a large opie
-            # section hits the latter before the former. Anthropic: input over
+            # Size-related failures worth retrying smaller. Anthropic: input over
             # the context window is a 400 invalid_request_error "prompt is too
             # long" (platform.claude.com/docs/en/build-with-claude/context-windows,
             # "Context window overflow behavior"; the errors page does not
             # print the message); a body over 32 MB is a 413 request_too_large
             # (platform.claude.com/docs/en/api/errors, "Request size limits").
             is_oversize = (
-                "context length" in msg or "maximum context" in msg or "context_length" in msg
-                or "no choices" in msg or "provider returned error" in msg
-                or "prompt is too long" in msg or "request_too_large" in msg
+                "prompt is too long" in msg or "request_too_large" in msg
             )
             if is_oversize and len(content) > min_chars:
                 new_len = max(min_chars, len(content) // 2)
@@ -961,10 +905,6 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
 
     if dry_run:
         return f"[DRY RUN] Would map-reduce {len(memories)} memories from {len(by_agent)} agents ({total_chars:,} chars)"
-
-    if not (ANTHROPIC_API_KEY or OPENROUTER_API_KEY):
-        log.error("No ANTHROPIC_API_KEY or OPENROUTER_API_KEY set — cannot call LLM")
-        sys.exit(1)
 
     # Stage 1: per-agent briefs
     per_agent_briefs: list[str] = []
@@ -1724,7 +1664,7 @@ def _triage_contradictions_inner(contradictions: list[dict]) -> tuple[list[dict]
         verdicts = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```"))
         by_index = {v["i"]: v for v in verdicts if isinstance(v, dict) and v.get("verdict") in ("conflict", "compatible")}
     except (RuntimeError, httpx.HTTPError, json.JSONDecodeError, TypeError, KeyError, AttributeError) as e:
-        # AttributeError: OpenRouter can 200 with "content": null → raw.strip() on None.
+        # AttributeError: kept from the retired fallback path (a null "content").
         log.warning(f"  triage: compatibility judge unavailable ({e}) — keeping all {len(llm_queue)} flag(s) as contradictions")
         return survivors + llm_queue, drift_notes
 
@@ -2288,7 +2228,8 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="[mnemo-dream] %(levelname)s %(message)s",
     )
-    _check_dream_model()
+    if not args.dry_run or MNEMO_DREAM_STRATEGIES:  # a dry run calls the API only in Stage 0.7
+        _require_claude()
 
     # Determine time window
     if args.hours > 0:

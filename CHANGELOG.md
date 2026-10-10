@@ -46,6 +46,21 @@ use. If the env still pins an OpenRouter id (`vendor/model`, e.g. `google/...`)
 while `ANTHROPIC_API_KEY` is set, `main()` logs an ERROR and dreams on
 `claude-haiku-5-5` instead of letting every call 404. Fix the env when you see it.
 
+**Sunset 2026-10-10.** The gate is met: brief `2026-10-10.md` boots stamped
+`Provider: anthropic · Model: claude-haiku-5-5 · Truncated: no`. The OpenRouter
+path is gone: `_call_openrouter`, its key and URL, the fallback warning and the
+vendor/model scream. `_call_llm` calls `_call_anthropic` directly. No
+`ANTHROPIC_API_KEY`, or a `MNEMO_DREAM_MODEL` that is not a `claude-` id, now
+logs an ERROR and exits 1 in `main()` before any harvest (supersedes the deploy
+note above: no silent fall back to Haiku). A `--dry-run` skips that gate unless
+Stage 0.7 is on, since only Stage 0.7 calls the API on a dry run.
+`_call_llm_adaptive` halves only on Claude's oversize shapes (400 "prompt is too
+long", 413 `request_too_large`). The header stamp is unchanged and still names
+the provider. Caps from 228e396 untouched.
+Tests: the OpenRouter cases in `tests/test_dream_provider.py` become the
+exit-1 gate cases (21 → 20); `test_dream_cap` fakes Claude's errors and pins that
+the retired shapes are no longer retried.
+
 ## Unreleased — tools: transcript-ship counts a vanished file as GONE, not FAIL (2026-10-02)
 
 **Problem.** The walk lists every `*.jsonl`, then stats each one; Claude Code
