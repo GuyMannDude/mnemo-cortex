@@ -256,3 +256,65 @@ def test_rollup_retry_cap_is_doubled_too(monkeypatch, tmp_path):
     assert dream.synthesize([{"agent_id": "cc", "summary": "did a thing"}]) == "good rollup"
     assert [kw["json"]["max_tokens"] for _, kw in sent] == [4096, 8192, 8192]
     assert all("output_config" not in kw["json"] for _, kw in sent)
+
+
+# ---------------------------------------------------------------------------
+# Brief header stamp (snag-dream-brief-header-no-model-stamp, CC #4597): the
+# brief an agent boots on names its provider, model, and whether any call
+# was truncated, in the markdown header AND the dreamer JSON.
+# ---------------------------------------------------------------------------
+
+def _write_brief(monkeypatch, tmp_path, dream):
+    """write_dream() into temp dirs; the bridge writeback is faked, never sent."""
+    monkeypatch.setattr(dream, "DREAM_DIR", tmp_path / "dreams")
+    monkeypatch.setattr(dream, "DREAMER_MEMORY_DIR", tmp_path / "dreamer")
+    monkeypatch.setenv("MNEMO_RULEKEEPER_ADVISORY", str(tmp_path / "no-advisory.md"))
+    monkeypatch.setattr(dream.httpx, "post", lambda url, **kw: _Resp(503, {}))
+    since = dream.datetime(2026, 10, 9, tzinfo=dream.timezone.utc)
+    dream_id = dream.write_dream("brief body", [{"agent_id": "cc"}], since)
+    md = next((tmp_path / "dreams").glob("*[0-9].md")).read_text(encoding="utf-8")
+    entry = json.loads((tmp_path / "dreamer" / f"{dream_id}.json").read_text(encoding="utf-8"))
+    return md, entry
+
+
+def _header(md: str) -> str:
+    return md.split("\n---\n", 1)[0]
+
+
+def test_brief_header_stamps_anthropic_provider_model_untruncated(monkeypatch, tmp_path):
+    dream = _load(monkeypatch, "k")
+    md, entry = _write_brief(monkeypatch, tmp_path, dream)
+    assert "_Provider: anthropic · Model: claude-haiku-5-5 · Truncated: no_" in _header(md)
+    assert (entry["provider"], entry["model"], entry["truncated"]) == (
+        "anthropic", "claude-haiku-5-5", False)
+
+
+def test_brief_header_stamps_openrouter_truncation_as_unchecked(monkeypatch, tmp_path):
+    # The OpenRouter path never inspects finish_reason, so "no" would be a
+    # claim nobody checked: the stamp says so instead.
+    dream = _load(monkeypatch, None)
+    md, entry = _write_brief(monkeypatch, tmp_path, dream)
+    assert ("_Provider: openrouter · Model: google/gemini-2.5-flash · Truncated: unchecked_"
+            in _header(md))
+    assert (entry["provider"], entry["model"], entry["truncated"]) == (
+        "openrouter", "google/gemini-2.5-flash", None)
+
+
+def test_brief_header_truncated_flips_to_yes_after_a_max_tokens_call(monkeypatch, tmp_path):
+    dream = _load(monkeypatch, "k")
+    _capture_post(monkeypatch, dream, [_reply("whole", "end_turn"),
+                                       _reply("partial br", "max_tokens"),
+                                       _reply("whole again", "end_turn")])
+    for _ in range(3):
+        dream._call_llm("s", "u")
+    md, entry = _write_brief(monkeypatch, tmp_path, dream)
+    assert "· Truncated: yes_" in _header(md)
+    assert entry["truncated"] is True
+
+
+def test_thinking_only_max_tokens_reply_also_counts_as_truncated(monkeypatch):
+    dream = _load(monkeypatch, "k")
+    _capture_post(monkeypatch, dream, [_reply("", "max_tokens")])
+    with pytest.raises(RuntimeError):
+        dream._call_llm("s", "u")
+    assert dream._brief_stamp()["truncated"] is True

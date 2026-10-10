@@ -713,6 +713,19 @@ def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: st
 
 
 _openrouter_warned = False
+# Set by any Claude API reply that stopped on a length cap; stamped into the
+# brief so a truncation reaches what agents boot on, not only the log.
+_truncated = False
+
+
+def _brief_stamp() -> dict:
+    """Provider, model, truncated for the brief (snag-dream-brief-header-no-
+    model-stamp). OpenRouter never inspects finish_reason, so its truncation
+    is None (unchecked), never a false "no"."""
+    anthropic = bool(ANTHROPIC_API_KEY)
+    return {"provider": "anthropic" if anthropic else "openrouter",
+            "model": DREAM_MODEL,
+            "truncated": _truncated if anthropic else None}
 
 
 def _check_dream_model() -> None:
@@ -743,6 +756,7 @@ def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 409
                     effort: str | None = None) -> tuple[str, dict]:
     """Single Claude API call (Messages API over raw httpx). Raises RuntimeError
     on non-200, a refusal, or a 200 that carries no answer text."""
+    global _truncated
     # No temperature: Haiku 5.5 answers 400 to any non-default sampling value.
     # Transport and body-parse failures surface as RuntimeError: every caller's
     # per-stage isolation catches exactly that, so one timeout costs one call.
@@ -776,6 +790,8 @@ def _call_anthropic(system_prompt: str, user_content: str, max_tokens: int = 409
     if not isinstance(result, dict):
         raise RuntimeError(f"Anthropic 200 but body is not an object: {response.text[:500]}")
     stop = result.get("stop_reason")
+    if stop in ("max_tokens", "model_context_window_exceeded"):
+        _truncated = True
     if stop == "refusal":
         # Haiku has no server-side fallback model: the refusal IS the answer.
         log.error(f"  Anthropic refusal: {json.dumps(result.get('stop_details'))}")
@@ -1103,7 +1119,12 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
 
     # Reserve the human-readable Markdown envelope before composing the body.
     # Its dynamic source list is bounded by the agents represented tonight.
-    envelope_chars = 180 + len(", ".join(f"{a} ({c} entries)" for a, c in sorted(agent_counts.items())))
+    stamp = _brief_stamp()
+    truncated_word = {True: "yes", False: "no", None: "unchecked"}[stamp["truncated"]]
+    stamp_line = (f"_Provider: {stamp['provider']} · Model: {stamp['model']} · "
+                  f"Truncated: {truncated_word}_")
+    envelope_chars = (180 + len(stamp_line) + 1
+                      + len(", ".join(f"{a} ({c} entries)" for a, c in sorted(agent_counts.items()))))
     boot_text = _compose_boot_dream(
         dream_text, max(1, _boot_budget("dream") - envelope_chars)
     )
@@ -1123,6 +1144,7 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
         "decisions_made": list({d for m in memories for d in m.get("decisions", [])}),
         "timestamp": now.isoformat(),
         "created_at": time.time(),
+        **stamp,
     }
     json_path = DREAMER_MEMORY_DIR / f"{dream_id}.json"
     json_path.write_text(json.dumps(memory_entry, indent=2, default=str), encoding="utf-8")
@@ -1132,6 +1154,7 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
 
 _Generated {now.strftime('%Y-%m-%d %H:%M UTC')} by mnemo-dream.py_
 _Covering: {since.strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} UTC_
+{stamp_line}
 _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items()))}_
 
 ---
