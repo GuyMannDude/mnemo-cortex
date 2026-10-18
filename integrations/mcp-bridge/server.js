@@ -2045,9 +2045,23 @@ server.registerTool(
         }).trim();
         if (ct && Number(ct) < startEpoch) {
           const ageDays = Math.round((Date.now() / 1000 - Number(ct)) / 86400);
+          // v2.35.1: say WHICH kind of commit is missing. A checkpoint that
+          // landed this session used to be reported as "NOT updated" — a
+          // true verdict with a false reason, which trains agents to ignore
+          // it (snag-session-end-ignores-checkpoint-commits-2026-10-18).
+          const ctAny = execFileSync("git", ["log", "-1", "--format=%ct", "--", lane], {
+            cwd: BRAIN_DIR,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim();
+          const checkpointOnly = Boolean(ctAny) && Number(ctAny) >= startEpoch;
           results.push(
-            `⚠️ ${lane} was NOT updated this session (last commit ${ageDays} days ago). ` +
-            `Per the Lane Protocol: write_brain_file("${lane}", ...) with a date bump + what changed, then call session_end again.`
+            checkpointOnly
+              ? `⚠️ ${lane}: only a CHECKPOINT landed this session (last KICKSTART rewrite ${ageDays} days ago). ` +
+                `A checkpoint is a dated record appended at the end; the Lane Protocol asks for the KICKSTART rewrite, so checkpoints don't count by design. ` +
+                `write_brain_file("${lane}", ...) with a date bump + what changed, then call session_end again.`
+              : `⚠️ ${lane} was NOT updated this session (last commit ${ageDays} days ago). ` +
+                `Per the Lane Protocol: write_brain_file("${lane}", ...) with a date bump + what changed, then call session_end again.`
           );
         }
       }

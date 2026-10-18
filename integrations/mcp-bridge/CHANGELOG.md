@@ -12,6 +12,23 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.35.1 — 2026-10-18 — a checkpoint-only session is named as such
+
+**Problem.** `session_end`'s lane-freshness advisory deliberately ignores
+`session_checkpoint` commits (a CHECKPOINT is an appended dated record, not
+the KICKSTART rewrite the Lane Protocol asks for). But it reported that case
+as `was NOT updated this session (last commit N days ago)` — a true verdict
+with a false reason, seen right after a checkpoint had committed and pushed
+(Opie #4888, twice). A warning that is visibly wrong about its own evidence
+trains agents to ignore it (doctrine-wrong-guard;
+snag-session-end-ignores-checkpoint-commits-2026-10-18).
+
+**Fix.** A second `git log -1` without the checkpoint filter decides whether
+any commit touched the lane this session. If one did, the line now reads
+`only a CHECKPOINT landed this session (last KICKSTART rewrite N days ago)`
+and says why checkpoints don't count. The no-commit-at-all wording is
+unchanged. Advisory only, still never blocks a session end.
+
 ## 2.35.0 — 2026-10-07 — a red session-end gate is reported outward, with its verdict
 
 **Problem.** When the brain's pre-commit gate refused `session_end`'s lane
