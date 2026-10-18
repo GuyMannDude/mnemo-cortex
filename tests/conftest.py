@@ -18,6 +18,8 @@ def _testclient_defaults_to_loopback(monkeypatch):
 
     def loopback_init(self, *args, **kwargs):
         kwargs.setdefault("client", ("127.0.0.1", 50000))
+        # The default "testserver" Host would trip the DNS-rebinding guard.
+        kwargs.setdefault("base_url", "http://127.0.0.1")
         return original_init(self, *args, **kwargs)
 
     monkeypatch.setattr(TestClient, "__init__", loopback_init)

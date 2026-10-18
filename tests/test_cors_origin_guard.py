@@ -110,3 +110,30 @@ def test_token_auth_still_gates_foreign_origin(tmp_path):
         assert c.get("/sessions", headers={"Origin": EVIL}).status_code == 401
         assert c.get("/sessions", headers={"Origin": EVIL,
                                            "X-API-KEY": "t0k"}).status_code == 200
+
+
+@pytest.mark.parametrize("host", ["rebind.example:50095", "127.0.0.1.evil.example", "[x"])
+def test_dns_rebinding_host_is_refused(local, host):
+    # After rebinding, the page's same-origin GET carries no Origin header,
+    # only the attacker's name in Host.
+    assert local.get("/facts", headers={"Host": host}).status_code == 403
+    r = local.post("/capture/pause", json={}, headers={"Host": host})
+    assert r.status_code == 403
+    assert local.get("/capture/status").json().get("paused") is not True
+
+
+@pytest.mark.parametrize("host", [
+    "127.0.0.1:50095", "localhost:50095", "[::1]:50095", "localhost", "127.0.1.1"])
+def test_local_host_header_still_allowed(local, host):
+    assert local.get("/health", headers={"Host": host}).status_code == 200
+
+
+def test_machine_hostname_still_allowed(local):
+    import socket
+    assert local.get("/health", headers={"Host": socket.gethostname()}).status_code == 200
+
+
+def test_token_auth_ignores_host_header(tmp_path):
+    with TestClient(_app(tmp_path, auth_token="t0k"), client=("127.0.0.1", 50000)) as c:
+        assert c.get("/sessions", headers={"Host": "mnemo.lan:50001",
+                                           "X-API-KEY": "t0k"}).status_code == 200
