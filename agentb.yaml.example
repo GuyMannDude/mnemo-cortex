@@ -113,7 +113,9 @@ dedup:
 server:
   host: 0.0.0.0
   port: 50001
-  cors_origins: ["*"]
+  # Browser origins allowed to call the API, e.g. ["http://localhost:3000"].
+  # Never "*": with no auth any web page could read and write your memory.
+  cors_origins: []
   # FAIL-CLOSED: with a non-loopback host (e.g. 0.0.0.0) the server REFUSES to
   # start unless auth is configured. Fix by one of: set auth_token below, bind
   # host: 127.0.0.1 (loopback only), or set allow_unauthenticated: true for a

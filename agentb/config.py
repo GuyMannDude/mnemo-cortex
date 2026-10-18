@@ -292,7 +292,9 @@ class ScopedToken:
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 50001
-    cors_origins: list = field(default_factory=lambda: ["*"])
+    # Empty = no CORS headers at all. A wildcard let any web page the user
+    # visits drive the unauthenticated loopback API (GHSA-682p-grrx-wrwg).
+    cors_origins: list = field(default_factory=list)
     auth_token: str = ""
     scoped_tokens: list = field(default_factory=list)
     # Fail-closed guard: refuse to bind a non-loopback interface with no auth
@@ -499,7 +501,7 @@ def _parse_config(raw: dict) -> AgentBConfig:
         cfg.server = ServerConfig(
             host=s.get("host", "0.0.0.0"),
             port=s.get("port", 50001),
-            cors_origins=s.get("cors_origins", ["*"]),
+            cors_origins=s.get("cors_origins", []),
             auth_token=_resolve_env(s.get("auth_token", "")),
             scoped_tokens=_parse_scoped_tokens(s.get("scoped_tokens", [])),
             allow_unauthenticated=s.get(
