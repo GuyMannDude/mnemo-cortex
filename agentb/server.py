@@ -793,21 +793,26 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _is_loopback_origin(origin: str) -> bool:
+def _is_local_origin(origin: str, local_names: set) -> bool:
+    """A page served by this machine: loopback, or one of the names the Host
+    check already vouches for (a Pocket tab opened at http://<hostname>:50001
+    posts with that hostname as its Origin)."""
     try:
-        return _is_loopback_host(urlsplit(origin).hostname or "")
+        name = (urlsplit(origin).hostname or "").rstrip(".")
     except ValueError:  # malformed, e.g. "http://[x"
         return False
+    return _is_loopback_host(name) or name in local_names
 
 
 def _local_host_names(config: AgentBConfig) -> set:
     """Host header names an unauthenticated loopback server answers to: the
-    configured bind host and this machine's own names (Debian maps the
-    hostname to 127.0.1.1). Loopback IPs and "localhost" are always fine."""
+    configured bind host and this machine's own name (Debian maps the
+    hostname to 127.0.1.1). Loopback IPs and "localhost" are always fine.
+    No getfqdn(): it is a blocking reverse lookup that can stall startup for
+    seconds on macOS or with broken DNS, and gethostname() covers the case."""
     names = {config.server.host.lower()}
     with suppress(OSError):
         names.add(socket.gethostname().lower())
-        names.add(socket.getfqdn().lower())
     return {n for n in names if n}
 
 
@@ -1055,37 +1060,46 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     # guarantee at request time too: an unauthenticated deployment that has
     # not explicitly opted open may serve loopback clients only, regardless
     # of how the process was actually bound.
-    if not (config.server.auth_token or config.server.scoped_tokens or
-            config.server.allow_unauthenticated):
+    #
+    # The Origin check below applies whenever no token is configured, the
+    # ``allow_unauthenticated`` opt-in included: opting open was meant to
+    # trust LAN peers, not every web page a LAN user visits (review finding
+    # on the GHSA-682p-grrx-wrwg fix, 2026-10-18). The peer and Host checks
+    # stay loopback-mode only; an opted-open LAN server is reached by name
+    # or IP from other machines, so a Host allow-list would break it. Such a
+    # deployment stays exposed to DNS-rebinding READS until it sets a token.
+    if not (config.server.auth_token or config.server.scoped_tokens):
         local_names = _local_host_names(config)
+        loopback_only = not config.server.allow_unauthenticated
 
         @app.middleware("http")
         async def enforce_unauthenticated_loopback(request: Request, call_next):
-            client_host = request.client.host if request.client else ""
-            if not _is_loopback_host(client_host):
-                return Response(
-                    "Forbidden: unauthenticated access is loopback-only",
-                    status_code=403,
-                )
-            # DNS rebinding: a page on attacker.example re-points its name at
-            # 127.0.0.1 and then reads the API "same-origin". Browsers send
-            # no Origin on same-origin GETs, but the Host header still names
-            # the attacker's domain, so only answer to local names.
-            host_header = request.headers.get("host")
-            if host_header is not None and \
-                    not _is_local_host_header(host_header, local_names):
-                return Response(
-                    "Forbidden: unauthenticated access needs a local Host name",
-                    status_code=403,
-                )
+            if loopback_only:
+                client_host = request.client.host if request.client else ""
+                if not _is_loopback_host(client_host):
+                    return Response(
+                        "Forbidden: unauthenticated access is loopback-only",
+                        status_code=403,
+                    )
+                # DNS rebinding: a page on attacker.example re-points its name
+                # at 127.0.0.1 and then reads the API "same-origin". Browsers
+                # send no Origin on same-origin GETs, but the Host header still
+                # names the attacker's domain, so only answer to local names.
+                host_header = request.headers.get("host")
+                if host_header is not None and \
+                        not _is_local_host_header(host_header, local_names):
+                    return Response(
+                        "Forbidden: unauthenticated access needs a local Host name",
+                        status_code=403,
+                    )
             # A browser on this machine is a loopback peer too, so a web page
             # could drive the API (CORS "simple" requests skip preflight).
             # Without a token, only Origin-less clients (CLI, MCP, scripts),
-            # loopback pages, or explicitly listed origins get through. A "*"
+            # local pages, or explicitly listed origins get through. A "*"
             # in cors_origins does not count here (GHSA-682p-grrx-wrwg).
             origin = request.headers.get("origin")
             if origin is not None and origin not in config.server.cors_origins \
-                    and not _is_loopback_origin(origin):
+                    and not _is_local_origin(origin, local_names):
                 return Response(
                     "Forbidden: cross-origin access needs auth or a listed origin",
                     status_code=403,

@@ -22,9 +22,21 @@ loopback nor listed (a `"*"` left in an old YAML does not reopen it, and CORS
 machine's own hostname. Origin-less clients (CLI, curl hooks, the MCP bridges)
 and the same-origin Pocket UI are unchanged.
 
+**Maintainer follow-up (code review of the fix).** The Origin check now
+applies whenever no token is configured, `allow_unauthenticated: true` (the
+Docker opt-in) included — opting open trusts LAN peers, not every web page a
+LAN user visits. The peer and Host checks stay loopback-mode only, so an
+opted-open server reached by name from other machines keeps working; it
+remains exposed to DNS-rebinding READS until it sets a token. An Origin
+naming this machine's hostname is accepted like the matching Host (a Pocket
+tab opened at `http://<hostname>:50001/app/` could load but not post).
+`socket.getfqdn()` dropped from startup: a blocking reverse lookup that can
+stall for seconds on macOS or with broken DNS; `gethostname()` covers it.
+
 **Operator note.** If you reach an unauthenticated loopback server through a
-hosts-file alias, set `auth_token` or add the alias to `cors_origins`. The
-new tests live in `tests/test_cors_origin_guard.py`.
+hosts-file alias or a Host-preserving reverse proxy, set `auth_token` or
+bind an alias your machine owns. `file://` pages and browser extensions now
+need an entry in `cors_origins`. Tests: `tests/test_cors_origin_guard.py`.
 
 ## Unreleased — dreamer: Claude API direct, Haiku 5.5, OpenRouter as a loud fallback (2026-10-09)
 

@@ -137,3 +137,26 @@ def test_token_auth_ignores_host_header(tmp_path):
     with TestClient(_app(tmp_path, auth_token="t0k"), client=("127.0.0.1", 50000)) as c:
         assert c.get("/sessions", headers={"Host": "mnemo.lan:50001",
                                            "X-API-KEY": "t0k"}).status_code == 200
+
+
+def test_machine_hostname_origin_still_allowed(local):
+    # A Pocket tab opened at http://<hostname>:50001/app/ posts with that
+    # hostname as its Origin; the Host check already vouches for the name.
+    import socket
+    origin = f"http://{socket.gethostname()}:50095"
+    assert local.get("/health", headers={"Origin": origin}).status_code == 200
+
+
+def test_opted_open_server_still_refuses_foreign_origin(tmp_path):
+    # allow_unauthenticated trusts LAN peers, not every web page they visit:
+    # the Origin guard applies whenever no token is configured.
+    with TestClient(_app(tmp_path, allow_unauthenticated=True),
+                    client=("192.0.2.7", 50000)) as c:
+        assert c.get("/health").status_code == 200
+        assert c.get("/health", headers={"Origin": EVIL}).status_code == 403
+        r = c.post("/capture/pause", content="{}",
+                   headers={"Origin": EVIL, "Content-Type": "text/plain"})
+        assert r.status_code == 403
+        assert c.get("/capture/status").json().get("paused") is not True
+        # reached by name from another machine: no Host allow-list here
+        assert c.get("/health", headers={"Host": "mnemo.lan:50095"}).status_code == 200
