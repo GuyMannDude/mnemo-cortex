@@ -23,6 +23,7 @@ import time
 import hashlib
 import hmac
 import ipaddress
+import socket
 import logging
 import asyncio
 import statistics
@@ -34,6 +35,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal, Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
@@ -791,6 +793,32 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _is_loopback_origin(origin: str) -> bool:
+    try:
+        return _is_loopback_host(urlsplit(origin).hostname or "")
+    except ValueError:  # malformed, e.g. "http://[x"
+        return False
+
+
+def _local_host_names(config: AgentBConfig) -> set:
+    """Host header names an unauthenticated loopback server answers to: the
+    configured bind host and this machine's own names (Debian maps the
+    hostname to 127.0.1.1). Loopback IPs and "localhost" are always fine."""
+    names = {config.server.host.lower()}
+    with suppress(OSError):
+        names.add(socket.gethostname().lower())
+        names.add(socket.getfqdn().lower())
+    return {n for n in names if n}
+
+
+def _is_local_host_header(host_header: str, local_names: set) -> bool:
+    try:
+        name = (urlsplit("//" + host_header).hostname or "").rstrip(".")
+    except ValueError:  # malformed, e.g. "[x"
+        return False
+    return _is_loopback_host(name) or name in local_names
+
+
 def auth_posture_is_open(config: AgentBConfig) -> bool:
     """True if this config would expose endpoints on a non-loopback interface
     with no auth configured and no explicit opt-in. The dangerous case."""
@@ -1017,8 +1045,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
-    app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
-                       allow_methods=["*"], allow_headers=["*"])
+    if config.server.cors_origins:
+        app.add_middleware(CORSMiddleware, allow_origins=config.server.cors_origins,
+                           allow_methods=["*"], allow_headers=["*"])
 
     # The startup guard above checks the configured bind address, but ASGI
     # launchers can override it (for example: a loopback config launched with
@@ -1028,12 +1057,37 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     # of how the process was actually bound.
     if not (config.server.auth_token or config.server.scoped_tokens or
             config.server.allow_unauthenticated):
+        local_names = _local_host_names(config)
+
         @app.middleware("http")
         async def enforce_unauthenticated_loopback(request: Request, call_next):
             client_host = request.client.host if request.client else ""
             if not _is_loopback_host(client_host):
                 return Response(
                     "Forbidden: unauthenticated access is loopback-only",
+                    status_code=403,
+                )
+            # DNS rebinding: a page on attacker.example re-points its name at
+            # 127.0.0.1 and then reads the API "same-origin". Browsers send
+            # no Origin on same-origin GETs, but the Host header still names
+            # the attacker's domain, so only answer to local names.
+            host_header = request.headers.get("host")
+            if host_header is not None and \
+                    not _is_local_host_header(host_header, local_names):
+                return Response(
+                    "Forbidden: unauthenticated access needs a local Host name",
+                    status_code=403,
+                )
+            # A browser on this machine is a loopback peer too, so a web page
+            # could drive the API (CORS "simple" requests skip preflight).
+            # Without a token, only Origin-less clients (CLI, MCP, scripts),
+            # loopback pages, or explicitly listed origins get through. A "*"
+            # in cors_origins does not count here (GHSA-682p-grrx-wrwg).
+            origin = request.headers.get("origin")
+            if origin is not None and origin not in config.server.cors_origins \
+                    and not _is_loopback_origin(origin):
+                return Response(
+                    "Forbidden: cross-origin access needs auth or a listed origin",
                     status_code=403,
                 )
             return await call_next(request)
