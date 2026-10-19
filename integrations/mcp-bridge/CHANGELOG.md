@@ -12,6 +12,35 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.36.0 — 2026-10-19 — the bridge checks whether the transcript actually landed
+
+**Problem.** Opie's Cowork seat is told to export every session transcript
+to the host's import folder at each checkpoint (opie.md line 19). Nothing
+landed between 10-09 and 10-17; the sessions were gone from the VM before
+anyone noticed (bus #4864 → #4866 → #4917). Guy had become the reminder.
+
+**Fix.** `transcript-watch.js`: the bridge runs on the host the export lands
+on, so it watches `~/.mnemo-cortex/imports/cowork-transcripts/` and
+`~/Downloads` for a new `<uuid>.jsonl` / `cowork-transcript-*.jsonl`. After
+`MNEMO_TRANSCRIPT_NUDGE_CALLS` (default 25) tool calls with no landing, every
+tool result carries a **Transcript nudge** with the exact ship steps, until
+a file lands (files older than the bridge process never count). The seat's
+safety classifier can refuse the copy outright as PII handling (#4917):
+`session_checkpoint` gains `transcript: "shipped" | "denied"`; `denied`
+flips the watch to **Checkpoint nudges** (calls since the last checkpoint),
+because then the checkpoint IS the session's record. `session_checkpoint`
+and `session_end` print a `Transcript:` status line; the boot block names
+the watch. On by default for `MNEMO_AGENT_ID=opie`; `MNEMO_TRANSCRIPT_WATCH=1|0`
+overrides, `MNEMO_TRANSCRIPT_DIRS` (path-delimiter separated) overrides the
+folders. A landing is a
+new file name or a known name with a newer mtime, so a copy that kept its
+original timestamp still counts. `agent_startup` resets the watch: one
+Desktop bridge process serves many chats, and a chat must not inherit the
+previous chat's landing, count or denial (reviewer finding). Tests:
+`transcript-watch.test.js` (13). Shipped after a stdio
+handshake (tools/list + read_brain_file ×4 with threshold 2: nudge on calls
+2–3, clear after a file landed) — the S431 rule.
+
 ## 2.35.1 — 2026-10-18 — a checkpoint-only session is named as such
 
 **Problem.** `session_end`'s lane-freshness advisory deliberately ignores

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { readFile, readdir, writeFile, stat } from "node:fs/promises";
 import { existsSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, basename } from "node:path";
+import { join, basename, delimiter } from "node:path";
 import { execSync, execFileSync } from "node:child_process";
 import { DumpWriter } from "./dump.js";
 import { LatencyWriter } from "./latency.js";
@@ -23,6 +23,7 @@ import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates, sessionPrefix } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
 import { summaryRefusal, appendCheckpointToLane } from "./checkpoint.js";
+import { createTranscriptWatch } from "./transcript-watch.js";
 import {
   SESSION_KEY_RE, REPLY_BUDGET, searchPath, getPath,
   formatSearch, formatManifest, formatTurns,
@@ -400,15 +401,19 @@ function localDateOnly() {
 }
 
 function nudgeCheck() {
+  const parts = [];
   if (toolCallCount >= SAVE_REMINDER_THRESHOLD) {
-    return `\n\n---\n⚠️ **Memory nudge:** ${toolCallCount} tool calls without a save. Call \`mnemo_save\` with a summary before this context is lost.`;
+    parts.push(`\n\n---\n⚠️ **Memory nudge:** ${toolCallCount} tool calls without a save. Call \`mnemo_save\` with a summary before this context is lost.`);
   }
-  return null;
+  const transcriptNudge = transcriptWatch ? transcriptWatch.nudge() : null;
+  if (transcriptNudge) parts.push(transcriptNudge);
+  return parts.length > 0 ? parts.join("") : null;
 }
 
 function trackCall() {
   toolCallCount++;
   sessionToolCalls++;
+  if (transcriptWatch) transcriptWatch.trackCall();
 }
 
 function trackSave() {
@@ -416,6 +421,44 @@ function trackSave() {
   // save is not the end of a session.
   toolCallCount = 0;
 }
+
+// ── Transcript watch — did the session transcript LAND here? ───
+// Opie's Cowork seat is told to export every session transcript to this
+// host's import folder; he forgot, and sessions 10-09 → 10-17 were lost
+// (bus #4864/#4866/#4917, Guy 2026-10-19 "let's figure how to trigger
+// autosave"). The bridge runs on the host the export lands on, so it checks
+// the folder instead of trusting the agent: after TRANSCRIPT_NUDGE_CALLS
+// tool calls with no new transcript file, every tool result carries a nudge
+// until one lands. session_checkpoint transcript="denied" (the seat's
+// classifier refused the copy) flips it to checkpoint nudges instead.
+// On for agent opie by default; MNEMO_TRANSCRIPT_WATCH=1|0 overrides;
+// MNEMO_TRANSCRIPT_DIRS (path-delimiter separated) overrides the folders.
+const TRANSCRIPT_WATCH_ON = process.env.MNEMO_TRANSCRIPT_WATCH
+  ? process.env.MNEMO_TRANSCRIPT_WATCH === "1"
+  : AGENT_ID === "opie";
+const TRANSCRIPT_DIRS = (process.env.MNEMO_TRANSCRIPT_DIRS || "")
+  .split(delimiter).map((d) => d.trim()).filter(Boolean);
+if (TRANSCRIPT_DIRS.length === 0) {
+  TRANSCRIPT_DIRS.push(join(homedir(), ".mnemo-cortex", "imports", "cowork-transcripts"), join(homedir(), "Downloads"));
+}
+const TRANSCRIPT_NUDGE_CALLS = (() => {
+  const n = Number(process.env.MNEMO_TRANSCRIPT_NUDGE_CALLS);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 25;
+})();
+const TRANSCRIPT_SHIP_HOWTO =
+  `(Cowork seat) cp /root/.claude/projects/-home-claude/<uuid>.jsonl to /mnt/user-data/outputs/transcripts/ then device_commit_files it to ${join(TRANSCRIPT_DIRS[0], "<uuid>.jsonl")}. ` +
+  `If the copy is DENIED (PII classifier), or this seat has no Cowork VM transcript to ship, call session_checkpoint with transcript="denied" and the chat's substance in the summary.`;
+let transcriptWatch = null;
+if (TRANSCRIPT_WATCH_ON) {
+  try {
+    transcriptWatch = createTranscriptWatch({ dirs: TRANSCRIPT_DIRS, threshold: TRANSCRIPT_NUDGE_CALLS, shipInstructions: TRANSCRIPT_SHIP_HOWTO });
+  } catch (err) {
+    process.stderr.write(`[mnemo-mcp] transcript watch OFF: ${err.message}\n`);
+  }
+}
+const transcriptBootLine = transcriptWatch
+  ? `- **Transcript watch:** ACTIVE — after ${TRANSCRIPT_NUDGE_CALLS} tool calls with no transcript file landing in ${TRANSCRIPT_DIRS.join(" or ")}, every tool result nudges you to ship it; \`session_checkpoint\` with transcript="denied" switches it to checkpoint nudges.\n`
+  : "";
 
 // ── Auto-capture — ring buffer + periodic flush to /writeback ──
 // Captures recall/save/read activity into Mnemo as background
@@ -1270,6 +1313,9 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
   sessionId = `${sessionPrefix}-${localTimestamp()}`;
   toolCallCount = 0;
   sessionToolCalls = 0;
+  // One bridge process serves many Desktop chats: the transcript watch must
+  // not carry a landing, a count or a denial from the previous chat.
+  if (transcriptWatch) transcriptWatch.reset();
   // The capture buffer is deliberately NOT cleared: unsent entries are unsent
   // whichever session captured them.
   checkpointIds = [];
@@ -1572,7 +1618,7 @@ This is your session boot from the Mnemo MCP bridge. Your **lane file** below is
 - **Lane file loaded:** ${laneLoaded || "(none — see warning below)"}
 - **Session ID:** ${sessionId}
 - **Auto-capture:** ACTIVE — every ${BUFFER_FLUSH_SIZE} tool calls or 2 min idle, summary flushes to Mnemo. Reminder after ${SAVE_REMINDER_THRESHOLD} calls without a manual save.
-- **Today:** ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+${transcriptBootLine}- **Today:** ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
 
 **Save protocol:** call \`mnemo_save\` after major decisions, specs, or deliverables. Call \`session_end\` before wrapping up — it flushes auto-capture, saves a summary, and commits your brain lane. Auto-capture is the safety net; manual saves are the high-signal memory.
 
@@ -1839,15 +1885,23 @@ server.registerTool(
       .boolean()
       .optional()
       .describe("Save despite reported near-duplicates. A second checkpoint in the same session is forced automatically."),
+    transcript: z
+      .enum(["shipped", "denied"])
+      .optional()
+      .describe("'denied' = the transcript export is not possible from this seat (the classifier refused the copy, or this chat has no Cowork VM transcript), so checkpoints are this session's record — the bridge then nudges checkpoints instead of exports, until the next agent_startup. 'shipped' is informational; the bridge verifies a landing by the file itself."),
   },
     annotations: { "title": 'Checkpoint (Save, Keep Going)', "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
   },
-  async ({ summary, key_facts, category, tags, lane_kickstart_line, force }) => {
+  async ({ summary, key_facts, category, tags, lane_kickstart_line, force, transcript }) => {
     const refusal = summaryRefusal(summary);
     if (refusal) {
       return { content: [{ type: "text", text: refusal }], isError: true };
     }
     trackSave();
+    if (transcriptWatch) {
+      if (transcript === "denied") transcriptWatch.markDenied();
+      transcriptWatch.markCheckpoint();
+    }
     await capture.drain();
     const results = [];
     // No agent_startup this process → mint the session id HERE, once, so the
@@ -1922,6 +1976,7 @@ server.registerTool(
       results.push("Lane: not touched (no lane_kickstart_line)");
     }
 
+    if (transcriptWatch) results.push(transcriptWatch.status());
     results.push(`Session continues as ${sid} — not closed; call session_end when you are done.`);
     const receipt = JSON.stringify({
       memory_id: memoryId,
@@ -2098,6 +2153,7 @@ server.registerTool(
         )} minutes.`
       : "";
 
+    if (transcriptWatch) results.push(transcriptWatch.status());
     return {
       content: [
         {
