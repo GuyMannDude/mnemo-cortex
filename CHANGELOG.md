@@ -1,5 +1,31 @@
 # Changelog
 
+## v4.27.0 — SECURITY: no wildcard CORS, foreign origins and hosts refused without auth (2026-10-18)
+
+**Problem.** GHSA-682p-grrx-wrwg (high, reported 2026-08-20 by kasparovabi).
+The server shipped `cors_origins: ["*"]` by default, and the default auth
+posture is none. A browser on the same machine is a loopback client, so any
+web page the user visited could read `/facts`, `/sessions`, transcripts and
+dreams, write facts, pause capture, and plant trajectories — the loopback peer
+check never saw a difference. A DNS-rebinding page did the same with no
+`Origin` header at all. Deployments with `auth_token` or scoped tokens were
+not affected (the token is the gate, and a page cannot attach it).
+
+**Fix** (contributed by kasparovabi, merged as-is after maintainer review).
+`server.cors_origins` now defaults to `[]` in the dataclass, the YAML loader
+and `agentb.yaml.example`; `CORSMiddleware` is only installed when origins are
+listed. When no auth is configured and `allow_unauthenticated` is off, the
+request-time loopback guard also refuses any request whose `Origin` is neither
+loopback nor listed (a `"*"` left in an old YAML does not reopen it, and CORS
+"simple" requests that skip preflight are covered), and any request whose
+`Host` is not a loopback address, `localhost`, the configured bind host or this
+machine's own hostname. Origin-less clients (CLI, curl hooks, the MCP bridges)
+and the same-origin Pocket UI are unchanged.
+
+**Operator note.** If you reach an unauthenticated loopback server through a
+hosts-file alias, set `auth_token` or add the alias to `cors_origins`. The
+new tests live in `tests/test_cors_origin_guard.py`.
+
 ## Unreleased — dreamer: Claude API direct, Haiku 5.5, OpenRouter as a loud fallback (2026-10-09)
 
 **Problem.** Every Dreamer LLM call went through OpenRouter to
