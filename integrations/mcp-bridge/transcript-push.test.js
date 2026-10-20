@@ -61,6 +61,8 @@ test("derivedUuid namespace separates line ids from session ids", () => {
   assert(derivedUuid("a", "x") !== derivedUuid("b", "x"), "namespace must matter");
 });
 
+const T = (role, text) => ({ role, text });
+
 console.log("\n── lines ──\n");
 
 test("buildLines: archive-shaped user/assistant lines with a parent chain", () => {
@@ -75,6 +77,14 @@ test("buildLines: archive-shaped user/assistant lines with a parent chain", () =
   assert(u.sessionId === sid && a.sessionId === sid, "sessionId on every line");
   assert(u.timestamp === "2026-10-20T20:00:00.000Z" && a.timestamp === "2026-10-20T20:00:00.001Z", "push-time timestamps, ordered");
   assert(u.version === "v" && u.cwd === "mnemo-transcript-push:opie", "version + cwd name the push path");
+});
+
+test("buildLines: fidelity is stamped on every turn line, default reconstructed", () => {
+  const sid = pushSessionId("opie", "s");
+  const d = buildLines({ sessionUuid: sid, turns: [T("user", "a"), T("assistant", "b")], now: fixedNow });
+  assert(d.every((l) => JSON.parse(l).fidelity === "reconstructed"), "default reconstructed");
+  const v = buildLines({ sessionUuid: sid, turns: [T("user", "a")], title: "t", now: fixedNow, fidelity: "verbatim" });
+  assert(JSON.parse(v[1]).fidelity === "verbatim" && JSON.parse(v[0]).fidelity === undefined, "verbatim on the turn, not on the title line");
 });
 
 test("buildLines: title line only at the start of a file", () => {
@@ -93,8 +103,6 @@ test("line uuids are deterministic by position, continue across pushes", () => {
 });
 
 console.log("\n── overlap ──\n");
-
-const T = (role, text) => ({ role, text });
 
 test("overlapCount: incremental re-send of the tail is skipped", () => {
   const existing = [T("user", "a"), T("assistant", "b"), T("user", "c")];

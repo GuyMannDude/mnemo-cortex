@@ -12,6 +12,20 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.37.1 — 2026-10-20 — pushes carry their fidelity
+
+**Problem.** Opie #4946: a push is the seat re-typing turns from its context
+window. In a long chat the early turns are already compacted or summarized,
+so a first push is part verbatim, part reconstructed — with nothing marking
+which (mixed provenance launders the weakest claim).
+
+**Fix.** `mnemo_transcript_push` takes `fidelity: verbatim | reconstructed`
+(default `reconstructed`, the honest default for a re-typed turn) and stamps
+it on every turn line of that push; the server stores lines raw, so the
+archive keeps it (`mnemo_transcript get format=raw`). Mixed batch = two
+pushes. Cost (same letter): old chats push from the latest checkpoint
+forward; the earlier record is the checkpoints.
+
 ## 2.37.0 — 2026-10-20 — push the transcript as text: no file export needed
 
 **Problem.** The 2.36.0 watch can only nudge for a FILE. Opie's Cowork seat

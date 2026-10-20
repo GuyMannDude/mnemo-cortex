@@ -91,9 +91,14 @@ export function overlapCount(existing, incoming) {
 
 // Archive-shaped lines for new turns. Timestamps are PUSH time (the seat
 // does not know when each turn was said); the version field names this
-// path so a reader can tell a push from a client export.
+// path so a reader can tell a push from a client export; fidelity says
+// whether the seat copied the turn or re-typed it from a compacted context
+// (Opie #4946: a first push of a long chat is part verbatim, part
+// reconstructed — unmarked, that is mixed provenance). The server keeps
+// lines raw, so the archive carries the field.
 export function buildLines({ sessionUuid, turns, startIndex = 0, parentUuid = null, title = null,
-                             now = () => Date.now(), version = "mnemo-transcript-push", agentId = "" }) {
+                             now = () => Date.now(), version = "mnemo-transcript-push", agentId = "",
+                             fidelity = "reconstructed" }) {
   const lines = [];
   const base = now();
   if (title && startIndex === 0) {
@@ -111,6 +116,7 @@ export function buildLines({ sessionUuid, turns, startIndex = 0, parentUuid = nu
       isSidechain: false,
       timestamp: new Date(base + i).toISOString(),
       version,
+      fidelity,
       cwd: `mnemo-transcript-push:${agentId}`,
       message: { role: t.role, content: [{ type: "text", text: t.text }] },
     };
@@ -123,7 +129,7 @@ export function buildLines({ sessionUuid, turns, startIndex = 0, parentUuid = nu
 
 // Append a push to the session's file. Returns { appended, skipped, total };
 // a push that adds nothing writes nothing.
-export function appendPush({ file, turns, title = null, sessionUuid, now, version, agentId,
+export function appendPush({ file, turns, title = null, sessionUuid, now, version, agentId, fidelity,
                              fs = { readFileSync, appendFileSync, mkdirSync, existsSync } }) {
   const prior = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const { turns: existing, lastUuid } = readExisting(prior);
@@ -134,7 +140,7 @@ export function appendPush({ file, turns, title = null, sessionUuid, now, versio
   }
   const lines = buildLines({
     sessionUuid, turns: fresh, startIndex: existing.length, parentUuid: lastUuid,
-    title: existing.length === 0 && !prior ? title : null, now, version, agentId,
+    title: existing.length === 0 && !prior ? title : null, now, version, agentId, fidelity,
   });
   // A prior file missing its final newline would glue our first line onto its last.
   const glue = prior && !prior.endsWith("\n") ? "\n" : "";

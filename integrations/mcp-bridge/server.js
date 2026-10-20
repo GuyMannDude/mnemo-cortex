@@ -1237,11 +1237,12 @@ server.registerTool(
         text: z.string().min(1).max(100_000),
       })).min(1).max(500).describe("The turns in order: role = who spoke, text = what they said, verbatim where you can."),
       title: z.string().max(200).optional().describe("A short chat title; stored once, on the first push of a chat."),
+      fidelity: z.enum(["verbatim", "reconstructed"]).optional().describe("verbatim = copied as said; reconstructed = re-typed from a compacted or summarized context. Default reconstructed. Stamped on every turn of this push; split a mixed batch into two pushes."),
       chat_id: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional().describe("This chat's handle: the one your first push printed, or the chat's own id if you know it. Same handle = same archive. Default: this bridge session's id."),
     },
     annotations: { title: "Push Transcript", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
-  async ({ turns, title, chat_id }) => {
+  async ({ turns, title, chat_id, fidelity }) => {
     // No agent_startup this process → mint the session id here, as the
     // checkpoint does. The archive key is always DERIVED from the handle:
     // a chat's own client uuid as a handle still gets its own push file,
@@ -1252,7 +1253,7 @@ server.registerTool(
     const file = join(TRANSCRIPT_DIRS[0], `${uuid}.jsonl`);
     let result;
     try {
-      result = appendPush({ file, turns, title, sessionUuid: uuid, version: `mnemo-transcript-push/${BRIDGE_VERSION}`, agentId: AGENT_ID });
+      result = appendPush({ file, turns, title, sessionUuid: uuid, version: `mnemo-transcript-push/${BRIDGE_VERSION}`, agentId: AGENT_ID, fidelity: fidelity || "reconstructed" });
     } catch (err) {
       return {
         content: [{ type: "text", text: `Transcript push FAILED before anything was written: ${err.message} (${file})` }],
@@ -1263,7 +1264,7 @@ server.registerTool(
     if (transcriptWatch) transcriptWatch.scan(true);   // the file IS a landing
     const head = result.appended === 0
       ? `Nothing new: all ${result.skipped} turns were already archived (${result.total} on file).`
-      : `Appended ${result.appended} turns (${result.skipped} already archived; ${result.total} on file).`;
+      : `Appended ${result.appended} ${fidelity || "reconstructed"} turns (${result.skipped} already archived; ${result.total} on file).`;
     let tail;
     try {
       const up = await mnemoUploadTranscript(uuid, readFileSync(file));
