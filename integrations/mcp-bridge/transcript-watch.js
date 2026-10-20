@@ -130,7 +130,7 @@ export function createTranscriptWatch({
     scan(callsSinceLanded >= threshold);
     if (callsSinceLanded < threshold) return null;
     if (denied) {
-      return `\n\n---\n📤 **Checkpoint nudge:** ${callsSinceLanded} tool calls since your last checkpoint, and the transcript export is denied from this seat. Call \`session_checkpoint\` now with the chat's substance (decisions, Guy's words, what changed) — that is this session's only record.`;
+      return `\n\n---\n📤 **Checkpoint nudge:** ${callsSinceLanded} tool calls since your last checkpoint, and the transcript export is denied from this seat. Call \`mnemo_transcript_push\` now with the turns since your last push (the text goes over the network, no file copy), or \`session_checkpoint\` with the chat's substance (decisions, Guy's words, what changed) — that is this session's only record.`;
     }
     const since = landed ? `since the last transcript landed (${landed.file})` : "and NO transcript has landed this session";
     return `\n\n---\n📤 **Transcript nudge:** ${callsSinceLanded} tool calls ${since}. Ship it now${shipInstructions ? `: ${shipInstructions}` : "."} The bridge resets this nudge when the file lands in ${dirs.join(" or ")}.`;
@@ -139,7 +139,7 @@ export function createTranscriptWatch({
   // One line for session_checkpoint / session_end results.
   function status() {
     scan(true);
-    if (denied) return `Transcript: export DENIED from this seat (classifier); ${callsSinceLanded} tool calls since the last checkpoint — checkpoints are the record.`;
+    if (denied) return `Transcript: export DENIED from this seat (classifier); ${callsSinceLanded} tool calls since the last checkpoint — push the turns (mnemo_transcript_push) or checkpoint; those are the record.`;
     if (landed) {
       const ageMin = Math.max(0, Math.round((now() - landed.mtimeMs) / 60_000));
       return `Transcript: landed ${landed.file} (${ageMin} min ago, ${callsSinceLanded} tool calls since).`;

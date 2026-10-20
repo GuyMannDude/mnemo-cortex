@@ -10,6 +10,7 @@ This is the shared bridge — **claude-desktop**, **claude-code**, **openclaw-mc
 - `mnemo_save` — write a memory with optional `source` / `category` / `additional_tags`. Regex auto-suggester picks a category when omitted and returns its choice + matched keywords.
 - `mnemo_search` — cross-agent recall (gated by share mode), same filter surface as `mnemo_recall`.
 - `mnemo_share` — toggle cross-agent sharing for the current session.
+- `mnemo_transcript_push` — archive the chat's turns as text (no file export): the bridge writes one append-only transcript per chat into the import folder and uploads it; re-sent turns are skipped.
 - `agent_startup` — neutral session-boot tool that loads the calling agent's lane file, cross-agent docs, recent memories, and last dream brief.
 - `session_end` — drains auto-capture, saves a session-summary memory, commits the agent's brain lane.
 - `session_checkpoint` — the same save-and-commit WITHOUT closing the session: flushes auto-capture, saves a substantive summary (400+ chars, status-only saves refused), optionally appends a dated `## CHECKPOINT` line to the lane and commits + pushes it. Same session_id; `session_end` still runs later. For long or many-open-at-once sessions.
