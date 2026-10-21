@@ -343,9 +343,9 @@ test("brainStamp names host, short sha and 'never this session' when no pull hap
   execFileSync("git", ["init", "-q", dir]);
   execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
   const sha = execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { encoding: "utf-8" }).trim();
-  const out = brainStamp(dir, "IGOR-TEST", null);
+  const out = brainStamp(dir, "host-a", null);
   rmSync(dir, { recursive: true, force: true });
-  if (out !== `[brain @ ${sha} on IGOR-TEST, last pulled never this session]`) throw new Error(out);
+  if (out !== `[brain @ ${sha} on host-a, last pulled never this session]`) throw new Error(out);
 });
 
 test("brainStamp carries the pull time when given one", () => {
