@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, gateVerdict, gateRefused, COMMIT_BLOCKED } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, gateVerdict, gateRefused, COMMIT_BLOCKED, brainStamp } from "./brain-git.js";
 
 let passed = 0;
 let failed = 0;
@@ -334,6 +334,35 @@ await asyncTest("pageCommitBlocked: bus down → loud FAILED, never throws", asy
 });
 
 rmSync(root, { recursive: true, force: true });
+
+
+// ── brainStamp (v2.38.0, snag-bridge-brain-read-stale-clone-2026-10-20) ──
+
+test("brainStamp names host, short sha and 'never this session' when no pull happened", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stamp-"));
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+  const sha = execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { encoding: "utf-8" }).trim();
+  const out = brainStamp(dir, "IGOR-TEST", null);
+  rmSync(dir, { recursive: true, force: true });
+  if (out !== `[brain @ ${sha} on IGOR-TEST, last pulled never this session]`) throw new Error(out);
+});
+
+test("brainStamp carries the pull time when given one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stamp-"));
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+  const out = brainStamp(dir, "h", "2026-10-21T06:40:00.000Z");
+  rmSync(dir, { recursive: true, force: true });
+  if (!out.endsWith("on h, last pulled 2026-10-21T06:40:00.000Z]")) throw new Error(out);
+});
+
+test("brainStamp never throws outside a git repo", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stamp-nogit-"));
+  const out = brainStamp(dir, "h", null);
+  rmSync(dir, { recursive: true, force: true });
+  if (out !== "[brain @ no-git on h, last pulled never this session]") throw new Error(out);
+});
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

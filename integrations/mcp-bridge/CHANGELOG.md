@@ -12,6 +12,23 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.38.0 — 2026-10-20 — every brain read names its clone
+
+**Why.** Opie read a brain file three minutes after CC pushed it and got the
+old text, byte for byte (#4960/#4964). Nothing was broken: only `agent_startup`
+pulls, so a reader sees its boot-time tree — and nothing said so. Two agents
+then compared reads of the same filename on different hosts and argued about
+it (snag-bridge-brain-read-stale-clone-2026-10-20, doctrine name-your-source).
+
+- `read_brain_file` and `list_brain_files` end with a stamp:
+  `[brain @ <short-sha> on <host>, last pulled <ISO | never this session>]`.
+- `read_brain_file(pull=true)` fast-forwards the brain repo before reading
+  (same `fastForwardBrain` the write path uses); the stamp then carries the
+  pull result.
+- The pull time updates on `agent_startup`, on `write_brain_file`'s sync, and
+  on `read_brain_file(pull=true)`.
+- `brainStamp()` in `brain-git.js`, 3 tests in `brain-git.test.js`.
+
 ## 2.37.1 — 2026-10-20 — pushes carry their fidelity
 
 **Problem.** Opie #4946: a push is the seat re-typing turns from its context

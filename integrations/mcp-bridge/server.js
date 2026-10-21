@@ -17,7 +17,7 @@ import {
   getBootCuts,
   formatCutManifest,
 } from "./boot-budget.js";
-import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, fastForwardBrain, lastCommitLine } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, fastForwardBrain, lastCommitLine, brainStamp } from "./brain-git.js";
 import { recordSeen, isCurrent, staleWriteRefusal } from "./write-guard.js";
 import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates, sessionPrefix } from "./lane-candidates.js";
@@ -1436,6 +1436,7 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
       pullStatus = out.split("\n")[0] || "OK";
+      lastPullAt = new Date().toISOString();
     } catch (e) {
       pullStatus = `FAILED (${e.message.split("\n")[0]})`;
     }
@@ -1768,27 +1769,42 @@ lanes; don't write them.
   })
 );
 
+// v2.38.0: when THIS process last fast-forwarded BRAIN_DIR (agent_startup,
+// write_brain_file's sync, or read_brain_file(pull=true)). Stamped onto every
+// brain read so a stale clone names itself (snag-bridge-brain-read-stale-clone-2026-10-20).
+let lastPullAt = null;
+const noteSync = (sync) => {
+  if (!sync.startsWith("pull --ff-only FAILED") && sync !== "not a git repo") lastPullAt = new Date().toISOString();
+  return sync;
+};
+
 // ── Tool: read_brain_file ──────────────────────────────────────
 
 server.registerTool(
   "read_brain_file",
   {
-    description: "Read a file from the brain directory ($BRAIN_DIR). Use this to check brain lanes, reference docs, or any .md file in the brain.",
+    description: "Read a file from the brain directory ($BRAIN_DIR). Use this to check brain lanes, reference docs, or any .md file in the brain. The last line is a stamp naming the clone (host), its commit, and when this bridge last pulled it — only agent_startup pulls by default, so pass pull=true when another agent just pushed.",
     inputSchema: {
     filename: z
       .string()
       .describe("Filename to read, e.g. 'opie.md', 'active.md', 'stack.md'"),
+    pull: z
+      .boolean()
+      .optional()
+      .describe("Fast-forward pull the brain repo before reading. Use when another agent just pushed and you need their text, not this clone's boot-time copy."),
   },
     annotations: { "title": 'Read Brain File', "readOnlyHint": true, "idempotentHint": true },
   },
-  async ({ filename }) => {
-    captureCall("read_brain_file", `read ${filename}`);
+  async ({ filename, pull }) => {
+    captureCall("read_brain_file", `read ${filename}${pull ? " (pull)" : ""}`);
     try {
       const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "");
+      const sync = pull ? noteSync(fastForwardBrain(BRAIN_DIR)) : null;
       const content = await readFile(join(BRAIN_DIR, safe), "utf-8");
       recordSeen(safe, content);
+      const stamp = brainStamp(BRAIN_DIR, hostname(), lastPullAt) + (sync ? ` (pull: ${sync})` : "");
       return {
-        content: [{ type: "text", text: content + (nudgeCheck() || "") }],
+        content: [{ type: "text", text: content + "\n\n" + stamp + (nudgeCheck() || "") }],
       };
     } catch (err) {
       return {
@@ -1817,7 +1833,7 @@ server.registerTool(
         content: [
           {
             type: "text",
-            text: `Brain files:\n${mdFiles.map((f) => `- ${f}`).join("\n")}`,
+            text: `Brain files:\n${mdFiles.map((f) => `- ${f}`).join("\n")}\n\n${brainStamp(BRAIN_DIR, hostname(), lastPullAt)}`,
           },
         ],
       };
@@ -1865,7 +1881,7 @@ server.registerTool(
       // fast-forward first so the other machine's push is on disk, then
       // refuse if this session never saw the file or it changed since.
       const target = join(BRAIN_DIR, safe);
-      const sync = fastForwardBrain(BRAIN_DIR);
+      const sync = noteSync(fastForwardBrain(BRAIN_DIR));
       const onDisk = existsSync(target) ? await readFile(target, "utf-8") : null;
       const refusal = staleWriteRefusal({
         filename: safe,

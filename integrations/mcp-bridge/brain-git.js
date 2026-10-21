@@ -141,6 +141,22 @@ export function fastForwardBrain(brainDir) {
   }
 }
 
+/**
+ * One-line provenance stamp for brain reads: which clone (host), which commit,
+ * and when THIS bridge process last fast-forwarded it. A reader who sees its
+ * boot-time tree now knows that (doctrine name-your-source;
+ * snag-bridge-brain-read-stale-clone-2026-10-20). Never throws.
+ */
+export function brainStamp(brainDir, host, pulledAt) {
+  let sha = "no-git";
+  try {
+    sha = git(["rev-parse", "--short", "HEAD"], brainDir) || "no-git";
+  } catch {
+    // not a git repo or git unavailable — stamp still names host + pull time
+  }
+  return `[brain @ ${sha} on ${host}, last pulled ${pulledAt || "never this session"}]`;
+}
+
 /** One-line last commit for a brain file, for refusal context. Never throws. */
 export function lastCommitLine(brainDir, filename) {
   try {
