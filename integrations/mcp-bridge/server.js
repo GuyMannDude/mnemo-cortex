@@ -2036,6 +2036,9 @@ server.registerTool(
           `Mnemo save: HELD as near-duplicate of ${ids || "existing memories"} — NOT saved. ` +
           `Repeat with force=true if this checkpoint is meant to stand beside them.`
         );
+      } else if (data.status === "paused") {
+        // Server-wide capture pause: the writeback was DISCARDED, not queued.
+        results.push(`Mnemo save: DISCARDED — ${data.message || "capture is paused server-wide"} — NOT saved.`);
       } else {
         memoryId = data.memory_id || null;
         if (memoryId) checkpointIds.push(memoryId);
@@ -2151,6 +2154,9 @@ server.registerTool(
           `Mnemo save: HELD as near-duplicate of ${ids || "existing memories"} — NOT saved. ` +
           `Re-save via mnemo_save with force=true (or supersedes=[id]) before closing.`
         );
+      } else if (data.status === "paused") {
+        // Server-wide capture pause: the writeback was DISCARDED, not queued.
+        results.push(`Mnemo save: DISCARDED — ${data.message || "capture is paused server-wide"} — NOT saved.`);
       } else {
         results.push(`Mnemo save: OK (memory_id=${data.memory_id || "ok"})`);
       }

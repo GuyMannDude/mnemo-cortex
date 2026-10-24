@@ -12,6 +12,10 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.38.1 — 2026-10-23 — a paused save says DISCARDED
+
+- `session_checkpoint` and `session_end`: a server reply of `status: "paused"` (capture gate closed, writeback discarded) now renders as `Mnemo save: DISCARDED — <server message> — NOT saved.` It used to print `Mnemo save: OK (memory_id=ok)` because the HTTP call succeeded, while the checkpoint header said `INCOMPLETE` — one result, both outcomes (Opie #5185, 2026-10-23). The server message names the pause; the pause itself is still server-wide (brain snag `snag-mnemo-capture-pause-is-server-wide-and-checkpoint-says-ok.md`).
+
 ## 2.38.0 — 2026-10-20 — every brain read names its clone
 
 **Why.** Opie read a brain file three minutes after CC pushed it and got the
