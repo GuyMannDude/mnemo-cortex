@@ -20,7 +20,7 @@ import {
 import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, fastForwardBrain, lastCommitLine, brainStamp } from "./brain-git.js";
 import { recordSeen, isCurrent, staleWriteRefusal } from "./write-guard.js";
 import { refusesBrainWrite } from "./lane-guard.js";
-import { laneCandidates, sessionPrefix } from "./lane-candidates.js";
+import { laneCandidates, sessionPrefix, laneOwner } from "./lane-candidates.js";
 import { budgetWarning } from "./write-budget.js";
 import { summaryRefusal, appendCheckpointToLane } from "./checkpoint.js";
 import { createTranscriptWatch } from "./transcript-watch.js";
@@ -54,6 +54,9 @@ const LANE_CANDIDATES = laneCandidates(AGENT_ID, process.env.MNEMO_LANE);
 // Session ids start with this: the tenant, plus the lane tag when MNEMO_LANE
 // is set (cc + cc3-igor.md → "cc-cc3"). See lane-candidates.js.
 const SESSION_PREFIX = sessionPrefix(AGENT_ID, process.env.MNEMO_LANE);
+// Filename stem session_end may commit: the lane's short name (cc3), not the
+// tenant (cc) — see laneOwner.
+const LANE_OWNER = laneOwner(AGENT_ID, process.env.MNEMO_LANE);
 // Bridge-side state that outlives a process: boot-cut log, capture spool.
 const MNEMO_STATE_DIR = join(process.env.HOME || homedir(), ".mnemo-cortex");
 // MNEMO_AUTH_TOKEN: optional bearer token for the Mnemo Cortex API. Read from
@@ -2168,9 +2171,13 @@ server.registerTool(
     // reports anything left dirty — the old `git add -A` swept every other
     // agent's in-progress edits into a commit under this agent's name
     // (snag-session-end-git-add-all). Never throws.
+    // v2.40.0: ownership keys on LANE_OWNER (cc3), not the tenant (cc) —
+    // CC3's session_end had committed CC's draft and skipped its own files
+    // (snag-mnemo-bridge-session-end-commits-other-agents-files).
     const commitLines = sessionEndCommit({
       brainDir: BRAIN_DIR,
       agentId: AGENT_ID,
+      owner: LANE_OWNER,
       dateStr: localDateOnly(),
     });
     results.push(...commitLines);

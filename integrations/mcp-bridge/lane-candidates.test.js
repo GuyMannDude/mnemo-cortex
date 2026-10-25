@@ -3,7 +3,7 @@
 //
 // Style matches lane-guard.test.js: homemade runner, plain console output.
 
-import { laneCandidates, sessionPrefix } from "./lane-candidates.js";
+import { laneCandidates, sessionPrefix, laneOwner } from "./lane-candidates.js";
 
 let passed = 0;
 let failed = 0;
@@ -80,6 +80,21 @@ test("sessionPrefix: minted ids still satisfy every census consumer", () => {
   assert(m && m[1] === "cc-cc3", `inferAgent label: ${m && m[1]}`);
   // mnemo-dream.py _is_auto_capture() keys on "-auto-" in the id.
   assert(`${sessionPrefix("cc", "cc3-igor.md")}-auto-1790220217000`.includes("-auto-"), "dreamer auto marker");
+});
+
+// ── laneOwner ────────────────────────────────────────────────────
+
+test("laneOwner: no override = the tenant (CC, Rocky, Opie unchanged)", () => {
+  assert(laneOwner("cc") === "cc", "cc default");
+  assert(laneOwner("rocky", "") === "rocky", "empty override");
+  assert(laneOwner("opie", "   ") === "opie", "whitespace-only override");
+});
+
+test("laneOwner: MNEMO_LANE makes the lane's short name the owner (the CC3 #5115 snag)", () => {
+  assert(laneOwner("cc", "cc3-igor.md") === "cc3", "CC3 owns cc3-*, not cc-*");
+  assert(laneOwner("cc", "cc2-igor2.md") === "cc2", "CC2");
+  assert(laneOwner("cc", " cc4-latitude \n") === "cc4", "trimmed, no .md");
+  assert(laneOwner("cc", "cc-session.md") === "cc", "lane named after the tenant = tenant");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

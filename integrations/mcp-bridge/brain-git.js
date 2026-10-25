@@ -171,8 +171,12 @@ export function lastCommitLine(brainDir, filename) {
 
 /**
  * session_end's brain commit. Stages ONLY the ending agent's own files —
- * basename `<agent>.<ext>` or `<agent>-*` (lane, session archives,
- * archive index) — never the shared tree. The brain repo is shared by five
+ * basename `<owner>.<ext>` or `<owner>-*` (lane, session archives,
+ * archive index) — never the shared tree. `owner` is the lane's short
+ * name (laneOwner in lane-candidates.js), NOT the Mnemo tenant: CC3 shares
+ * tenant `cc` with CC, and matching on the tenant committed CC's draft
+ * under CC3's name while missing CC3's own cc3-* files
+ * (snag-mnemo-bridge-session-end-commits-other-agents-files, CC3 #5115). The brain repo is shared by five
  * agents and a dirty tree is the NORMAL mid-session state; the old
  * `git add -A` here swept every other agent's in-progress edits into a
  * commit under the ending agent's name (snag-session-end-git-add-all).
@@ -181,11 +185,13 @@ export function lastCommitLine(brainDir, filename) {
  *
  * @param {object} opts
  * @param {string} opts.brainDir  BRAIN_DIR (may be a subdir of the repo)
- * @param {string} opts.agentId   for ownership matching + commit message
+ * @param {string} opts.agentId   Mnemo tenant; the owner when none is given
  * @param {string} opts.dateStr   local date, e.g. "2026-08-19"
+ * @param {string} [opts.owner]   filename stem this seat owns (default agentId)
  * @returns {string[]} human-readable status lines — never throws
  */
-export function sessionEndCommit({ brainDir, agentId, dateStr }) {
+export function sessionEndCommit({ brainDir, agentId, dateStr, owner }) {
+  owner = (owner || agentId || "").trim() || agentId;
   let insideWorkTree = false;
   try {
     insideWorkTree =
@@ -248,7 +254,7 @@ export function sessionEndCommit({ brainDir, agentId, dateStr }) {
   const isMine = (e) => {
     if (!e.path.startsWith(prefix)) return false; // outside brainDir ≠ lane work
     const base = e.path.split("/").pop();
-    return base.startsWith(`${agentId}.`) || base.startsWith(`${agentId}-`);
+    return base.startsWith(`${owner}.`) || base.startsWith(`${owner}-`);
   };
   const mineEntries = entries.filter(isMine);
   const mine = mineEntries.map((e) => e.path);
@@ -261,7 +267,7 @@ export function sessionEndCommit({ brainDir, agentId, dateStr }) {
     try {
       if (toAdd.length) git(["add", "-A", "--", ...toAdd], brainDir);
       git(
-        ["commit", "-m", `brain: ${agentId} session end — ${dateStr}`, "--", ...spec],
+        ["commit", "-m", `brain: ${owner} session end — ${dateStr}`, "--", ...spec],
         brainDir
       );
       try {

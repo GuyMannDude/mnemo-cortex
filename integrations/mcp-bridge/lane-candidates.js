@@ -26,3 +26,16 @@ export function sessionPrefix(agentId, laneOverride) {
   const tag = (laneOverride || "").trim().split(/[-.]/)[0].replace(/[^A-Za-z0-9_]/g, "");
   return tag && tag !== agentId ? `${agentId}-${tag}` : agentId;
 }
+
+// Which brain files session_end may COMMIT: the filename stem that marks a
+// file as this seat's own (`<owner>.md`, `<owner>-*`). Without MNEMO_LANE
+// that is the tenant. With it, it is the lane's short name — CC3 runs as
+// tenant `cc` with lane cc3-igor.md, and matching on the TENANT made its
+// session_end commit CC's cc-s447.md draft while skipping its own cc3-*
+// files (snag-mnemo-bridge-session-end-commits-other-agents-files, CC3
+// #5115). The raw tag is kept (no charset strip): it must match the file
+// as it is named on disk.
+export function laneOwner(agentId, laneOverride) {
+  const tag = (laneOverride || "").trim().split(/[-.]/)[0];
+  return tag || agentId;
+}

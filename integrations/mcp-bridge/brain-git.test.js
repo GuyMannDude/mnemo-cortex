@@ -173,6 +173,27 @@ test("prefix cannot cross agents (agent 'cc' does not match cody-*)", () => {
   rmSync(join(clone, "cody-session.md"));
 });
 
+test("lane override (CC3 #5115): owner 'cc3' on tenant 'cc' commits cc3-* ONLY; cc-* draft left alone", () => {
+  writeFileSync(join(clone, "cc3-igor.md"), "CC3's lane\n");
+  writeFileSync(join(clone, "cc3-s27.md"), "CC3's session archive\n");
+  writeFileSync(join(clone, "cc-s447.md"), "CC's uncommitted draft\n");
+  const lines = sessionEndCommit({ ...seOpts, agentId: "cc", owner: "cc3" });
+  const committed = git(["show", "--name-only", "--format=", "HEAD"], clone).split("\n").sort().join(",");
+  assert(committed === "cc3-igor.md,cc3-s27.md", `committed: ${committed}`);
+  assert(git(["log", "-1", "--format=%s"], clone) === "brain: cc3 session end — 2026-08-19", "subject names the owner");
+  assert(lines[0].includes("OK (") && !lines[0].includes("cc-s447"), `line0: ${lines[0]}`);
+  assert(lines[1] && lines[1].includes("cc-s447.md"), `line1: ${lines[1]}`);
+  assert(git(["status", "--porcelain", "--", "cc-s447.md"], clone).startsWith("??"), "draft still untracked");
+  rmSync(join(clone, "cc-s447.md"));
+});
+
+test("no owner given → tenant is the owner (CC, Rocky, Opie unchanged)", () => {
+  writeFileSync(join(clone, "test-agent-s98.md"), "archive\n");
+  const lines = sessionEndCommit(seOpts);
+  assert(git(["show", "--name-only", "--format=", "HEAD"], clone) === "test-agent-s98.md", "own file committed");
+  assert(lines[0].includes("OK (test-agent-s98.md)"), `line0: ${lines[0]}`);
+});
+
 test("brainDir as SUBDIR of the repo → own file found and committed via :/ pathspec", () => {
   const sub = join(clone, "brain");
   writeFileSync(join(sub, "test-agent.md"), "lane edited outside write_brain_file\n");

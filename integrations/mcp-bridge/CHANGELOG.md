@@ -12,6 +12,23 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.40.0 — 2026-10-24 — session_end commits the seat's files, not the tenant's
+
+**Why.** CC3 runs as Mnemo tenant `cc` with `MNEMO_LANE=cc3-igor.md`. The
+session_end commit step matched files by TENANT, so on 2026-10-23 it
+committed CC's uncommitted draft `cc-s447.md` under CC3's name (`676e050`,
+CC3 #5115) — and would have left CC3's own `cc3-*` files uncommitted. Same
+exposure for CC2 and CC4. Snag
+`snag-mnemo-bridge-session-end-commits-other-agents-files`.
+
+- New `laneOwner(agentId, MNEMO_LANE)` in lane-candidates.js: the lane's
+  short name (`cc3-igor.md` → `cc3`), or the tenant when no lane is set.
+- `sessionEndCommit` takes `owner` and stages only `<owner>.*` / `<owner>-*`;
+  the commit subject names the owner (`brain: cc3 session end — …`).
+- Seats without `MNEMO_LANE` (CC, Rocky, Opie, Dave) are unchanged.
+- Tests: lane-candidates 3 new cases; brain-git reproduces the #5115 shape
+  (cc-s447 draft survives a CC3 session_end untracked).
+
 ## 2.39.0 — 2026-10-24 — a pause is yours, not everyone's
 
 **Why.** CC's 240-min capture pause on 2026-10-23 was a server-wide switch: it
