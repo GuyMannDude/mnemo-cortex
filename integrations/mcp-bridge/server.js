@@ -3012,7 +3012,8 @@ server.registerTool(
 
 // ── Tools: capture pause gate (v4.1) ───────────────────────────
 // "I'm about to handle a secret — stop recording." Pauses ambient capture
-// server-wide (auto-sync, captureCall flushes, /ingest). Dead-man switch:
+// for THIS agent (auto-sync, captureCall flushes, /ingest); fleet-wide on
+// request. Dead-man switch:
 // auto-resumes at expiry even if everyone forgets. Manual mnemo_save still
 // works while paused — saving the *why* of a sensitive op is the intended
 // workflow.
@@ -3020,7 +3021,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_capture_pause",
   {
-    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. Deliberate mnemo_save calls still work while paused. Activity during the pause window is DISCARDED, not buffered.",
+    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Scoped to THIS agent by default — other agents keep capturing. Set fleet_wide=true only when every agent's capture must stop (it discards their checkpoints and transcript uploads too). Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. Deliberate mnemo_save calls still work while paused. Activity during the pause window is DISCARDED, not buffered.",
     inputSchema: {
       minutes: z
         .number()
@@ -3034,19 +3035,33 @@ server.registerTool(
         .max(200)
         .optional()
         .describe("Why capture is paused — shown in /capture/status."),
+      fleet_wide: z
+        .boolean()
+        .optional()
+        .describe("true = pause EVERY agent's capture (default false: only this agent's)."),
     },
     annotations: { "title": "Pause Auto-Capture", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true },
   },
-  async ({ minutes, reason }) => {
+  async ({ minutes, reason, fleet_wide }) => {
     try {
+      // Scoped by default (snag 2026-10-23: one agent's pause silenced every
+      // agent's checkpoints for 4 h). Fleet-wide only on an explicit ask.
       const body = { reason: reason || "" };
       if (minutes !== undefined) body.minutes = minutes;
+      if (!fleet_wide) body.agent_id = AGENT_ID;
       const data = await mnemoRequest("POST", "/capture/pause", body);
       const mins = Math.round((data.remaining_seconds || 0) / 60);
+      // A pre-4.28 server ignores agent_id and pauses everyone; it also never
+      // returns `fleet_wide`. Report what the server DID, not what we asked.
+      const scope = data.fleet_wide === false
+        ? `scope: ${AGENT_ID} only — other agents keep capturing`
+        : data.fleet_wide === true
+          ? "⚠️ FLEET-WIDE — every agent's ambient capture, checkpoints and transcript uploads are discarded until it lifts"
+          : "⚠️ FLEET-WIDE — this Cortex is older than 4.28 and cannot scope a pause; every agent's capture is discarded until it lifts";
       return {
         content: [{
           type: "text",
-          text: `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}\nAuto-resumes at expiry. Resume early with mnemo_capture_resume. Manual mnemo_save still works.`,
+          text: `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}\n${scope}\nAuto-resumes at expiry. Resume early with mnemo_capture_resume. Manual mnemo_save still works.`,
         }],
       };
     } catch (err) {
@@ -3064,8 +3079,14 @@ server.registerTool(
   },
   async () => {
     try {
-      await mnemoRequest("POST", "/capture/resume", {});
-      return { content: [{ type: "text", text: "▶ Ambient capture RESUMED." }] };
+      // Lifts this agent's pause (and a fleet-wide one, which nobody owns).
+      // Other agents' own pauses are left alone.
+      const data = await mnemoRequest("POST", "/capture/resume", { agent_id: AGENT_ID });
+      // A pre-4.28 server has one global switch and returns no `scopes`.
+      const text = data && data.scopes !== undefined
+        ? `▶ Ambient capture RESUMED for ${AGENT_ID} (other agents' pauses untouched).`
+        : "▶ Ambient capture RESUMED — fleet-wide (this Cortex is older than 4.28 and has one switch for every agent).";
+      return { content: [{ type: "text", text }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Capture resume error: ${err.message}` }], isError: true };
     }

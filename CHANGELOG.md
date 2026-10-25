@@ -1,5 +1,49 @@
 # Changelog
 
+## v4.28.0 — capture pause is per-agent; fleet-wide only on request (2026-10-24)
+
+**Problem.** The v4.1 capture gate was one switch for the whole server. On
+2026-10-23 CC paused capture for 240 min to handle a leaked password, and the
+pause silently discarded Opie's `session_checkpoint` writeback and failed the
+hourly transcript ship for every tenant (Opie #5185, cron-report #5184). The
+pauser was the only one who knew. Snag:
+`snag-mnemo-capture-pause-is-server-wide-and-checkpoint-says-ok.md`.
+
+**Fix.** `CaptureGate` holds one pause per scope in `capture-pause.json`
+(`{"pauses": {scope: entry}}`; the pre-4.28 single-entry file is read as a
+fleet-wide pause so an in-flight pause keeps its expiry across the upgrade).
+`POST /capture/pause` takes `agent_id`: set → only that agent's ambient
+writes (`/writeback` auto-shaped, `/ingest`, `/chat` saves, `/transcripts`
+uploads) are discarded; omitted → fleet-wide, and the reply carries a
+`warning` saying so. `POST /capture/resume` takes `agent_id` too: clears that
+agent's pause and any fleet-wide one (owned by nobody), leaves other agents'
+pauses alone; no body clears everything (old wire shape). `/capture/status`
+and `/health.capture` gain `fleet_wide` + `scopes`; the legacy top-level
+fields stay for existing readers. Writes with no `agent_id` are gated by the
+`default` scope and by fleet-wide pauses only.
+
+**Bridge 2.39.0.** `mnemo_capture_pause` sends `agent_id=MNEMO_AGENT_ID` by
+default and gains `fleet_wide: true` for the old behaviour; the reply names
+the scope the SERVER applied (a pre-4.28 Cortex returns no `fleet_wide` and
+the bridge then says the pause is fleet-wide — it is). `mnemo_capture_resume`
+is scoped the same way.
+
+**Review fixes (code-reviewer, same day).** A re-pause on a scope keeps the
+later `resume_at` (CC, CC2 and CC3 share tenant `cc`; a 5-min pause must not
+cut a 240-min one short). The pause reply carries the fields of the pause
+just set, plus `scope`. A bare resume (pre-4.28 bridge) lifts only the
+fleet-wide and `default` scopes; `all=true` clears everything. `agent_id` on
+both endpoints runs through `validate_agent_id` (`""` and `"*"` → 400). The
+bridge's resume reply says "fleet-wide" when the server returns no `scopes`.
+
+**Tests.** 12 new in `tests/test_capture_gate.py` (scoped vs other agent,
+fleet-wide, two independent pauses, scoped resume lifts fleet-wide, legacy
+file, per-scope expiry, both endpoints, bare resume spares scoped pauses,
+bad agent_id → 400, re-pause never shortens, reply names its own pause);
+suite 1215 passed. Bridge `test.js` 7/7 + a stdio seam test against a
+scratch 4.28 server (scoped pause lands as `scopes={cc-handshake}`,
+`fleet_wide=false`; resume clears it; fleet-wide form reports itself).
+
 ## v4.27.0 — SECURITY: no wildcard CORS, foreign origins and hosts refused without auth (2026-10-18)
 
 **Problem.** GHSA-682p-grrx-wrwg (high, reported 2026-08-20 by kasparovabi).

@@ -12,6 +12,26 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.39.0 — 2026-10-24 — a pause is yours, not everyone's
+
+**Why.** CC's 240-min capture pause on 2026-10-23 was a server-wide switch: it
+discarded Opie's checkpoint and failed the transcript ship for every tenant,
+and only the pauser knew (Opie #5185; snag
+`snag-mnemo-capture-pause-is-server-wide-and-checkpoint-says-ok`). Server
+4.28.0 scopes pauses per agent; this release makes the bridge ask for that.
+
+- `mnemo_capture_pause` sends `agent_id = MNEMO_AGENT_ID` by default — only
+  this agent's ambient capture stops. New input `fleet_wide: true` restores
+  the everyone-off behaviour on an explicit ask.
+- The reply names the scope the SERVER applied, not the one requested: a
+  Cortex older than 4.28 returns no `fleet_wide` and ignores `agent_id`, so
+  the bridge then says the pause is fleet-wide (doctrine names-are-claims).
+- `mnemo_capture_resume` sends `agent_id` too: lifts this agent's pause and
+  any fleet-wide one, leaves other agents' pauses alone.
+- Verified by a stdio seam test against a scratch 4.28 server: scoped pause →
+  `scopes={cc-handshake}`, `fleet_wide=false`; resume clears it; the
+  fleet-wide form reports itself. `test.js` 7/7.
+
 ## 2.38.1 — 2026-10-23 — a paused save says DISCARDED
 
 - `session_checkpoint` and `session_end`: a server reply of `status: "paused"` (capture gate closed, writeback discarded) now renders as `Mnemo save: DISCARDED — <server message> — NOT saved.` It used to print `Mnemo save: OK (memory_id=ok)` because the HTTP call succeeded, while the checkpoint header said `INCOMPLETE` — one result, both outcomes (Opie #5185, 2026-10-23). The server message names the pause; the pause itself is still server-wide (brain snag `snag-mnemo-capture-pause-is-server-wide-and-checkpoint-says-ok.md`).

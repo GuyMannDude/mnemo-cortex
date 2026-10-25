@@ -1797,8 +1797,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # saving the *why* of a sensitive operation while ambient capture is
         # off is the intended workflow.
         if (req.category == "session_log" or req.source == "tool"
-                or is_routine_log(req.summary, req.key_facts)) and gate.is_paused():
-            log.warning(f"Writeback discarded (capture paused): {req.session_id}")
+                or is_routine_log(req.summary, req.key_facts)) and gate.is_paused(req.agent_id):
+            log.warning(f"Writeback discarded (capture paused for {req.agent_id or 'default'}): {req.session_id}")
             return WritebackResponse(
                 status="paused", memory_id="", agent_id=req.agent_id,
                 l1_bundles_updated=0,
@@ -2120,7 +2120,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # the model's words are never attributed to the person. Every refusal
         # is reported in save_status — never a silent drop.
         save_status, memory_id = "skipped", ""
-        if req.save and gate.is_paused():
+        if req.save and gate.is_paused(agent_id):
             # The capture-pause switch means "nothing lands during this
             # window" — the phone honours it like every other writer.
             log.warning(f"/chat save discarded (capture paused): {session_id}")
@@ -2275,7 +2275,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
         # v4.1 capture gate: /ingest is pure ambient capture — while paused,
         # every exchange in the window is discarded by design.
-        if gate.is_paused():
+        if gate.is_paused(req.agent_id):
             return IngestResponse(
                 status="paused", session_id="", entry_number=0,
                 agent_id=req.agent_id,
@@ -2309,20 +2309,49 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             redactions=total_redactions,
         )
 
-    # ── Capture pause gate (v4.1) ──
+    # ── Capture pause gate (v4.1; per-agent scope v4.28) ──
     class CapturePauseRequest(BaseModel):
         minutes: Optional[int] = Field(
             None, ge=1, description="Pause duration; default 15, hard cap 240."
         )
         reason: str = Field("", description="Why capture is paused (shown in status).")
+        agent_id: Optional[str] = Field(
+            None, description="Pause only this agent's ambient capture. "
+            "Omit for the FLEET-WIDE pause (every agent's capture discarded)."
+        )
+
+    class CaptureResumeRequest(BaseModel):
+        agent_id: Optional[str] = Field(
+            None, description="Resume this agent's pause (also lifts a fleet-wide one). "
+            "Omit to lift only a fleet-wide pause; all=true clears every agent's pause."
+        )
+        all: bool = Field(False, description="Clear EVERY pause, every agent's.")
 
     @app.post("/capture/pause")
     async def capture_pause(req: CapturePauseRequest):
-        return gate.pause(req.minutes, req.reason)
+        # One agent's hygiene pause used to be every agent's silent data loss
+        # (Opie #5185, 2026-10-23). Scoped is the default from the bridge; the
+        # fleet-wide form stays available but says what it is.
+        if req.agent_id is not None:
+            try:
+                validate_agent_id(req.agent_id)  # rejects "" and "*" — both would mis-scope
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        st = gate.pause(req.minutes, req.reason, agent_id=req.agent_id)
+        if req.agent_id is None:
+            st["warning"] = ("FLEET-WIDE pause: every agent's ambient capture, "
+                             "checkpoints and transcript uploads are discarded "
+                             "until it lifts. Pass agent_id to scope it.")
+        return st
 
     @app.post("/capture/resume")
-    async def capture_resume():
-        return gate.resume()
+    async def capture_resume(req: Optional[CaptureResumeRequest] = None):
+        if req and req.agent_id is not None:
+            try:
+                validate_agent_id(req.agent_id)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        return gate.resume(agent_id=req.agent_id if req else None, all=bool(req and req.all))
 
     @app.get("/capture/status")
     async def capture_status():
@@ -2483,7 +2512,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # Capture gate: a transcript upload is ambient capture. Nothing is
         # written while paused; the shipper leaves its state untouched and
         # re-sends after the pause.
-        if gate.is_paused():
+        if gate.is_paused(agent_id):
             return {"status": "paused", "session_id": session_id, "agent_id": agent_id}
 
         raw = await _read_transcript_body(request)
