@@ -12,6 +12,22 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.40.1 — 2026-10-30 — SECURITY: wiki_search no longer runs a shell (GHSA-h2jf-xmmf-2w8p)
+
+**Why.** Reported by Artur Chlebicki (@Artur12555). `wiki_search` passed the
+query to `execSync` inside a double-quoted shell string; `$(...)` and
+backticks expand there, so a search term ran commands as the bridge user.
+Needs a wiki directory to exist and the host to invoke the search with
+attacker-chosen text. CVSS 3.1 7.8.
+
+- New `wiki-search.js`: `wikiGrepFiles` / `wikiGrepContext` call grep with
+  argv (`execFileSync`), query after `-e`, paths after `--`. No shell.
+- `wiki-search.test.js` (no server needed): eight injection shapes, a
+  dash-led query, a path-shaped query, a literal `$HOME`, plus the normal
+  behaviour (case-insensitive, `*.md` only, limits, numbered context).
+- Behaviour otherwise unchanged. An invalid grep pattern now surfaces as
+  "Wiki search error" instead of an empty result.
+
 ## 2.40.0 — 2026-10-24 — session_end commits the seat's files, not the tenant's
 
 **Why.** CC3 runs as Mnemo tenant `cc` with `MNEMO_LANE=cc3-igor.md`. The

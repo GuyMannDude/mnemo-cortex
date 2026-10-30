@@ -7,6 +7,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from 
 import { homedir, hostname } from "node:os";
 import { join, basename, delimiter } from "node:path";
 import { execSync, execFileSync } from "node:child_process";
+import { wikiGrepFiles, wikiGrepContext } from "./wiki-search.js";
 import { DumpWriter } from "./dump.js";
 import { LatencyWriter } from "./latency.js";
 import {
@@ -2311,12 +2312,10 @@ server.registerTool(
       section && section !== "all" ? join(WIKI_DIR, section) : WIKI_DIR;
     captureCall("wiki_search", `wiki search: "${query}" in ${section || "all"}`);
     try {
-      const grepResult = execSync(
-        `grep -ril --include='*.md' ${JSON.stringify(query)} ${JSON.stringify(searchDir)} 2>/dev/null | head -${limit}`,
-        { encoding: "utf-8", timeout: 10000 }
-      ).trim();
+      // No shell: see wiki-search.js (GHSA-h2jf-xmmf-2w8p).
+      const files = wikiGrepFiles(query, searchDir, limit);
 
-      if (!grepResult) {
+      if (!files.length) {
         return {
           content: [
             {
@@ -2327,16 +2326,12 @@ server.registerTool(
         };
       }
 
-      const files = grepResult.split("\n");
       const results = [];
 
       for (const filePath of files) {
         const relPath = filePath.replace(WIKI_DIR + "/", "");
         try {
-          const context = execSync(
-            `grep -in -C 1 ${JSON.stringify(query)} ${JSON.stringify(filePath)} 2>/dev/null | head -12`,
-            { encoding: "utf-8", timeout: 5000 }
-          ).trim();
+          const context = wikiGrepContext(query, filePath);
           results.push(`### ${relPath}\n\`\`\`\n${context}\n\`\`\``);
         } catch {
           results.push(`### ${relPath}\n(matched but could not extract context)`);

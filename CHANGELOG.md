@@ -1,5 +1,27 @@
 # Changelog
 
+## v4.28.1 — SECURITY: wiki_search ran shell commands from the query (2026-10-30)
+
+**Problem.** GHSA-h2jf-xmmf-2w8p, reported by Artur Chlebicki
+(@Artur12555), CVSS 3.1 7.8 High (AV:L, UI:R). The MCP bridge's read-only
+`wiki_search` tool built a shell command string and put the query inside
+double quotes. `$(...)` and backticks still expand inside double quotes, so
+a search term shaped that way ran commands as the bridge user. Reproduced
+over stdio against bridge 2.40.0 with a canary file. Preconditions: a wiki
+directory exists (`WIKI_DIR`, default `~/wiki`) so the tool registers, and
+the host invokes the search with attacker-chosen text. Stdio-local; not a
+network RCE. The Mnemo server itself is unaffected.
+
+**Fix.** MCP bridge **2.40.1**: grep receives its arguments directly
+(`execFileSync`, new `wiki-search.js`); the query is one argument after
+`-e`, so a leading dash or any shell character is plain text. Semantics
+unchanged (case-insensitive, `*.md` only, result and context caps).
+`wiki-search.test.js` covers eight injection shapes plus option- and
+path-shaped queries. The two remaining `execSync` calls in the bridge are
+fixed strings (`git rev-parse`, `git pull --ff-only`) with no user input;
+`wiki_read` already guards path traversal and `wiki_index` reads one fixed
+file. Thank you, Artur.
+
 ## v4.28.0 — capture pause is per-agent; fleet-wide only on request (2026-10-24)
 
 **Problem.** The v4.1 capture gate was one switch for the whole server. On
