@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -43,6 +44,31 @@ MODEL = "jev-latest"
 # should never be asked about it — same exclusion the LLM prompt makes.
 CRITERIA = {name: desc for name, desc in CLASSIFIABLE_CATEGORIES if name != "session_log"}
 INSTRUCTIONS = "Which single category best fits this memory for a memory system?"
+
+# Issue #23. A session-end wrap-up saved under a Tier-1 category is a real
+# mis-filing and Jev does notice it, but session_log is not among its
+# criteria, so it names the nearest Tier-1 label (usually `incident`) and the
+# reviewer has to reject a proposal that spotted a real problem. When Jev
+# disagrees AND the text reads as a session summary, the proposal says
+# session_log instead. Jev is still the trigger; this only picks the label.
+_SESSION_END_RE = re.compile(r"\[\s*SESSION[\s_-]*END\s*\]", re.IGNORECASE)
+# "1. topic", "2) topic", "(3) topic" — not "4.28.1", "10-30." or "5.1)".
+_NUMBERED_ITEM_RE = re.compile(r"(?<![\w.\-:/])(?:\(\d{1,2}\)|\d{1,2}[.)])\s+[A-Za-z*`\[]")
+SESSION_SUMMARY_MIN_ITEMS = 3
+
+
+def looks_like_session_summary(text: str) -> bool:
+    """A session-end marker, or a numbered list of three or more topics.
+    A false positive only changes the label on a memory Jev already called
+    mis-filed, and nothing moves until the proposal is accepted."""
+    if _SESSION_END_RE.search(text):
+        return True
+    return len(_NUMBERED_ITEM_RE.findall(text)) >= SESSION_SUMMARY_MIN_ITEMS
+
+
+def memory_text(entry: dict) -> str:
+    """What Jev is asked about: the summary, then the key facts."""
+    return (entry.get("summary") or "") + "\n" + "\n".join(entry.get("key_facts") or [])
 
 
 def build_request(text: str, max_chars: int = DEFAULT_MAX_INPUT_CHARS) -> dict:
@@ -234,14 +260,18 @@ class JevShadow:
                           f"this call is uncounted")
             return
         if outcome.get("disagree"):
-            await self._propose(tenant, memory_dir, entry, choice, conf)
+            note = None
+            if looks_like_session_summary(memory_text(entry)):
+                note = (f"session-summary heuristic: Jev said {choice}; the text reads as a "
+                        f"session wrap-up, so the proposal is session_log (issue #23)")
+                choice = "session_log"
+            await self._propose(tenant, memory_dir, entry, choice, conf, note)
 
     async def _ask(self, entry: dict) -> tuple[dict, str, Optional[str], float]:
         """One Jev call -> (terminal counters, bucket, choice, confidence).
         Expected failures come back as counters; anything else raises."""
-        text = (entry.get("summary") or "") + "\n" + "\n".join(entry.get("key_facts") or [])
         # the writeback already redacted; this is the egress door, so again
-        payload = build_request(redact_text(text)[0])
+        payload = build_request(redact_text(memory_text(entry))[0])
         try:
             # httpx timeouts are per network operation; a server that trickles
             # bytes could hold the call far longer. wait_for is the total cap.
@@ -267,12 +297,13 @@ class JevShadow:
         return {"ok": 1, verdict: 1}, bucket, choice, conf
 
     async def _propose(self, tenant: str, memory_dir: Path, entry: dict,
-                       choice: str, conf: float) -> None:
+                       choice: str, conf: float, note: Optional[str] = None) -> None:
         quote = redact_text(entry.get("summary") or "")[0][:QUOTE_CHARS] or "(empty summary)"
+        quotes = [quote] + ([note] if note else [])
         try:
             await asyncio.to_thread(
                 self.facts.propose_memory, "memory_category", tenant, entry["id"], memory_dir,
-                choice, [quote], conf, SOURCE_RUN, "jev", entry["category"])
+                choice, quotes, conf, SOURCE_RUN, "jev", entry["category"])
         except ValueError as e:
             # Jev named a label we do not have, or the memory left the disk
             log.warning(f"Jev shadow proposal refused: {e}")

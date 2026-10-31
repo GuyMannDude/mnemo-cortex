@@ -1,5 +1,21 @@
 # Changelog
 
+## v4.28.2 — Jev shadow proposes session_log for session wrap-ups (2026-10-30)
+
+**Problem (issue #23).** When an agent saved a multi-topic `[SESSION END]`
+summary under `current_state` or `decision`, the Jev shadow correctly
+noticed the category was off but proposed `incident`, because `session_log`
+is not among the criteria Jev is asked about. The reviewer had to reject a
+proposal that spotted a real mis-filing.
+
+**Fix.** `agentb/jev_live.py`: when Jev disagrees with the stored category
+AND the text reads as a session summary (a `[SESSION END]` marker, or three
+or more numbered items), the proposal names `session_log` and carries a
+second evidence quote saying what Jev said and why the label changed. Jev
+remains the trigger; agreement still files nothing; the stored category
+still never moves without an accept. Counters are unchanged (the call is
+still Jev's disagreement). Nine tests added in `tests/test_jev_live.py`.
+
 ## v4.28.1 — SECURITY: wiki_search ran shell commands from the query (2026-10-30)
 
 **Problem.** GHSA-h2jf-xmmf-2w8p, reported by Artur Chlebicki

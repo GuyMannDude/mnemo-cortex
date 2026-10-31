@@ -24,7 +24,9 @@ from agentb.config import (
     CacheConfig, ServerConfig, ClassificationConfig, DEFAULT_PERSONAS,
 )
 from agentb.facts_store import FactsStore
-from agentb.jev_live import JevShadow, confidence_bucket, day_verdict, utc_day
+from agentb.jev_live import (
+    JevShadow, confidence_bucket, day_verdict, looks_like_session_summary, utc_day,
+)
 from tests.test_context_authority import FakeEmbedding, FakeReasoning
 
 FAKE_KEY = "fake-jev-key-for-tests"
@@ -501,3 +503,48 @@ def test_brief_line_shows_unflushed_drops():
     dream = _dream()
     line = dream.jev_line({"enabled": True, "days": [], "unflushed_drops": 3}, "2026-09-24")
     assert line.endswith("3 drop(s) not yet written")
+
+
+# ── issue #23: a session wrap-up Jev calls mis-filed is proposed as session_log ──
+
+SESSION_END_SUMMARY = ("[SESSION END] S460 (2026-10-27 19:19 → 10-28 ~03:40 PDT, CC on IGOR, "
+                       "Fable 5.1). Done: Cliff struck from three surfaces; Omnemo OS born as a "
+                       "layer; lan-mouse waited on a sleeping man.")
+
+
+@pytest.mark.parametrize("text,expected", [
+    (SESSION_END_SUMMARY, True),
+    ("[session-end] CC2 Winston S43 wrap-up", True),
+    ("Shipped today: (1) refresh band red; (2) CVE re-requested; (3) sec-watch closed.", True),
+    ("1. mouse watchdog\n2. Hermes 0.22.5\n3. three sec-watch letters\n4. QMD gone", True),
+    ("We chose SQLite over Postgres for the facts store", False),
+    ("Two things: (1) pull the repo (2) restart the task", False),
+    ("Mnemo 4.28.1 serves on :50001; Claude Code 2.1.314; Hermes 0.22.5 on IGOR.", False),
+])
+def test_looks_like_session_summary(text, expected):
+    assert looks_like_session_summary(text) is expected
+
+
+def test_jev_disagreement_on_session_summary_proposes_session_log(make_client):
+    fake = FakeJev(choice="incident", confidence=0.81)
+    c, tmp = make_client(fake)
+    mid = _writeback(c, SESSION_END_SUMMARY, category="current_state")
+    assert _wait_for(lambda: c.get("/proposals").json()["count"] == 1)
+    row = c.get("/proposals", params={"kind": "memory_category"}).json()["proposals"][0]
+    assert row["proposed_value"] == "session_log" and row["current_value"] == "current_state"
+    assert row["confidence_score"] == pytest.approx(0.81)
+    assert row["source_run"] == "jev:shadow:v1"
+    assert row["evidence_quotes"][0] == SESSION_END_SUMMARY[:300]
+    assert "Jev said incident" in row["evidence_quotes"][1]
+    assert _record(tmp, mid)["category"] == "current_state"      # stored category never moves
+    d = _today(c)
+    assert (d["ok"], d["disagree"], d["agree"]) == (1, 1, 0)      # still counted as Jev's disagreement
+
+
+def test_jev_agreement_on_session_summary_proposes_nothing(make_client):
+    """Keep the existing behaviour otherwise: agreement files no row."""
+    fake = FakeJev(choice="current_state", confidence=0.9)
+    c, _ = make_client(fake)
+    _writeback(c, SESSION_END_SUMMARY, category="current_state")
+    assert _wait_for(lambda: _today(c).get("agree") == 1)
+    assert c.get("/proposals").json()["count"] == 0
