@@ -178,7 +178,7 @@ body.dim .lid .eye{animation:none;height:6px}
       var s=j.save_status, label={archived:'remembered',held:'already knew that',paused:'not saved (capture paused)',skipped:'not saved',failed:'save FAILED'}[s]||s;
       meta(d,'<b class="'+esc(s)+'">'+esc(label)+'</b> · '+lastMems.length+' memor'+(lastMems.length===1?'y':'ies')+' used · '+Math.round(j.latency_ms)+' ms');
     })
-    .catch(function(e){thinking.remove();el('err',e.name==='AbortError'?'the engine did not answer in 90 s. try again.':'no answer from the engine: '+e.message)})
+    .catch(function(e){thinking.remove();el('err',e.name==='AbortError'?'the engine did not answer in 90 s. try again.':'no answer from the engine: '+e.message+'. On a phone this usually means Tailscale is OFF — open Tailscale, switch it on, try again.')})
     .then(function(){if(timer)clearTimeout(timer);busy=false;$('send').disabled=false;input.focus()});
   }
   $('send').onclick=send;
