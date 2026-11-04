@@ -180,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
                 counts["failed"] += 1
                 continue
             prev = files_state.get(spath)
+            if prev and prev.get("status") == "skip":
+                counts["skipped_same"] += 1
+                continue
             if prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size:
                 _count_unchanged(prev, key, counts)
                 continue
