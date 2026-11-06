@@ -1,5 +1,20 @@
 # Changelog
 
+## v4.28.4 — Anthropic provider: Sonnet 5.5 default, thinking blocks skipped (2026-11-05)
+
+**Problem (PR #25, SamHofmannOfficial).** The setup wizard offered
+`claude-sonnet-4-5-20250929` as the Anthropic default, and Anthropic retires
+that model on 2026-11-30 (recommended replacement `claude-sonnet-5-5`).
+`AnthropicReasoning.generate` also read `content[0]["text"]`; Sonnet 5.5 and
+Haiku 5.5 think by default, so the first block can be a thinking block and
+the call raised `KeyError`.
+
+**Fix.** Wizard default is `claude-sonnet-5-5`; `generate` joins the `text`
+blocks and skips every other block type, the same way `mnemo-dream.py` already
+did. New `tests/test_anthropic_generate.py` covers a thinking-first reply and
+an empty reply. Noted for later: `generate`'s `max_tokens=2048` budget covers
+thinking plus answer on thinking models.
+
 ## v4.28.3 — httpx request logging no longer prints Discord webhook URLs (2026-11-05)
 
 **Problem (bus #6034).** `httpx` and `httpcore` log every request URL at INFO.
