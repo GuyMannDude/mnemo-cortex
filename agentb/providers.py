@@ -533,7 +533,15 @@ class AnthropicReasoning(ReasoningProvider):
             resp = await client.post(f"{base}/messages", json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            return data["content"][0]["text"] if data.get("content") else ""
+            # Newer Claude models think by default, so a thinking block can come
+            # before the answer. Only text blocks carry it (same as mnemo-dream).
+            blocks = data.get("content")
+            if not isinstance(blocks, list):
+                return ""
+            return "".join(
+                b.get("text", "") for b in blocks
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
 
     async def health_check(self) -> bool:
         # Real auth probe (v4.1) — GET /models is free and 401s on a bad key.

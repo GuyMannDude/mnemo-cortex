@@ -274,7 +274,7 @@ def _configure_provider(provider: str, role: str) -> dict:
 
     elif provider == "anthropic":
         config["api_key"] = Prompt.ask("  API key (or env var like ${ANTHROPIC_API_KEY})")
-        config["model"] = Prompt.ask("  Model", default="claude-sonnet-4-5-20250929")
+        config["model"] = Prompt.ask("  Model", default="claude-sonnet-5-5")
 
     elif provider == "openrouter":
         config["api_key"] = Prompt.ask("  API key (or env var like ${OPENROUTER_API_KEY})")
