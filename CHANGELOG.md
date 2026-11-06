@@ -1,5 +1,20 @@
 # Changelog
 
+## v4.28.3 — httpx request logging no longer prints Discord webhook URLs (2026-11-05)
+
+**Problem (bus #6034).** `httpx` and `httpcore` log every request URL at INFO.
+A Discord webhook URL *is* the credential, so the dreamer's daily Discord post
+(`mnemo-dream.py`) and the embedder alert (`agentb/providers.py` via
+`agentb/server.py`) wrote the live `mnemo-dreamer` webhook, token included,
+into `dreams/cron.log` (15 lines) and `server.log` (4 lines) on the IGOR-2 host.
+Found by Winston (CC2) during the guards audit; the hook was rotated the same
+day and the logs masked.
+
+**Fix.** Right after `logging.basicConfig` in both `mnemo-dream.py` and
+`agentb/server.py`, the `httpx` and `httpcore` loggers are pinned to WARNING.
+Request URLs no longer reach any log; failures still do. Patch authored by
+Winston (CC2), applied and shipped by CC.
+
 ## v4.28.2 — Jev shadow proposes session_log for session wrap-ups (2026-10-30)
 
 **Problem (issue #23).** When an agent saved a multi-topic `[SESSION END]`

@@ -2228,6 +2228,11 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="[mnemo-dream] %(levelname)s %(message)s",
     )
+    # httpx/httpcore log every request URL at INFO. A Discord webhook URL IS the
+    # credential, so those lines leaked the live hook into dreams/cron.log
+    # (IGOR-2, found 2026-11-05, CC #6034/#6036). Keep them at WARNING.
+    for _noisy in ("httpx", "httpcore"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
     if not args.dry_run or MNEMO_DREAM_STRATEGIES:  # a dry run calls the API only in Stage 0.7
         _require_claude()
 

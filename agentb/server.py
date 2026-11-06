@@ -83,6 +83,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx/httpcore log every request URL at INFO. The embedder alert posts to a
+# Discord webhook whose URL IS the credential; it leaked into server.log
+# (IGOR-2, found 2026-11-05, CC #6034/#6036). Keep them at WARNING.
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 log = logging.getLogger("agentb")
 
 
