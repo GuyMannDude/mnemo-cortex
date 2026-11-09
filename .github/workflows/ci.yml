@@ -21,7 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        # 3.11 is the floor pyproject promises; 3.13 and 3.14 are what the
+        # machines that run Mnemo every day are actually on.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -37,6 +39,33 @@ jobs:
         # --timeout: a flaky suite hang (3.12) used to wedge the runner for
         # hours; now the culprit test fails loudly by name with a stack dump.
         run: pytest tests/ -v --timeout=180 --timeout-method=thread
+
+  # Every MCP client talks to Mnemo through this bridge. Its unit tests need no
+  # Mnemo server; test.js is the live integration test and is NOT run here
+  # (the *.test.js glob skips it on purpose).
+  bridge-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 18 is the floor package.json promises; 22 and 24 are the LTS lines.
+        node-version: ["18", "22", "24"]
+    defaults:
+      run:
+        working-directory: integrations/mcp-bridge
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+      - name: Install from lockfile
+        run: npm ci
+      - name: server.js parses
+        run: node --check server.js
+      - name: Run bridge unit tests
+        run: node --test *.test.js
 
   wheel-smoke:
     runs-on: ubuntu-latest
