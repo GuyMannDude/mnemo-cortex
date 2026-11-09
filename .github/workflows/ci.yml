@@ -25,9 +25,9 @@ jobs:
         # machines that run Mnemo every day are actually on.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -67,12 +67,29 @@ jobs:
       - name: Run bridge unit tests
         run: node --test *.test.js
 
+  # Builds the Claude Desktop one-click bundle from the bridge and starts the
+  # built bundle over MCP stdio (initialize + tools/list). `node --check` only
+  # proves the bridge parses; this proves the thing people install loads. It
+  # also keeps the build recipe honest: the old hand-copied file list fell
+  # behind the bridge twice.
+  desktop-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Build bundle + handshake
+        run: bash scripts/build-mcpb.sh "$RUNNER_TEMP/mnemo-cortex.mcpb"
+
   wheel-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -89,7 +106,7 @@ jobs:
   docker-boot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -t mnemo-ci .
       - name: Image boots (imports resolve at module load)

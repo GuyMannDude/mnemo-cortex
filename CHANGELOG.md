@@ -1,5 +1,31 @@
 # Changelog
 
+## claude-desktop bundle rebuilt on bridge 2.40.1; the build is now a script CI runs (2026-11-09) — no server change (server stays v4.28.4)
+
+**Problem.** The published `mnemo-cortex.mcpb` still carried bridge 2.17.0 from
+July; the bridge beside it was 2.40.1, 31 bridge releases on. The one-click
+install was missing every tool and fix since (transcript push, fact
+authority, proposals, memory demote, session checkpoint), **including the
+2.40.1 security fix: the old bundle's `wiki_search` still ran a shell
+(GHSA-h2jf-xmmf-2w8p). If you installed the bundle before this date and use
+a wiki directory, reinstall it.** The cause was the same as the
+July rebuild: `BUILD.md` listed the bridge's files by name, the bridge had
+grown from 3 sibling modules to 19, and nothing ran the recipe. The bridge's
+19 unit-test files were not in CI either, and CI tested Python 3.11 and 3.12
+while the machines that run Mnemo daily are on 3.13 and 3.14.
+
+**Fix.** `scripts/build-mcpb.sh` builds the bundle with plain `zip` (no `mcpb`
+CLI): it takes every runtime module by glob, installs production dependencies
+from the lockfile, refuses a manifest whose version or tool list disagrees
+with the bridge, and replaces the output only after the built bundle answers
+an MCP handshake (`scripts/mcp-handshake.mjs`). The manifest is 2.40.1 and
+lists 32 tools (22 by default, 10 more when a brain or wiki directory exists).
+CI gains three things: a `desktop-bundle` job that runs the build on every
+push, a `bridge-tests` job (Node 18, 22, 24), and Python 3.13 and 3.14 in the
+test matrix. Verified before commit: a real `mnemo_recall` through the
+unpacked bundle against an auth-enabled server returns memories with the key
+and a loud `401: Unauthorized` without it.
+
 ## v4.28.4 — Anthropic provider: Sonnet 5.5 default, thinking blocks skipped (2026-11-05)
 
 **Problem (PR #25, SamHofmannOfficial).** The setup wizard offered
