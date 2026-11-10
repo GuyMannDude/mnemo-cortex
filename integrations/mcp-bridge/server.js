@@ -223,7 +223,7 @@ async function checkHealth() {
     if (h.status === "ok") {
       mnemoHealthy = true;
       process.stderr.write(
-        `[mnemo-mcp] Connected to Mnemo Cortex (${h.memory_entries} memories, share: ${shareMode})\n`
+        `[mnemo-mcp] Connected to Mnemo Cortex (server ${h.version ?? "version unknown"}, share: ${shareMode})\n`
       );
     }
   } catch {
@@ -263,7 +263,7 @@ async function ensureHealth() {
       if (h.status === "ok") {
         mnemoHealthy = true;
         process.stderr.write(
-          `[mnemo-mcp] Mnemo Cortex reconnected (${h.memory_entries} memories)\n`
+          `[mnemo-mcp] Mnemo Cortex reconnected (server ${h.version ?? "version unknown"})\n`
         );
       }
     } catch {
