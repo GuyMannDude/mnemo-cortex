@@ -1,73 +1,65 @@
 # Mnemo Cortex
 
-> Cognitive coprocessor with active memory for AI agents. Local-first SQLite + FTS5 working memory. Every record carries provenance + category and decays on a category-aware schedule. Cross-agent dreaming synthesizes every connected agent's memories into a shared nightly brief.
+> Cognitive coprocessor with active memory for AI agents. A local server (default port 50001, REST plus a Streamable-HTTP MCP facade, and a Node MCP bridge for stdio hosts) that gives agents persistent recall across sessions: SQLite + sqlite-vec semantic recall with a keyword lane beside it, a structured Facts table for hard truths, provenance and category-aware decay on every record, and a nightly cross-agent dream brief. Local-first, MIT, $0 to run with Ollama. Current version 4.28.4.
 
-Mnemo Cortex is a cognitive coprocessor with active memory that gives AI agents persistent recall across sessions. It runs as a local FastAPI service (default port 50001), exposes both REST endpoints and a Streamable-HTTP MCP facade, and ships drop-in integrations for the major MCP hosts (Claude Desktop, Claude Code, OpenClaw, LM Studio, AnythingLLM, Agent Zero, Hermes Agent, Open WebUI, llama.cpp, LobeChat, Jan).
+Mnemo Cortex runs on Linux, macOS and Windows (natively, no WSL, since v4.4.1; macOS support is in beta). It needs Python 3.11+; Ollama is recommended for local reasoning and embeddings (default embedding model `nomic-embed-text`), and the setup wizard also takes OpenAI, Google, Anthropic or OpenRouter keys. The server is fail-closed: it refuses to serve without an auth token unless you explicitly opt out.
 
-v3 (Bridge 2.8.0, May 2026) added provenance + decay: every memory record carries `source` (user / tool / inferred / brain / migrated) and `category` (topology / current_state / doctrine / incident / identity / relationship / decision / session_log / unknown). Topology facts decay fast (warn at 30d, stale at 90d) so agents don't trust a stale IP from three months ago. Doctrine, incident, identity, and decision are perpetual. Recall returns a structured `stale_warning` field that programmatic agents branch on before acting.
+What a record carries: a `source` (user / tool / inferred / brain / migrated) and a `category`. Topology facts age fast (warn at 30 days, stale at 90) and recall returns a structured `stale_warning`; doctrine, incident, identity and decision never decay. Smart Ingestion classifies every save, two-tier recall puts distilled notes ahead of raw session logs, and the Analyst distills each day's logs into notes. Recall blends similarity, recency, category importance and access frequency; since v4.21 a BM25 keyword lane finds exact identifiers the vectors miss.
 
-v3.0 (Phase 3, late May 2026) added Structured Facts — `(entity, attribute, value)` triples in a local SQLite store with a three-state confidence ladder (`verified > high_probability > false`), sub-millisecond reads, append-only audit history, and contradiction notifications over the bus + Discord. Four MCP tools: `mnemo_fact_save`, `mnemo_fact_get`, `mnemo_fact_query`, `mnemo_fact_demote`. Dreamer Stage 0.5 extracts conservative facts from the day's memories every night. v3.1 (May 23, 2026) retired the optional Mem0 cloud-deep fallback — local performance made the comparison race unnecessary.
-
-v4 (June 2026) turned raw capture into working memory: Smart Ingestion classifies every save
-with an LLM and two-tier recall surfaces distilled notes over raw session logs; the Analyst
-distills each day's logs into first-class notes (decisions, incidents, doctrines); composite
-recall ranking blends similarity, recency, category importance, and access frequency; secrets
-are redacted on every write path. Later v4 releases added trajectory learning
-(`mnemo_save_trajectory` / `mnemo_recall_trajectory` — step-by-step recipes of tasks that went
-well, recalled before similar tasks), query expansion on weak recalls, native Windows support
-(no WSL), the nightly cross-agent dream brief served over `GET /dream/latest`, the Developer's
-Passport lane (observed behavior → validated user-context claims), and fail-closed auth — the
-server refuses to serve without an auth token unless explicitly opted out. Current version:
-`pyproject.toml` / `robot.info`; full history in the CHANGELOG.
-
-Two later v4 lanes are worth knowing about. The **Cortex Stick** (v4.10.0, encrypted in
-v4.11.0) is USB courier sync between two full installs — memories, trajectories, brain repo
-and a project pad travel by sneakernet, no cloud and no VPN. Safe by construction: a plan pass
-before any mutation, a per-file SHA-256 manifest as the commit point, torn-generation detection
-with in-tool repair, and a mass-delete guard. Encrypted at rest with a passphrase-derived key
-that lives on the hosts and never on the stick, so a lost stick leaks structure at most. The
-**Muse** (v4.8) is the Analyst's sibling lens over the same session logs — it reads for ideas
-rather than facts and emits `idea` memories, with its own read-once marker so both lenses see
-every log exactly once, independently. It ships **off by default**, pending review of its
-dry-run output: a creative extractor that over-reads is worse than none.
-
-MIT licensed, $0 to run with Ollama, cloud providers (OpenRouter, OpenAI, Google, Anthropic) are optional fallbacks.
+Beyond recall:
+- **Structured Facts** — (entity, attribute, value) triples with a confidence ladder (verified > high_probability > false); since v4.23 a slot can be locked to an authority tier (probe / declared / open), and a write that doesn't match becomes a proposal for the user to settle.
+- **Trajectories** — step-by-step recipes of tasks that went well, recalled before similar tasks.
+- **Dreaming** — a nightly pass that compacts each agent's memories and merges them into one brief every agent can read (`GET /dream/latest`).
+- **Memory Ledger** (v4.20) — a tamper-evident chain over what the store was told; `verify` names any record that changed or went missing.
+- **The Librarian** — one SQLite FTS5 index over the whole workspace so an agent can turn "the file about X" into a path. It replaced the older auto-compiled wiki; the existing wiki pages stay searchable but are no longer rebuilt.
+- **Cortex Stick** — encrypted USB sync between two installs, no cloud.
+- **Developer's Passport** (beta) — observed user behaviour is recorded as a candidate and becomes a user-context claim only after an explicit promotion step.
+- **The Muse** — an idea-extracting sibling of the Analyst, shipped off by default.
 
 ## Docs
 
-- [README](https://github.com/GuyMannDude/mnemo-cortex/blob/master/README.md): Project overview, integrations, full install guide.
-- [THE-LANE-PROTOCOL.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/THE-LANE-PROTOCOL.md): The operating practice for running agents with persistent memory. Six-step ritual that makes every cold start feel warm.
+- [INSTALL.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/INSTALL.md): The install guide in plain English: server setup plus wiring for each host. Start here to install.
+- [README](https://github.com/GuyMannDude/mnemo-cortex/blob/master/README.md): Overview, features, the five-step install, troubleshooting.
+- [CORTEX-OS.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/CORTEX-OS.md): The operating manual for an agent that just got Mnemo Cortex: how to use it well.
 - [SESSION-GUIDE.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/SESSION-GUIDE.md): Workflow patterns, per-platform boot snippets, common mistakes.
-- [FINDING-MNEMO.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/FINDING-MNEMO.md): Origin story — how Mnemo came to be.
+- [THE-LANE-PROTOCOL.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/THE-LANE-PROTOCOL.md): The operating practice for running agents with persistent memory.
 - [PRIVACY.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/PRIVACY.md): Data handling, telemetry policy, outbound calls.
+- [SECURITY.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/SECURITY.md): Supported versions and how to report a vulnerability.
 - [MONITORING.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/MONITORING.md): Health-check tooling, log layout, operational signals.
+- [macOS install](https://github.com/GuyMannDude/mnemo-cortex/blob/master/docs/install-macos.md): The one macOS gotcha (which Python can load SQLite extensions), Homebrew, launchd.
 
 ## Integrations
 
 - [Claude Code](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/claude-code): 60-second install for the Claude Code CLI.
 - [Claude Desktop](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/claude-desktop): Drag-and-drop `.mcpb` bundle. Windows, macOS, Linux.
-- [MCP Bridge](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/mcp-bridge): The generic MCP bridge — the same Node.js code every Mnemo Cortex integration spawns on stdio. Versioned in its own `package.json`.
+- [Codex CLI](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/codex): MCP setup for OpenAI's Codex CLI.
+- [OpenClaw](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/mcp-bridge): OpenClaw uses the MCP bridge below (the old `integrations/openclaw-mcp/` path is deprecated and only points there).
+- [MCP Bridge](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/mcp-bridge): The generic Node.js stdio bridge every MCP integration spawns. Versioned in its own `package.json`.
+- [ChatGPT](https://github.com/GuyMannDude/mnemo-cortex/blob/master/docs/install-chatgpt.md): Not MCP: a Custom GPT calls two REST actions through a hardened, tenant-pinned gate, so the server never faces the internet. Read the OpenAI plan requirements first.
 - [LM Studio](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/lmstudio): Native MCP, GUI configuration.
 - [AnythingLLM](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/anythingllm): Desktop GUI, multi-workspace.
 - [Agent Zero](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/agent-zero): Autonomous Docker agents, in-container MCP.
-- [Hermes Agent](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/hermes): First-class MCP for Nous Research's Hermes Agent (v0.12.0+).
-- [Ollama Desktop](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/ollama-desktop): Terminal launcher with OpenClaw as MCP host.
+- [Hermes Agent](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/hermes): `hermes mcp add`, Hermes Agent v0.12.0+.
+- [Ollama Desktop](https://github.com/GuyMannDude/mnemo-cortex/tree/master/integrations/ollama-desktop): Terminal launcher with OpenClaw as the MCP host (Ollama's own chat window has no MCP).
+- [Other local LLM hosts](https://github.com/GuyMannDude/mnemo-cortex/blob/master/docs/local-llm-hosts.md): Open WebUI, llama.cpp, LobeChat, Jan and others over stdio MCP.
 
 ## Agent Manifests
 
-- [INSTALL.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/INSTALL.md): The install guide, in plain English — server setup plus per-host wiring for Claude Desktop, Claude Code, OpenClaw, LM Studio and the rest. Start here to install. Not to be confused with `robot.install`, which is the settings file the installer reads.
-- [robot.info](https://github.com/GuyMannDude/mnemo-cortex/blob/master/robot.info): Structured product manifest (JSON). Identity, capabilities, exposed APIs + MCP tools, install pointer, compatibility matrix, common-question/answer pairs. Read this first if you're an agent trying to answer a user's question about Mnemo Cortex.
-- [robot.install](https://github.com/GuyMannDude/mnemo-cortex/blob/master/robot.install): Non-interactive install manifest. Pair with `./robot-install.sh` for a JSON-stdout install flow that takes zero prompts.
-- [ROBOT-INFO-SPEC.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/ROBOT-INFO-SPEC.md): Specification for the robot.info convention.
+- [robot.info](https://github.com/GuyMannDude/mnemo-cortex/blob/master/robot.info): Structured product manifest (JSON). Identity, capabilities, REST endpoints and MCP tools, install pointer, compatibility, common questions and answers. Read this first to answer a user's question about Mnemo Cortex.
+- [robot.install](https://github.com/GuyMannDude/mnemo-cortex/blob/master/robot.install): The settings file the non-interactive installer reads. Fill it in and run `./robot-install.sh` for a zero-prompt install that reports JSON on stdout. Not the install guide: that is INSTALL.md.
+- [ROBOT-INFO-SPEC.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/ROBOT-INFO-SPEC.md): Specification for the robot.info convention (v0.2).
 
 ## Architecture
 
-- [Architecture section in README](https://github.com/GuyMannDude/mnemo-cortex/blob/master/README.md#architecture): L1 / L2 / L3 cache tiers, design rules, schema.
-- [Mnemo vs OpenClaw Active Memory](https://github.com/GuyMannDude/mnemo-cortex/blob/master/README.md#mnemo-cortex-vs-openclaw-active-memory): When to use which.
+- [What It Does](https://github.com/GuyMannDude/mnemo-cortex/blob/master/README.md#what-it-does): The capabilities in one table.
+- [Mnemo Cortex vs OpenClaw Active Memory](https://github.com/GuyMannDude/mnemo-cortex/blob/master/README.md#mnemo-cortex-vs-openclaw-active-memory): When to use which.
 
 ## Optional
 
-- [Facts seeder (tools/)](https://github.com/GuyMannDude/mnemo-cortex/blob/master/tools/README.md): Seed the Phase 3 Facts table from a YAML of canonical truths so exact lookups don't lose to stale fuzzy recall. Loader + example YAML + opt-in post-commit hook and nightly cron.
+- [Memory Ledger](https://github.com/GuyMannDude/mnemo-cortex/blob/master/docs/memory-ledger.md): How the tamper-evident chain works and how to verify it.
+- [Cortex Stick](https://github.com/GuyMannDude/mnemo-cortex/blob/master/docs/cortex-stick.md): USB sync between two installs.
+- [Facts seeder (tools/)](https://github.com/GuyMannDude/mnemo-cortex/blob/master/tools/README.md): Seed the Facts table from a YAML of canonical truths. Opt-in post-commit hook and nightly cron.
+- [FINDING-MNEMO.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/FINDING-MNEMO.md): How Mnemo came to be.
 - [CHANGELOG](https://github.com/GuyMannDude/mnemo-cortex/blob/master/CHANGELOG.md): Full release history.
-- [MCP Bridge CHANGELOG](https://github.com/GuyMannDude/mnemo-cortex/blob/master/integrations/mcp-bridge/CHANGELOG.md): Bridge release history (the bridge versions independently of the main package).
-- [CONTRIBUTING](https://github.com/GuyMannDude/mnemo-cortex/blob/master/CONTRIBUTING.md): How to file issues, submit patches, propose new integrations.
+- [MCP Bridge CHANGELOG](https://github.com/GuyMannDude/mnemo-cortex/blob/master/integrations/mcp-bridge/CHANGELOG.md): Bridge release history (the bridge versions independently).
+- [CONTRIBUTING](https://github.com/GuyMannDude/mnemo-cortex/blob/master/CONTRIBUTING.md): How to file issues, submit patches, propose integrations.
