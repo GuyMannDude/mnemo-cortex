@@ -207,7 +207,7 @@
     "outbound_calls": [
       "Reasoning provider (configurable): /preflight checks, save-time classification of uncategorized memories (Smart Ingestion, on by default; classification.enabled: false turns it off), Pocket /chat replies, and the background session-summary and reclassify passes. Default: local Ollama (qwen2.5:32b-instruct) for the init wizard, for a config that names no provider, and for a robot-installed service today. robot.install's reasoning block names OpenRouter (google/gemini-2.5-flash) but does not reach the installed service yet (install.install_paths).",
       "Embedding provider for semantic indexing (default Ollama localhost; a hosted fallback such as Google Gemini, Matryoshka-truncated to the 768-dim store width, is used only if you configure one under embedding.fallbacks, and only when Ollama is unreachable).",
-      "Optional category shadow (4.26.0): off unless MNEMO_JEV_KEY_FILE is set. When on, the redacted text of each new memory, for tenants listed in MNEMO_JEV_TENANTS only, goes to TypeSafe's Jev classifier in the cloud; it can only file a proposal, never change a memory.",
+      "Optional category shadow (4.26.0): off unless MNEMO_JEV_KEY_FILE is set. When on, the redacted text of each new memory goes, for the tenants in MNEMO_JEV_TENANTS (a built-in default list applies when that variable is unset), to TypeSafe's Jev classifier in the cloud; it can only file a proposal, never change a memory.",
       "Bus + Discord webhook for fact-contradiction notifications when Dreamer Stage 0.5 finds a conflict with an existing verified fact (only fires on conflict; no per-message chatter)."
     ]
   },

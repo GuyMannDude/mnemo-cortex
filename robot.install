@@ -57,7 +57,8 @@
 
   // Embedding provider — local-first by default. If you don't have
   // Ollama running, switch to a hosted provider (set provider to
-  // openai/openrouter, model + api_key_env to match).
+  // openai/openrouter, model + api_key_env to match). Today this block
+  // does not reach the service either (see the NOTE above "service").
   "embedding": {
     "provider": "ollama",
     "model": "nomic-embed-text",
