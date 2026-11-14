@@ -221,6 +221,35 @@
     {"name": "THE-LANE-PROTOCOL.md", "url": "./THE-LANE-PROTOCOL.md", "purpose": "Operating practice for running agents with persistent memory — the protocol that pairs with this product."}
   ],
 
+  // For a visiting agent: the fewest steps to a working install, how to
+  // prove it, and the routine that makes memory pay off. Each line was run
+  // once against a fresh install (2026-11-13).
+  "getting_the_most_out_of_it": {
+    "install": [
+      "Have Ollama running with the embedding model pulled: ollama pull nomic-embed-text",
+      "git clone https://github.com/GuyMannDude/mnemo-cortex && cd mnemo-cortex",
+      "export OPENROUTER_API_KEY=<key>   (or paste the all-local reasoning block from robot.install: no key, no cloud)",
+      "./robot-install.sh   (read the JSON on stdout: ok true = the server runs on 127.0.0.1:50001 on the settings it wrote, and a save + recall round-trip passed)",
+      "Connect your agent: cd integrations/mcp-bridge && npm ci, then register node <repo>/integrations/mcp-bridge/server.js as an MCP server with MNEMO_URL=http://127.0.0.1:50001 and MNEMO_AGENT_ID=<a name for this agent>. Add BRAIN_DIR=<a folder of markdown notes> for the brain-file tools (agent_startup, read/write_brain_file, session_end). Per-host steps: integrations/<host>/."
+    ],
+    "prove_it_works": [
+      "curl -s http://127.0.0.1:50001/health: status ok (or degraded if one provider is down); reasoning.primary and embedding.primary name the providers you chose",
+      ".venv/bin/mnemo-cortex health http://127.0.0.1:50001: one line per check, exit 0 when all pass (--quiet for the exit code only)",
+      "From the agent: mnemo_save a test fact, then mnemo_recall it by meaning in a new session"
+    ],
+    "routine": [
+      "Start: agent_startup when BRAIN_DIR is set (loads your notes file, named after MNEMO_AGENT_ID, plus recent memories); without it, mnemo_recall on what you are about to work on",
+      "Before building anything: mnemo_recall it first. Someone may have decided or tried it already",
+      "Save the why, when it happens: mnemo_save with the reason in the summary (\"chose X because Y\"), the bare facts in key_facts, category decision / incident / doctrine as it fits. Not batched to the end",
+      "End: write_brain_file your notes file with what is current and what is next, then session_end with what is left open. Don't repeat an earlier save in the summary: a near-duplicate is held, not saved",
+      "When recall looks wrong: mnemo-cortex health, then /health for which provider is down"
+    ],
+    "good_to_know": [
+      "With BRAIN_DIR a git repo that has no remote, agent_startup reports 'Brain pull: FAILED' and write_brain_file 'push FAILED'. The notes are written and committed locally; nothing is lost",
+      "The full session guide, with per-host setup: SESSION-GUIDE.md"
+    ]
+  },
+
   "common_questions": [
     {
       "q": "What is Mnemo Cortex?",

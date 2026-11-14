@@ -16,6 +16,15 @@ Beyond recall:
 - **Developer's Passport** (beta) — observed user behaviour is recorded as a candidate and becomes a user-context claim only after an explicit promotion step.
 - **The Muse** — an idea-extracting sibling of the Analyst, shipped off by default.
 
+## Getting the most out of it
+
+For an agent installing and using Mnemo. Each step was run once on a fresh install; details in robot.info `getting_the_most_out_of_it`.
+
+1. Install: `ollama pull nomic-embed-text`; clone the repo; `export OPENROUTER_API_KEY=...` (or paste the all-local reasoning block from `robot.install`); run `./robot-install.sh` and check the JSON says `"ok": true`.
+2. Connect: `npm ci` in `integrations/mcp-bridge`, then register `node integrations/mcp-bridge/server.js` as an MCP server with `MNEMO_URL=http://127.0.0.1:50001` and `MNEMO_AGENT_ID=<name>` (add `BRAIN_DIR` for the notes-file tools).
+3. Prove it: `curl -s http://127.0.0.1:50001/health`, or `.venv/bin/mnemo-cortex health` (exit 0 = all checks pass).
+4. Every session: start with `agent_startup` (or `mnemo_recall` without `BRAIN_DIR`); `mnemo_recall` before building anything; `mnemo_save` each decision with its reason when it happens; at the end, `write_brain_file` your notes (what's current, what's next), then `session_end` with what's left open, without repeating an earlier save (a near-duplicate is held). Full guide: SESSION-GUIDE.md.
+
 ## Docs
 
 - [INSTALL.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/INSTALL.md): The install guide in plain English: server setup plus wiring for each host. Start here to install.
