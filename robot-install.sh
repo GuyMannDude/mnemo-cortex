@@ -479,7 +479,7 @@ else
     for name in $names; do
       if [ -z "$(key_value "$name")" ]; then
         set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "config_path": sys.argv[1], "missing_key": sys.argv[2]}))' "$CONFIG_FILE" "$name")"
-        emit false "Your existing config $CONFIG_FILE needs \${$name}, and $name is not set (not in the environment, not in the env file from the last run). Your settings and memories were not changed. Set $name and run again, or edit that config."
+        emit false "Your existing config $CONFIG_FILE needs \${$name}, and $name is not set (not in the environment, not in the env file from the last run). Your settings and memories were not changed. Set $name and run again, or, for no key and no cloud, switch that config's reasoning to local Ollama (provider ollama, no api_key line; the all-local block in robot.install has the values)."
       fi
     done
   fi
@@ -514,6 +514,9 @@ def has_files(d):
 def emb(c):
     return f"{c.embedding.primary.provider}/{c.embedding.primary.model}"
 
+def reason(c):
+    return f"{c.reasoning.primary.provider}/{c.reasoning.primary.model}"
+
 # Relative paths mean what they mean to the server, which runs in the repo dir.
 old.data_dir, new.data_dir = os.path.abspath(old.data_dir), os.path.abspath(new.data_dir)
 src, dst = os.path.realpath(old.data_dir), os.path.realpath(new.data_dir)
@@ -540,6 +543,7 @@ elif emb(old) != emb(new):
                     f"changed. Set the embedding back to {emb(old)} and run again.")
 else:
     out["action"] = "copy"
+    out["reasoning_from"], out["reasoning_to"] = reason(old), reason(new)
 print(json.dumps(out))
 PY
 )
@@ -607,7 +611,14 @@ PY
         fi
         n=$(printf '%s' "$copied" | python3 -c 'import sys,json;print(json.load(sys.stdin)["files"])')
         log "copied $n files from $OLD_DIR to $NEW_DIR and checked every one. The originals are still in $OLD_DIR; delete them yourself when you're happy."
-        set_step migration "$(python3 -c 'import json,sys;print(json.dumps({"ok": True, "action": "copied", "from": sys.argv[1], "to": sys.argv[2], "files": int(sys.argv[3]), "original_left_in": sys.argv[1]}))' "$OLD_DIR" "$NEW_DIR" "$n")"
+        R_FROM=$(plan_get reasoning_from)
+        R_TO=$(plan_get reasoning_to)
+        if [ "$R_FROM" != "$R_TO" ]; then
+          # Not a silent switch: the old service reasoned on R_FROM; from now
+          # on the memory text it reasons over goes to R_TO.
+          log "reasoning changes: the old service used $R_FROM; from now on it is $R_TO, as your config says. To stay local, switch reasoning in $CONFIG_FILE to local Ollama (the all-local block in robot.install has the values) and run again."
+        fi
+        set_step migration "$(python3 -c 'import json,sys;print(json.dumps({"ok": True, "action": "copied", "from": sys.argv[1], "to": sys.argv[2], "files": int(sys.argv[3]), "original_left_in": sys.argv[1], "reasoning_from": sys.argv[4], "reasoning_to": sys.argv[5]}))' "$OLD_DIR" "$NEW_DIR" "$n" "$R_FROM" "$R_TO")"
         ;;
       *)
         set_step migration '{"ok": false, "action": "unknown"}'

@@ -54,7 +54,13 @@ the reasoning provider an empty key; and a re-run used `systemctl enable
 **If your robot install stopped starting after v4.9.5:** run
 `./robot-install.sh` again. Your memories are kept: they are copied from
 `~/.agentb` into the configured folder and the originals stay where they
-were.
+were. One change you will notice: the old service reasoned on local
+Ollama (its built-in default); after the re-run it reasons on the provider
+your config names, OpenRouter by default, so memory text goes there. The
+installer prints that line and records it in `steps.migration`
+(`reasoning_from`, `reasoning_to`). To stay local, switch reasoning in
+`~/.config/mnemo-cortex/mnemo-cortex.yaml` to the all-local block shown in
+`robot.install` and run the installer again.
 
 Verified in scratch home folders with the real installer and a real server
 start: fresh install; an older install with memories in `~/.agentb`
@@ -62,7 +68,10 @@ start: fresh install; an older install with memories in `~/.agentb`
 both folders populated (stopped, nothing changed); run twice; all-local
 config with no key; key unset (stopped before writing); embedding model
 changed (stopped, nothing changed). With the `AGENTB_CONFIG` line removed,
-the new smoke test fails. Docs (`robot.install`, `robot.info`
+the new smoke test fails. The cases ship as `tests/robot-install-e2e.sh` (scratch
+homes, the real installer, a real server start through a systemctl
+stand-in, a fake OpenRouter key check; cases that save memories skip
+without Ollama): `bash tests/robot-install-e2e.sh`. Docs (`robot.install`, `robot.info`
 `install.install_paths`, INSTALL.md §2a, README, `llms.txt`) describe the
 fixed behaviour.
 
