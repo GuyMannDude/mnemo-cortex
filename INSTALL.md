@@ -260,7 +260,7 @@ how agents end up with a database they never think to read.
 | `recall` returns "No chunks" for every query | Embedding model name doesn't match provider. See [README §Troubleshooting](./README.md#troubleshooting). |
 | Server unreachable from another machine | Firewall. `ufw allow from <subnet> to any port 50001`. Default bind is `127.0.0.1`; switch to `0.0.0.0` in the manifest's `service.host` only if you want LAN access (and add auth). |
 | Memories from two hosts show under one agent | `MNEMO_AGENT_ID` not set or duplicated. Each host needs a unique value. |
-| Stage 0.5 fact extractions stop arriving overnight | Dreamer cron not installed, or reasoning provider env var missing from the systemd unit. `mnemo-cortex doctor` will flag both. |
+| Stage 0.5 fact extractions stop arriving overnight | The dreamer (`mnemo-dream.py`) isn't scheduled, or its environment has no `ANTHROPIC_API_KEY` (it calls Claude only and exits 1 without one), or `DREAM_SKIP_FACTS=1` is set. Run `python3 mnemo-dream.py` by hand with the same environment and read its log lines. |
 
 ---
 

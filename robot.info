@@ -10,7 +10,7 @@
   // │  not read.                                                    │
   // └───────────────────────────────────────────────────────────────┘
   //
-  // robot.info v0.1 — Mnemo Cortex
+  // robot.info v0.2 — Mnemo Cortex
   //
   // Structured product manifest for AI agents. Paired with robot.install
   // (setup) and llms.txt (docs index). Spec: ./ROBOT-INFO-SPEC.md.
@@ -108,7 +108,7 @@
       {"name": "mnemo_share", "purpose": "Toggle cross-agent sharing for the current session."},
       {"name": "mnemo_fact_get", "purpose": "Look up a single structured fact by (entity, attribute). Sub-millisecond exact lookup with confidence + evidence source."},
       {"name": "mnemo_fact_query", "purpose": "Filtered fact list by entity / attribute / value_contains / confidence."},
-      {"name": "mnemo_fact_save", "purpose": "Assert a fact triple. Promotion ladder enforced (verified > high_probability > false); contradictions with an existing verified fact emit a bus + Discord notification."},
+      {"name": "mnemo_fact_save", "purpose": "Assert a fact triple. Promotion ladder enforced (verified > high_probability > false); a contradiction is reported in the reply (previous value and confidence). Bus + Discord alerts come only from the nightly dreamer's Stage 0.5."},
       {"name": "mnemo_fact_demote", "purpose": "Mark a fact false without supplying a replacement — the escape hatch for the verified → false transition when the correct value isn't yet known."},
       {"name": "mnemo_fact_authority", "purpose": "v4.23 — lock or unlock a fact slot (open / probe / declared). Only the user's word may change a tier."},
       {"name": "mnemo_fact_proposals", "purpose": "v4.23 — list the writes a locked slot held, or resolve one (accept / reject) on the user's ruling."},
@@ -208,6 +208,7 @@
       "Reasoning provider (configurable): /preflight checks, save-time classification of uncategorized memories (Smart Ingestion, on by default; classification.enabled: false turns it off), Pocket /chat replies, and the background session-summary and reclassify passes. Default: local Ollama (qwen2.5:32b-instruct) for the init wizard and for a config that names no provider. A robot install defaults to OpenRouter (google/gemini-2.5-flash) and needs OPENROUTER_API_KEY; robot.install shows an all-local block (install.install_paths).",
       "Embedding provider for semantic indexing (default Ollama localhost; a hosted fallback such as Google Gemini, Matryoshka-truncated to the 768-dim store width, is used only if you configure one under embedding.fallbacks, and only when Ollama is unreachable).",
       "Optional category shadow (4.26.0): off unless MNEMO_JEV_KEY_FILE is set. When on, the redacted text of each new memory goes, for the tenants in MNEMO_JEV_TENANTS (a built-in default list applies when that variable is unset), to TypeSafe's Jev classifier in the cloud; it can only file a proposal, never change a memory.",
+      "Brain repo git (MCP bridge, only when BRAIN_DIR is a git repo with a remote): git pull --ff-only at agent_startup, before every write_brain_file, and on read_brain_file with pull: true; git push after write_brain_file, session_checkpoint and session_end. The brain files go wherever that remote is.",
       "Bus + Discord webhook for fact-contradiction notifications when Dreamer Stage 0.5 finds a conflict with an existing verified fact (only fires on conflict; no per-message chatter)."
     ]
   },
@@ -227,7 +228,7 @@
     },
     {
       "q": "Is it free?",
-      "a": "Yes — MIT open source, runs entirely on local hardware. If you use Ollama for reasoning + embedding it costs $0. Cloud providers (OpenRouter, OpenAI, Google) are optional fallbacks."
+      "a": "Yes — MIT open source, runs entirely on local hardware. If you use Ollama for reasoning + embedding it costs $0. Cloud providers (OpenRouter, OpenAI, Google, Anthropic for reasoning) are a choice you make instead of a local model, paid to them; the zero-prompt installer picks OpenRouter unless you paste its all-local block."
     },
     {
       "q": "How is it different from Mem0, Zep, or Letta?",
@@ -302,7 +303,7 @@
     {"step": 2, "instruction": "If you use Claude Desktop: download the one-click '.mcpb' bundle from integrations/claude-desktop/ and drag it onto Claude Desktop's Settings → Extensions. No cloning, no Node, no config files to edit. Works on Windows, macOS, and Linux."},
     {"step": 3, "instruction": "If you use Claude Code (the terminal tool): follow the 60-second guide in integrations/claude-code/ — one command wires Mnemo in as a memory tool."},
     {"step": 4, "instruction": "For anything scripted or hands-off (CI, an AI agent installing it for you): run ./robot-install.sh. It reads the robot.install manifest, sets everything up with zero prompts, and prints a JSON result. Exit 0 means it worked."},
-    {"step": 5, "instruction": "To run it free with no cloud calls, install Ollama first (ollama.com) — Mnemo uses it for the local AI work. Cloud providers (OpenRouter, OpenAI, Google) are optional fallbacks if you'd rather not run a local model."}
+    {"step": 5, "instruction": "To run it free with no cloud calls, install Ollama first (ollama.com) — Mnemo uses it for the local AI work. If you'd rather not run a local model, the setup wizard also takes a cloud provider (OpenRouter, OpenAI, Google, Anthropic) and its key."}
   ],
 
   // Read when a user asks "does this work with X?" Name + how to connect.
@@ -314,7 +315,6 @@
     {"name": "Hermes Agent", "how": "First-class MCP (Hermes v0.12.0+) — integrations/hermes/."},
     {"name": "Agent Zero", "how": "In-container MCP for autonomous Docker agents — integrations/agent-zero/."},
     {"name": "Ollama / Open WebUI / llama.cpp / LobeChat / Jan", "how": "Any MCP-capable host connects through the same Node bridge. See the README integrations section."},
-    {"name": "FrankenClaw", "how": "Sibling product (not coupled): FrankenClaw gives agents hands (search, vision, browser); Mnemo gives them memory. Pair them for a fully-equipped agent."},
     {"name": "Disco-Bus", "how": "Sibling product (not coupled): Disco-Bus is agent-to-agent messaging. Pair with Mnemo when agents need both shared memory and direct comms."}
   ],
 
@@ -334,7 +334,7 @@
 
   // Recent releases. An AI reads this when a user asks "what's new?"
   "changelog": [
-    {"version": "4.28.4", "date": "2026-11-05", "changes": ["Anthropic provider (PR #25, SamHofmannOfficial): setup wizard default is now claude-sonnet-5-5 (Sonnet 4.5 retires 2026-11-30), and generate() joins the text blocks and skips thinking blocks, so thinking-first replies from Sonnet 5.5 / Haiku 5.5 no longer raise KeyError."]},
+    {"version": "4.28.4", "date": "2026-11-05", "changes": ["Anthropic provider (PR #25, SamHofmannOfficial): setup wizard's default Anthropic model is now claude-sonnet-5-5 (Sonnet 4.5 retires 2026-11-30), and generate() joins the text blocks and skips thinking blocks, so thinking-first replies from Sonnet 5.5 / Haiku 5.5 no longer raise KeyError."]},
     {"version": "4.28.3", "date": "2026-11-05", "changes": ["httpx/httpcore request logging pinned to WARNING so Discord webhook URLs (the credential itself) no longer land in the dreamer cron log or server.log."]},
     {"version": "4.28.2", "date": "2026-10-30", "changes": ["Jev shadow (issue #23): when Jev disagrees with the stored category and the memory reads as a session wrap-up (a [SESSION END] marker or three or more numbered items), the memory_category proposal now says session_log instead of the nearest Tier-1 label, with a second evidence quote naming what Jev said. Jev stays the trigger; agreement still files nothing; the stored category never moves without an accept."]},
     {"version": "4.28.1", "date": "2026-10-30", "changes": ["SECURITY (GHSA-h2jf-xmmf-2w8p, reported by Artur Chlebicki @Artur12555): MCP bridge 2.40.1 — the read-only wiki_search tool built a shell command string with the query inside double quotes, so a search term containing $(...) or backticks ran commands as the bridge user (only when a wiki directory exists; stdio-local, CVSS 7.8). grep now receives its arguments directly with no shell (new wiki-search.js); regression test wiki-search.test.js covers eight injection shapes plus option- and path-shaped queries. The server is unaffected."]},
