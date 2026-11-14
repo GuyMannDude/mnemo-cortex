@@ -303,7 +303,7 @@ mnemo-cortex health check
 =========================
 
 Core Services
-  API server (http://localhost:50001) ..... OK (v3.3.1, 156 memories, 42ms)
+  API server (http://localhost:50001) ..... OK (v4.28.4, 156 memories, 42ms)
   Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
   Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
 
@@ -558,12 +558,12 @@ mnemo-cortex init
 
 Interactive wizard. Picks your reasoning model (preflight checks), embedding model (semantic search), server bind address, port, and any agents you want to register up front. Defaults are sensible for a single-machine local install: Ollama for both models, `127.0.0.1:50001`, no auth token (loopback only).
 
-The wizard writes the config to `~/.agentb/agentb.yaml` and creates the data directory at `~/.agentb/data/`.
+The wizard writes the config to `~/.config/agentb/agentb.yaml` and creates the data directory at `~/.agentb/`.
 
 ### Step 3: Start the server
 
 ```bash
-mnemo-cortex start                 # detached (logs go to ~/.agentb/data/logs/)
+mnemo-cortex start                 # detached (logs go to ~/.agentb/logs/)
 mnemo-cortex start --foreground    # attached, logs to terminal
 ```
 

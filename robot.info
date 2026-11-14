@@ -46,7 +46,7 @@
     "Structured Facts (v3.0 / Phase 3) — (entity, attribute, value) triples in a local SQLite store with a three-state confidence ladder (verified > high_probability > false). Sub-millisecond exact lookup for the cases semantic search gets wrong (names, settings, entity attributes). Append-only audit history per fact; contradictions emit a notification over the bus + Discord webhook.",
     "Dreamer Stage 0.5 — nightly automated fact extraction from the day's memories using a conservative direct-statements-only prompt; new facts post at confidence='high_probability', conflicts with existing 'verified' facts get rejected and batched into an end-of-run notification.",
     "Cross-agent dreaming — nightly synthesis of every connected agent's memories into a shared brief.",
-    "WikAI — auto-compiled knowledge base regenerated nightly from Mnemo data.",
+    "The Librarian — local document discovery (librarian.py, stdlib only): one SQLite FTS5 index over filenames, paths and the first chunk of text (PDF/DOCX included), refreshed by cron or on demand, so an agent turns 'the file about X' into a real path. It replaced WikAI, the auto-compiled wiki: existing wiki pages stay readable through wiki_search / wiki_read / wiki_index but are no longer recompiled nightly.",
     "Embedding hosted fallback — embeddings default to local Ollama (nomic-embed-text). If Ollama is unreachable, recall queries fall back to hosted Google Gemini embeddings (Matryoshka-truncated to match the 768-dim store width) so reads keep working; saves refuse-and-alert instead of falling back (v4.9.9), because a different model's vectors occupy a different embedding space and storing them would corrupt the index.",
     "Per-agent memory namespaces — shared, isolated, or hybrid deployments.",
     "OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
@@ -135,7 +135,8 @@
       {"command": "mnemo-cortex start [--foreground] [--port P]", "purpose": "Start the bridge as a daemon (or attached)."},
       {"command": "mnemo-cortex stop", "purpose": "Stop the running daemon."},
       {"command": "mnemo-cortex status", "purpose": "Report daemon state, PID, port, memory count."},
-      {"command": "mnemo-cortex doctor", "purpose": "Diagnostic — connectivity to providers, disk state, schema version."}
+      {"command": "mnemo-cortex doctor", "purpose": "Diagnostic — connectivity to providers, disk state, schema version."},
+      {"command": "mnemo-cortex health [URL] [--json] [--agents] [--services] [--quiet] [--check-mcp PATH]", "purpose": "Verify the whole deployment: API server, database, compaction model, a live recall test for every agent found in the database, watcher services, and (with --check-mcp, repeatable) MCP registration in a client config file. --quiet = exit code only (0 = all passed, 1 = failures), for cron."}
     ]
   },
 
@@ -146,7 +147,7 @@
     "robot_install": "./robot.install",
     "robot_install_sh": "./robot-install.sh",
     "manual_docs": "https://github.com/GuyMannDude/mnemo-cortex/blob/master/INSTALL.md",
-    "platforms": ["linux", "macos", "windows-wsl2"],
+    "platforms": ["linux", "macos", "windows"],
     "runtime": "python>=3.11",
     "dependencies": ["fastapi>=0.115", "uvicorn>=0.30", "pydantic>=2.8", "numpy>=1.24", "httpx>=0.25", "pyyaml>=6.0"],
     "facts_seed": {
@@ -154,6 +155,26 @@
       "example": "./tools/seed-facts.example.yaml",
       "docs": "./tools/README.md",
       "purpose": "Seed the Phase 3 Facts table from a YAML of canonical truths so exact lookups don't lose to stale fuzzy recall. Opt-in via the robot.install facts_seed block (disabled by default); also installable as a git post-commit hook and/or nightly cron to stay in sync."
+    },
+    // The two install paths do not end up with the same settings. This
+    // block says what the code does today; read it before you promise a
+    // user a data directory or a reasoning provider.
+    "install_paths": {
+      "init_wizard": {
+        "how": "mnemo-cortex init (interactive)",
+        "config": "~/.config/agentb/agentb.yaml",
+        "data_dir": "~/.agentb",
+        "reasoning_default": "ollama, qwen2.5:32b-instruct, http://localhost:11434 (local, no key)",
+        "embedding_default": "ollama, nomic-embed-text"
+      },
+      "robot_install": {
+        "how": "./robot-install.sh, reading ./robot.install",
+        "config_written": "~/.config/mnemo-cortex/mnemo-cortex.yaml (override the folder with MNEMO_INSTALL_CONFIG_DIR)",
+        "manifest_defaults": "data_dir ~/.mnemo-cortex; reasoning openrouter google/gemini-2.5-flash with OPENROUTER_API_KEY; embedding ollama nomic-embed-text",
+        "what_the_running_service_uses_today": "The systemd service it installs does not load that config file: it is not on the server's config search path (./agentb.yaml, ./agentb.yml, ~/.config/agentb/agentb.yaml, /etc/agentb/agentb.yaml) and the service sets no AGENTB_CONFIG. So the service runs on the built-in defaults: data in ~/.agentb, reasoning on local Ollama qwen2.5:32b-instruct, embedding on local Ollama nomic-embed-text. What the manifest does reach: service.host and service.port (on the service command line), the decay thresholds, and the smoke test. The API key is copied into a 0600 env file, but providers read keys only from the config (api_key, or api_key: ${VAR_NAME} to pull from the environment) and the generated config has no api_key line, so the key is not used. Pointing AGENTB_CONFIG at the generated config alone would therefore send OpenRouter an empty key; it also needs api_key: ${OPENROUTER_API_KEY} under reasoning."
+      },
+      "all_local_reasoning_block": {"provider": "ollama", "model": "qwen2.5:32b-instruct", "api_base": "http://localhost:11434", "api_key_env": ""},
+      "all_local_reasoning_note": "Paste this as the reasoning block in robot.install for no cloud calls. api_key_env must be the empty string: if the key is left out, the installer falls back to OPENROUTER_API_KEY. The model must be pulled in Ollama first (ollama pull qwen2.5:32b-instruct); any Ollama model you have pulled works. Server and wizard already default to this."
     }
   },
 
@@ -181,10 +202,10 @@
 
   "privacy": {
     "telemetry": "none",
-    "data_location": "Local disk by default (~/.mnemo-cortex/ or ~/.agentb/). SQLite + JSON memory files. Per-agent subdirectories.",
+    "data_location": "Local disk: SQLite + JSON memory files in per-agent subdirectories of the data directory. Default ~/.agentb (the init wizard sets it, and a config with no data_dir falls back to it). robot.install names ~/.mnemo-cortex, but the robot-installed service does not load that setting yet, so it also uses ~/.agentb today (install.install_paths).",
     "auth": "Loopback-only by default (127.0.0.1). Optional X-API-Key for non-localhost binds (legacy sk-mnemo-* tokens). OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
     "outbound_calls": [
-      "Reasoning provider for preflight + compaction (configurable; default OpenRouter; only fires on /preflight calls and during compaction passes).",
+      "Reasoning provider (configurable): /preflight checks, save-time classification of uncategorized memories (Smart Ingestion, on by default; classification.enabled: false turns it off), Pocket /chat replies, and the background session-summary and reclassify passes. Default: local Ollama (qwen2.5:32b-instruct) for the init wizard, for a config that names no provider, and for a robot-installed service today. robot.install's reasoning block names OpenRouter (google/gemini-2.5-flash) but does not reach the installed service yet (install.install_paths).",
       "Embedding provider for semantic indexing (default Ollama localhost; hosted Google Gemini embeddings as automatic fallback when Ollama is unreachable, Matryoshka-truncated to the 768-dim store width).",
       "Bus + Discord webhook for fact-contradiction notifications when Dreamer Stage 0.5 finds a conflict with an existing verified fact (only fires on conflict; no per-message chatter)."
     ]
@@ -245,7 +266,7 @@
     },
     {
       "q": "How do I install it without prompts (CI / agent install)?",
-      "a": "Run ./robot-install.sh. It reads robot.install (JSON manifest with sensible defaults) and emits a single JSON object on stdout. Exit 0 = success. Full schema in the README under 'Non-interactive install.'"
+      "a": "Run ./robot-install.sh. It reads robot.install (JSON manifest with sensible defaults) and emits a single JSON object on stdout. Exit 0 = success. Full schema in the README under 'Non-interactive install.' Before you tell a user where their data lives or which model reasons for them, read install.install_paths: the installed service does not load the manifest's data_dir, reasoning or embedding blocks yet."
     },
     {
       "q": "What's the auth model?",
@@ -253,7 +274,7 @@
     },
     {
       "q": "Does it phone home?",
-      "a": "No telemetry. Outbound calls only happen to providers you configure — reasoning + embedding (configurable, defaults to local Ollama; hosted Google Gemini embeddings auto-fall-back only if Ollama is unreachable). One conditional outbound: Discord webhook for fact-contradiction notifications, off unless you wire a webhook URL."
+      "a": "No telemetry. Outbound calls only happen to providers you configure — reasoning + embedding. Both default to local Ollama (hosted Google Gemini embeddings auto-fall-back only if Ollama is unreachable). The one exception on paper: robot.install's reasoning block names OpenRouter, but the robot-installed service does not load it yet, so it reasons locally too (install.install_paths; install.install_paths.all_local_reasoning_block keeps it local once it does). One conditional outbound: Discord webhook for fact-contradiction notifications, off unless you wire a webhook URL."
     },
     {
       "q": "What's THE-LANE-PROTOCOL.md and do I need to read it?",
@@ -380,6 +401,6 @@
     "docs": "https://github.com/GuyMannDude/mnemo-cortex#readme"
   },
 
-  "generated_at": "2026-05-30T16:00:00Z",
+  "generated_at": "2026-11-14T02:10:00Z",
   "spec_url": "./ROBOT-INFO-SPEC.md"
 }

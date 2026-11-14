@@ -7,7 +7,8 @@
   // │  You do not need to edit this file to install Mnemo. The      │
   // │  defaults below already produce a working local install.      │
   // │  Change something here only if you want a different port,     │
-  // │  data directory, or provider.                                 │
+  // │  data directory, or provider. Read the NOTE above "service"   │
+  // │  first: today two of those don't reach the running server.    │
   // └───────────────────────────────────────────────────────────────┘
   //
   // Mnemo Cortex — robot.install manifest
@@ -23,6 +24,13 @@
   // "service" block already produces a working local install. The
   // rest of the keys are optional and disabled / empty by default.
 
+  // NOTE (what the code does today): robot-install.sh writes these
+  // settings to ~/.config/mnemo-cortex/mnemo-cortex.yaml, but the systemd
+  // service it installs does not load that file. host, port, decay and
+  // smoke_test take effect; data_dir, reasoning and embedding do not, and
+  // the service runs on the built-in defaults: data in ~/.agentb, reasoning
+  // and embedding on local Ollama. Details: robot.info install.install_paths.
+
   "service": {
     "host": "127.0.0.1",
     "port": 50001,
@@ -33,6 +41,12 @@
   // Set api_key_env to a name the installer should pass through; the
   // installer reads that env var at install time and writes it into
   // the service unit so the running daemon picks it up.
+  //
+  // All local, no cloud calls: replace the block below with
+  //   "reasoning": {"provider": "ollama", "model": "qwen2.5:32b-instruct",
+  //                 "api_base": "http://localhost:11434", "api_key_env": ""},
+  // api_key_env must be "" (leaving it out falls back to OPENROUTER_API_KEY).
+  // Pull the model in Ollama first; any Ollama model you have pulled works.
   "reasoning": {
     "provider": "openrouter",
     "model": "google/gemini-2.5-flash",

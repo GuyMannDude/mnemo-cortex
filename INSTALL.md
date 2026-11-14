@@ -86,6 +86,13 @@ named in `api_key_env` and writes it into a `0600`-permission env
 file alongside the systemd unit. Never paste keys into the JSON
 manifest.
 
+How it behaves today: the service this script installs does not load
+the config file it writes, so the manifest's `data_dir`, `reasoning`
+and `embedding` blocks (and the key above) do not take effect. The
+server runs on its defaults: data in `~/.agentb`, reasoning and
+embeddings on local Ollama. Port, bind address and decay settings do
+apply. Details: `install.install_paths` in [`robot.info`](./robot.info).
+
 Success: `{"ok": true, "steps": {...}, "smoke_test": {"ok": true}}`.
 Failure: `{"ok": false, "error": "...", ...}` with exit code 1.
 
