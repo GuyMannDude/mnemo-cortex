@@ -60,12 +60,15 @@ def check_api_server(url: str, timeout: int = 10) -> dict:
         h = resp.json()
         status = h.get("status", "unknown")
         version = h.get("version", "unknown")
-        memories = h.get("memory_entries", 0)
+        # Servers before v2.11.0 sent a memory count; current ones don't, and
+        # a default of 0 printed "0 memories" on every working install.
+        memories = h.get("memory_entries")
+        count = f"{memories:,} memories, " if isinstance(memories, int) else ""
         latency = resp.elapsed.total_seconds() * 1000
         if status == "ok":
             return {
                 "status": "PASS", "health": h,
-                "detail": f"v{version}, {memories:,} memories, {latency:.0f}ms",
+                "detail": f"v{version}, {count}{latency:.0f}ms",
             }
         return {"status": "FAIL", "health": h, "detail": f"Status: {status} (expected ok)"}
     except httpx.ConnectError:

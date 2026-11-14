@@ -303,7 +303,7 @@ mnemo-cortex health check
 =========================
 
 Core Services
-  API server (http://localhost:50001) ..... OK (v4.28.4, 156 memories, 42ms)
+  API server (http://localhost:50001) ..... OK (v4.28.4, 42ms)
   Database ................................. OK (12 sessions (3 hot, 4 warm, 5 cold))
   Compaction model ......................... OK (qwen2.5:32b-instruct — responding)
 

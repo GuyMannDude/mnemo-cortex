@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — `mnemo-cortex health` stops printing "0 memories" (2026-11-13)
+
+**Problem.** `/health` stopped sending `memory_entries` in v2.11.0, but the
+health command kept reading it with a default of 0, so every working install
+printed "0 memories" in its API server line, even right after a save. It
+made a working install look empty.
+
+**Fix.** The line shows a count only when the server sends one (servers
+before v2.11.0). New `tests/test_health_cli_api_line.py`.
+
 ## Unreleased — the robot installer's service runs on the settings it writes (2026-11-13)
 
 **Problem.** `robot-install.sh` wrote its settings to
