@@ -5,10 +5,11 @@
   // │  Looking for how to install Mnemo Cortex?  ->  ./INSTALL.md   │
   // │                                                               │
   // │  You do not need to edit this file to install Mnemo. The      │
-  // │  defaults below already produce a working local install.      │
+  // │  defaults work as they are when OPENROUTER_API_KEY is set     │
+  // │  in your environment. No key, no cloud: swap in the           │
+  // │  all-local reasoning block shown above "reasoning".           │
   // │  Change something here only if you want a different port,     │
-  // │  data directory, or provider. Read the NOTE above "service"   │
-  // │  first: today two of those don't reach the running server.    │
+  // │  data directory, or provider.                                 │
   // └───────────────────────────────────────────────────────────────┘
   //
   // Mnemo Cortex — robot.install manifest
@@ -20,16 +21,18 @@
   //   ./robot-install.sh
   // and parses the JSON object on stdout to confirm success.
   //
-  // Sensible defaults are baked in — a manifest with only the
-  // "service" block already produces a working local install. The
-  // rest of the keys are optional and disabled / empty by default.
+  // Sensible defaults are baked in. A block you leave out takes the
+  // defaults shown here, and reasoning defaults to OpenRouter, so a
+  // manifest with only the "service" block still needs
+  // OPENROUTER_API_KEY in the environment.
 
-  // NOTE (what the code does today): robot-install.sh writes these
-  // settings to ~/.config/mnemo-cortex/mnemo-cortex.yaml, but the systemd
-  // service it installs does not load that file. host, port, decay and
-  // smoke_test take effect; data_dir, reasoning and embedding do not, and
-  // the service runs on the built-in defaults: data in ~/.agentb, reasoning
-  // and embedding on local Ollama. Details: robot.info install.install_paths.
+  // robot-install.sh writes these settings to
+  // ~/.config/mnemo-cortex/mnemo-cortex.yaml and the service it installs
+  // loads that file, so every block below takes effect. Running it again
+  // keeps that file, rewrites the env file and the unit, and restarts the
+  // service. An older install (its mnemo-cortex.env has no AGENTB_CONFIG
+  // line) kept its memories in ~/.agentb: running this again copies them
+  // to data_dir, checks every file, and leaves the originals in place.
 
   "service": {
     "host": "127.0.0.1",
@@ -38,10 +41,11 @@
   },
 
   // Reasoning provider used for preflight checks and summarization.
-  // Set api_key_env to a name the installer should pass through; the
-  // installer reads that env var at install time and writes it into
-  // the 0600 env file the service loads. Today the service does not
-  // use it (see the NOTE above "service").
+  // api_key_env names the environment variable that holds the key. The
+  // installer reads it at install time and writes it into the 0600 env
+  // file the service loads; the config only says ${NAME}, never the key.
+  // If that variable is not set, the installer stops before writing
+  // anything and says so.
   //
   // All local, no cloud calls: replace the block below with
   //   "reasoning": {"provider": "ollama", "model": "qwen2.5:32b-instruct",
@@ -55,10 +59,12 @@
     "api_key_env": "OPENROUTER_API_KEY"
   },
 
-  // Embedding provider — local-first by default. If you don't have
-  // Ollama running, switch to a hosted provider (set provider to
-  // openai/openrouter, model + api_key_env to match). Today this block
-  // does not reach the service either (see the NOTE above "service").
+  // Embedding provider — local Ollama by default. The memory index holds
+  // 768-number vectors (nomic-embed-text's size); a model that returns a
+  // different size is refused at save time, so keep nomic-embed-text
+  // unless you know your model returns 768. A hosted provider takes an
+  // api_key_env here the same way reasoning does. Once memories exist,
+  // keep the same model: vectors from two models don't compare.
   "embedding": {
     "provider": "ollama",
     "model": "nomic-embed-text",

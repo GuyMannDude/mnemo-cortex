@@ -499,7 +499,9 @@ This registers two CLI commands: `mnemo-cortex` and the shorter alias `mnemo`.
 Skip the wizard — fill out a JSON manifest and run the robot installer.
 
 ```bash
-# Defaults are sensible; only edit robot.install if you want to change them
+# The defaults reason on OpenRouter: set the key first (or use the
+# all-local reasoning block shown in robot.install, no key needed)
+export OPENROUTER_API_KEY=...
 ./robot-install.sh
 ```
 
@@ -524,9 +526,14 @@ On failure, `ok` is `false`, exit code is `1`, and `error` describes which step 
 
 The manifest covers service port + bind, reasoning + embedding provider,
 the v3 provenance/decay thresholds, systemd unit name, and a smoke test
-that exercises `/health` plus a save → recall round-trip. API keys are read from the install-time environment
+that exercises `/health` plus a save → recall round-trip and checks the
+server is running on the config the installer wrote (its providers and
+its data folder). API keys are read from the install-time environment
 (named in the manifest via `api_key_env`), copied into a 0600-permission
-env file alongside the config, and loaded by the systemd unit.
+env file alongside the config, and loaded by the systemd unit; the config
+only names them as `${VAR}`. A named key that isn't set stops the install
+before anything is written. Safe to re-run: an older install's memories
+in `~/.agentb` are copied (never moved) into the configured folder.
 
 **Sandbox testing** — override paths via env so you can dry-run without touching real state:
 

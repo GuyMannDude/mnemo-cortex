@@ -72,8 +72,9 @@ Two ways. Pick one.
 
 For agents and CI. Reads [`robot.install`](./robot.install) (JSON
 manifest), runs the install, prints a single JSON object on stdout.
-Defaults are sensible — a manifest with only the `service` block
-already produces a working local install.
+The defaults reason on OpenRouter, so set `OPENROUTER_API_KEY` first;
+for no key and no cloud, paste the all-local reasoning block shown in
+`robot.install` (the model must be pulled in Ollama).
 
 ```bash
 ./robot-install.sh
@@ -86,15 +87,23 @@ named in `api_key_env` and writes it into a `0600`-permission env
 file alongside the systemd unit. Never paste keys into the JSON
 manifest.
 
-How it behaves today: the service this script installs does not load
-the config file it writes, so the manifest's `data_dir`, `reasoning`
-and `embedding` blocks (and the key above) do not take effect. The
-server runs on its defaults: data in `~/.agentb`, reasoning and
-embeddings on local Ollama. Port, bind address and decay settings do
-apply. Details: `install.install_paths` in [`robot.info`](./robot.info).
+The service loads the config the script writes
+(`~/.config/mnemo-cortex/mnemo-cortex.yaml`), so every block in the
+manifest takes effect. A key variable that isn't set stops the install
+before anything is written. The smoke test checks that the running
+server reports the configured providers and saves into the configured
+data folder.
 
-Success: `{"ok": true, "steps": {...}, "smoke_test": {"ok": true}}`.
-Failure: `{"ok": false, "error": "...", ...}` with exit code 1.
+Running it again is safe: the config is kept, the service restarts on
+the new settings. An install made before this (its `mnemo-cortex.env`
+has no `AGENTB_CONFIG` line) kept its memories in `~/.agentb`; running
+the script again copies them into `data_dir`, checks every file, and
+leaves the originals where they were. Details:
+`install.install_paths` in [`robot.info`](./robot.info).
+
+Success: `{"ok": true, "steps": {..., "smoke_test": {"ok": true, ...}}}`.
+Failure: `{"ok": false, "error": "...", ...}` with exit code 1; the
+error says in plain words what to do.
 
 Sandbox test before touching real state:
 

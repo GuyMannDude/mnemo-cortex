@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — the robot installer's service runs on the settings it writes (2026-11-13)
+
+**Problem.** `robot-install.sh` wrote its settings to
+`~/.config/mnemo-cortex/mnemo-cortex.yaml`, but the service it installed
+never loaded that file: the env file set no `AGENTB_CONFIG`, and the file is
+not on the server's search path. With no config, the server's bind address
+defaults to `0.0.0.0`, and since v4.9.5 (the fail-closed auth check) a
+server on `0.0.0.0` with no token refuses to start. So **every robot install
+since v4.9.5 failed its smoke test, and an install made before v4.9.5
+stopped starting after an upgrade.** Those older installs ran on the
+built-in defaults and kept their memories in `~/.agentb`, not the
+`data_dir` the manifest named. Two more gaps sat behind the first: the
+generated config had no `api_key`, so even a loaded config would have sent
+the reasoning provider an empty key; and a re-run used `systemctl enable
+--now`, which leaves an already-running service on its old settings.
+
+**Fix.**
+- The env file sets `AGENTB_CONFIG` to the generated config. Five env
+  lines nothing read (`AGENTB_DATA_DIR`, `AGENTB_REASON_MODEL`,
+  `AGENTB_EMBED_MODEL`, `AGENTB_REASON_URL`, `AGENTB_PORT`) are gone; the
+  config is the one place those settings live.
+- The generated config names keys as `api_key: "${VAR}"` (reasoning, and
+  embedding when its block sets `api_key_env`); the key itself stays only in
+  the 0600 env file. Values are written quoted, so a path with `:` or `#`
+  can't break the YAML.
+- A provider whose `api_key_env` variable is unset stops the install
+  before anything is written, with a plain-words error that points at the
+  all-local reasoning block.
+- Re-runs restart the service (`enable` + `restart`).
+- Upgrading an older install: when the env file has no `AGENTB_CONFIG` line,
+  the installer asks the server's own config loader where the old service
+  kept its data. If that folder holds files and the configured `data_dir`
+  holds none, it stops the old service, copies everything across, checks
+  every file by SHA-256, leaves the originals in place, and reports it in
+  `steps.migration`. If both folders hold files, if one is inside the
+  other, or if the config names a different embedding model than the one
+  the memories were made with, it stops and changes nothing. A config an
+  older installer generated gets the missing `api_key` line, with a
+  `.bak-<time>` copy of the file as it was. Safe to run twice.
+- The smoke test now fails unless `/health` reports the config's reasoning
+  and embedding providers and the test memory lands in the config's data
+  folder. Before, a server running on the wrong settings passed.
+
+Verified in scratch home folders with the real installer and a real server
+start: fresh install; an older install with memories in `~/.agentb`
+(copied, found by recall through the new server, originals unchanged);
+both folders populated (stopped, nothing changed); run twice; all-local
+config with no key; key unset (stopped before writing); embedding model
+changed (stopped, nothing changed). With the `AGENTB_CONFIG` line removed,
+the new smoke test fails. Docs (`robot.install`, `robot.info`
+`install.install_paths`, INSTALL.md §2a, README, `llms.txt`) describe the
+fixed behaviour.
+
 ## claude-desktop bundle rebuilt on bridge 2.40.1; the build is now a script CI runs (2026-11-09) — no server change (server stays v4.28.4)
 
 **Problem.** The published `mnemo-cortex.mcpb` still carried bridge 2.17.0 from
