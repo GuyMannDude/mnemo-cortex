@@ -590,7 +590,7 @@ Quick health check:
 mnemo-cortex health
 ```
 
-Deeper diagnostics — port conflicts, model availability, agent recall, watcher status:
+Deeper diagnostics — reasoning and embedding models, a test recall, a test write to the live wire (as agent `_doctor_test`; add `--skip-ingest` to skip it), port conflicts, and the watcher/refresh services:
 
 ```bash
 mnemo-cortex doctor
