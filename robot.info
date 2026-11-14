@@ -47,7 +47,7 @@
     "Dreamer Stage 0.5 — nightly automated fact extraction from the day's memories using a conservative direct-statements-only prompt; new facts post at confidence='high_probability', conflicts with existing 'verified' facts get rejected and batched into an end-of-run notification.",
     "Cross-agent dreaming — nightly synthesis of every connected agent's memories into a shared brief.",
     "The Librarian — local document discovery (librarian.py, stdlib only): one SQLite FTS5 index over filenames, paths and the first chunk of text (PDF/DOCX included), refreshed by cron or on demand, so an agent turns 'the file about X' into a real path. It replaced WikAI, the auto-compiled wiki: existing wiki pages stay readable through wiki_search / wiki_read / wiki_index but are no longer recompiled nightly.",
-    "Embedding hosted fallback — embeddings default to local Ollama (nomic-embed-text). If Ollama is unreachable, recall queries fall back to hosted Google Gemini embeddings (Matryoshka-truncated to match the 768-dim store width) so reads keep working; saves refuse-and-alert instead of falling back (v4.9.9), because a different model's vectors occupy a different embedding space and storing them would corrupt the index.",
+    "Embedding hosted fallback — embeddings default to local Ollama (nomic-embed-text). With a hosted fallback configured under embedding.fallbacks (agentb.yaml.example recommends Google Gemini; the wizard and robot-install.sh don't add one), recall queries fall back to it when Ollama is unreachable (Matryoshka-truncated to match the 768-dim store width) so reads keep working; saves refuse-and-alert instead of falling back (v4.9.9), because a different model's vectors occupy a different embedding space and storing them would corrupt the index.",
     "Per-agent memory namespaces — shared, isolated, or hybrid deployments.",
     "OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
     "Developer Dump — JSONL trace of every MCP tool call through the bridge (tool, params, response, latency, ok/error). Off by default; flip on with MNEMO_DUMP=on. One file per agent per day, greppable with jq. CLI: mnemo-cortex dump list / dump tail <agent>.",
@@ -206,7 +206,7 @@
     "auth": "Loopback-only by default (127.0.0.1). Optional X-API-Key for non-localhost binds (legacy sk-mnemo-* tokens). OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
     "outbound_calls": [
       "Reasoning provider (configurable): /preflight checks, save-time classification of uncategorized memories (Smart Ingestion, on by default; classification.enabled: false turns it off), Pocket /chat replies, and the background session-summary and reclassify passes. Default: local Ollama (qwen2.5:32b-instruct) for the init wizard, for a config that names no provider, and for a robot-installed service today. robot.install's reasoning block names OpenRouter (google/gemini-2.5-flash) but does not reach the installed service yet (install.install_paths).",
-      "Embedding provider for semantic indexing (default Ollama localhost; hosted Google Gemini embeddings as automatic fallback when Ollama is unreachable, Matryoshka-truncated to the 768-dim store width).",
+      "Embedding provider for semantic indexing (default Ollama localhost; a hosted fallback such as Google Gemini, Matryoshka-truncated to the 768-dim store width, is used only if you configure one under embedding.fallbacks, and only when Ollama is unreachable).",
       "Bus + Discord webhook for fact-contradiction notifications when Dreamer Stage 0.5 finds a conflict with an existing verified fact (only fires on conflict; no per-message chatter)."
     ]
   },
@@ -274,7 +274,7 @@
     },
     {
       "q": "Does it phone home?",
-      "a": "No telemetry. Outbound calls only happen to providers you configure — reasoning + embedding. Both default to local Ollama (hosted Google Gemini embeddings auto-fall-back only if Ollama is unreachable). The one exception on paper: robot.install's reasoning block names OpenRouter, but the robot-installed service does not load it yet, so it reasons locally too (install.install_paths; install.install_paths.all_local_reasoning_block keeps it local once it does). One conditional outbound: Discord webhook for fact-contradiction notifications, off unless you wire a webhook URL."
+      "a": "No telemetry. Outbound calls only happen to providers you configure — reasoning + embedding. Both default to local Ollama; a hosted embedding fallback (for example Google Gemini) is used only if you configure one, and only when Ollama is unreachable. The one exception on paper: robot.install's reasoning block names OpenRouter, but the robot-installed service does not load it yet, so it reasons locally too (install.install_paths; install.install_paths.all_local_reasoning_block keeps it local once it does). One conditional outbound: Discord webhook for fact-contradiction notifications, off unless you wire a webhook URL."
     },
     {
       "q": "What's THE-LANE-PROTOCOL.md and do I need to read it?",
