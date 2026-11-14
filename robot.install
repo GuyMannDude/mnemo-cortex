@@ -27,12 +27,15 @@
   // OPENROUTER_API_KEY in the environment.
 
   // robot-install.sh writes these settings to
-  // ~/.config/mnemo-cortex/mnemo-cortex.yaml and the service it installs
-  // loads that file, so every block below takes effect. Running it again
-  // keeps that file, rewrites the env file and the unit, and restarts the
-  // service. An older install (its mnemo-cortex.env has no AGENTB_CONFIG
-  // line) kept its memories in ~/.agentb: running this again copies them
-  // to data_dir, checks every file, and leaves the originals in place.
+  // ~/.config/mnemo-cortex/mnemo-cortex.yaml on the first run, and the
+  // service it installs loads that file. Running it again keeps that file:
+  // from then on data_dir, reasoning, embedding, host and port come from
+  // it, not from here (edit it, or move it aside to regenerate it). decay
+  // is re-read from here on every run. The service restarts each run.
+  //
+  // Robot install stopped starting after v4.9.5? Run ./robot-install.sh
+  // again: your memories are kept. (It copies them from ~/.agentb into
+  // data_dir, checks every file, and leaves the originals in place.)
 
   "service": {
     "host": "127.0.0.1",

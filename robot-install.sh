@@ -292,16 +292,30 @@ fi
 # A provider that names a key env var gets that key from the install-time
 # environment. If it isn't set, stop here: the server would install fine and
 # then fail every call to that provider. Nothing has been written yet.
+# A key's value: the install-time environment first, else the env file an
+# earlier run wrote, so a re-run doesn't need the key exported again.
+key_value() {
+  local v="${!1:-}"
+  if [ -z "$v" ] && [ -f "$CONFIG_DIR/mnemo-cortex.env" ]; then
+    v=$(grep -m1 "^$1=" "$CONFIG_DIR/mnemo-cortex.env" | cut -d= -f2-)
+  fi
+  printf '%s' "$v"
+}
 REASON_API_KEY=""
 EMB_API_KEY=""
-[ -n "$REASON_API_KEY_ENV" ] && REASON_API_KEY="${!REASON_API_KEY_ENV:-}"
-[ -n "$EMB_API_KEY_ENV" ] && EMB_API_KEY="${!EMB_API_KEY_ENV:-}"
+[ -n "$REASON_API_KEY_ENV" ] && REASON_API_KEY=$(key_value "$REASON_API_KEY_ENV")
+[ -n "$EMB_API_KEY_ENV" ] && EMB_API_KEY=$(key_value "$EMB_API_KEY_ENV")
 
 for pair in "reasoning:$REASON_API_KEY_ENV:$REASON_API_KEY" "embedding:$EMB_API_KEY_ENV:$EMB_API_KEY"; do
   IFS=: read -r part name value <<<"$pair"
   if [ -n "$name" ] && [ -z "$value" ]; then
     set_step deps "{\"ok\": false, \"python\": \"$PY_VER\", \"missing_key\": \"$name\"}"
-    emit false "The $part provider needs an API key in the environment variable $name, and it is not set. Nothing was installed. Set $name and run again, or switch $part to local Ollama (the all-local block in robot.install needs no key)."
+    if [ "$part" = reasoning ]; then
+      alt="paste the all-local reasoning block shown in robot.install (no key needed)"
+    else
+      alt="set embedding back to local Ollama nomic-embed-text (no key needed)"
+    fi
+    emit false "The $part provider needs an API key in the environment variable $name, and it is not set. Nothing was installed. Set $name and run again, or $alt."
   fi
 done
 
@@ -348,6 +362,52 @@ agentb_py() {
   (cd "$REPO_DIR" && env -u AGENTB_CONFIG "$VENV_PY" - "$@")
 }
 
+# Every ${NAME} the config refers to: the server resolves these from the env
+# file, so each must have a value. On a re-run the kept config (not the
+# manifest) decides which keys the server needs.
+config_key_names() {
+  "$VENV_PY" - "$1" <<'PY'
+import re, sys, yaml
+refs = set()
+def walk(x):
+    if isinstance(x, dict):
+        for v in x.values(): walk(v)
+    elif isinstance(x, list):
+        for v in x: walk(v)
+    elif isinstance(x, str):
+        m = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", x)
+        if m: refs.add(m.group(1))
+with open(sys.argv[1]) as f:
+    walk(yaml.safe_load(f) or {})
+print("\n".join(sorted(refs)))
+PY
+}
+
+# The server's fail-closed auth check reads the host from the config, so the
+# unit must bind the same host and port the config names. Once a config
+# exists it decides both; the manifest's service.host/port only seed it.
+use_config_server_address() {
+  local addr host port
+  if ! addr=$(agentb_py "$CONFIG_FILE" <<'PY'
+import re, sys
+from agentb.config import load_config
+s = load_config(sys.argv[1]).server
+if not re.fullmatch(r"[A-Za-z0-9.:_\[\]-]+", str(s.host)):
+    sys.exit(f"server.host {s.host!r} is not a plain host name or address")
+print(s.host, int(s.port))
+PY
+  ); then
+    set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "config_path": sys.argv[1]}))' "$CONFIG_FILE")"
+    emit false "Could not read the server address from $CONFIG_FILE (see stderr). Nothing was changed."
+  fi
+  read -r host port <<<"$addr"
+  if [ "$host" != "$SVC_HOST" ] || [ "$port" != "$SVC_PORT" ]; then
+    log "using host $host and port $port from $CONFIG_FILE (robot.install says $SVC_HOST:$SVC_PORT; the config wins once it exists)"
+  fi
+  SVC_HOST=$host
+  SVC_PORT=$port
+}
+
 if [ "$DRY_RUN" = "1" ]; then
   log "step 3/5 — config (skipped, DRY_RUN=1)"
   set_step config "{\"ok\": true, \"dry_run\": true, \"config_path\": \"$CONFIG_FILE\", \"env_path\": \"$ENV_FILE\", \"data_dir\": \"$DATA_DIR\"}"
@@ -355,6 +415,22 @@ else
   log "step 3/5 — config at $CONFIG_DIR"
 
   mkdir -p "$CONFIG_DIR"
+
+  KEPT_CONFIG=false
+  if [ -f "$CONFIG_FILE" ]; then
+    KEPT_CONFIG=true
+    use_config_server_address
+    if ! names=$(config_key_names "$CONFIG_FILE"); then
+      set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "config_path": sys.argv[1]}))' "$CONFIG_FILE")"
+      emit false "Could not read $CONFIG_FILE (see stderr). Nothing was changed."
+    fi
+    for name in $names; do
+      if [ -z "$(key_value "$name")" ]; then
+        set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "config_path": sys.argv[1], "missing_key": sys.argv[2]}))' "$CONFIG_FILE" "$name")"
+        emit false "Your existing config $CONFIG_FILE uses \${$name}, and $name is not set (not in the environment, not in the env file from the last run). Nothing was changed. Set $name and run again, or edit that config."
+      fi
+    done
+  fi
 
   # 3a. Installs made before this installer wrote AGENTB_CONFIG ran their
   # service on the loader's defaults (data in ~/.agentb, local Ollama), not
@@ -376,11 +452,18 @@ else:
     where = "robot.install"
 
 def has_files(d):
-    return any(files for _r, _d, files in os.walk(d))
+    # A link counts as content: copying through a linked folder could write
+    # outside data_dir.
+    for _r, dirs, files in os.walk(d):
+        if files or any(os.path.islink(os.path.join(_r, x)) for x in dirs):
+            return True
+    return False
 
 def emb(c):
     return f"{c.embedding.primary.provider}/{c.embedding.primary.model}"
 
+# Relative paths mean what they mean to the server, which runs in the repo dir.
+old.data_dir, new.data_dir = os.path.abspath(old.data_dir), os.path.abspath(new.data_dir)
 src, dst = os.path.realpath(old.data_dir), os.path.realpath(new.data_dir)
 out = {"from": old.data_dir, "to": new.data_dir}
 if src == dst or not has_files(src):
@@ -426,9 +509,11 @@ PY
         if [ "$SYSTEMD_ENABLED" = "1" ]; then
           systemctl --user stop "${SYSTEMD_SVC}.service" >/dev/null 2>&1 || true
         fi
-        if curl -s -m 2 -o /dev/null "http://$SVC_HOST:$SVC_PORT/health" 2>/dev/null; then
+        if curl -s -m 2 "http://$SVC_HOST:$SVC_PORT/health" 2>/dev/null | python3 -c 'import sys,json;sys.exit(0 if "status" in json.load(sys.stdin) else 1)' 2>/dev/null; then
           set_step migration "{\"ok\": false, \"action\": \"copy\"}"
-          emit false "A Mnemo Cortex server is still running on port $SVC_PORT and may be writing to $OLD_DIR. Stop it and run again. Nothing was changed."
+          stopped=""
+          [ "$SYSTEMD_ENABLED" = "1" ] && stopped=" The ${SYSTEMD_SVC} service was stopped, but another one still answers."
+          emit false "A Mnemo Cortex server is running on port $SVC_PORT and may be writing to $OLD_DIR.${stopped} Stop it and run again. Your memories and settings were not changed."
         fi
         log "copying your memories from $OLD_DIR to $NEW_DIR"
         copied=$(python3 - "$OLD_DIR" "$NEW_DIR" <<'PY'
@@ -516,8 +601,9 @@ PY
   fi
 
   if [ -f "$CONFIG_FILE" ]; then
-    # Preserve an existing config.
-    log "config already exists: $CONFIG_FILE"
+    # Preserve an existing config. It wins over the manifest: data_dir,
+    # reasoning, embedding, host and port come from it, not robot.install.
+    log "config already exists, keeping it (its data_dir, reasoning, embedding, host and port win over the manifest): $CONFIG_FILE"
   else
     python3 - "$CONFIG_FILE" "$DATA_DIR" \
       "$REASON_PROVIDER" "$REASON_MODEL" "$REASON_API_BASE" "$REASON_API_KEY_ENV" \
@@ -557,6 +643,15 @@ PY
   # holds the API keys (read from the install-time environment) and the v3
   # decay overrides. Create it 0600 BEFORE writing: write-then-chmod leaves a
   # window where the key is world-readable on a multi-user host.
+  if ! names=$(config_key_names "$CONFIG_FILE"); then
+    set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "config_path": sys.argv[1]}))' "$CONFIG_FILE")"
+    emit false "Could not read $CONFIG_FILE (see stderr)."
+  fi
+  key_lines=""
+  for name in $names; do
+    key_lines+="$name=$(key_value "$name")"$'\n'
+  done
+
   install -m 600 /dev/null "$ENV_FILE"
   {
     echo "# Mnemo Cortex env — generated by robot-install.sh"
@@ -566,30 +661,32 @@ PY
     echo "MNEMO_DECAY_CURRENT_STATE_WARN_DAYS=$DECAY_CURRENT_WARN"
     echo "MNEMO_DECAY_RELATIONSHIP_WARN_DAYS=$DECAY_REL_WARN"
     echo "MNEMO_DECAY_SESSION_LOG_WARN_DAYS=$DECAY_SLOG_WARN"
-    if [ -n "$REASON_API_KEY" ]; then
-      echo "${REASON_API_KEY_ENV}=$REASON_API_KEY"
-    fi
-    if [ -n "$EMB_API_KEY" ] && [ "$EMB_API_KEY_ENV" != "$REASON_API_KEY_ENV" ]; then
-      echo "${EMB_API_KEY_ENV}=$EMB_API_KEY"
-    fi
+    printf '%s' "$key_lines"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
   # The data dir the server will use: the config's, which can differ from
   # the manifest's when an existing config was kept.
   if ! EFFECTIVE_DATA_DIR=$(agentb_py "$CONFIG_FILE" <<'PY'
-import sys
+import os, sys
 from agentb.config import load_config
-print(load_config(sys.argv[1]).data_dir)
+print(os.path.abspath(load_config(sys.argv[1]).data_dir))
 PY
   ) || [ -z "$EFFECTIVE_DATA_DIR" ]; then
-    set_step config "{\"ok\": false, \"config_path\": \"$CONFIG_FILE\"}"
+    set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "config_path": sys.argv[1]}))' "$CONFIG_FILE")"
     emit false "The server could not load $CONFIG_FILE (see stderr)."
   fi
   mkdir -p "$EFFECTIVE_DATA_DIR"/{memory,logs}
 
-  set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": True, "config_path": sys.argv[1], "env_path": sys.argv[2], "data_dir": sys.argv[3]}))' "$CONFIG_FILE" "$ENV_FILE" "$EFFECTIVE_DATA_DIR")"
+  set_step config "$(python3 -c 'import json,sys;print(json.dumps({"ok": True, "config_path": sys.argv[1], "env_path": sys.argv[2], "data_dir": sys.argv[3], "kept_existing_config": sys.argv[4] == "true"}))' "$CONFIG_FILE" "$ENV_FILE" "$EFFECTIVE_DATA_DIR" "$KEPT_CONFIG")"
 fi
+
+# The last lines the service logged, so a failure says why in the server's
+# own words. Empty when there is no systemd unit or no journal.
+service_log_tail() {
+  [ "$SYSTEMD_ENABLED" = "1" ] || return 0
+  journalctl --user -u "${SYSTEMD_SVC}.service" -n 12 --no-pager -o cat 2>/dev/null | tail -n 12
+}
 
 # ─── step 4/5: systemd unit ───────────────────────────────────────────
 
@@ -656,20 +753,29 @@ while [ $attempts -lt 15 ]; do
 done
 
 if [ $attempts -ge 15 ]; then
-  set_step smoke_test "{\"ok\": false, \"error\": \"/health unreachable after 15s\"}"
-  emit false "smoke test: /health did not come up on port $SVC_PORT"
+  tail_txt=$(service_log_tail)
+  set_step smoke_test "$(python3 -c 'import json,sys;print(json.dumps({"ok": False, "error": "/health unreachable after 15s", "service_log_tail": sys.argv[1].splitlines()}))' "$tail_txt")"
+  # The server's last error line is usually the reason (e.g. a startup refusal).
+  why=$(printf '%s\n' "$tail_txt" | grep -E '^[A-Za-z_.]+(Error|Exception): ' | tail -n 1)
+  [ -n "$why" ] || why=$(printf '%s\n' "$tail_txt" | grep -E 'ERROR|Error' | tail -n 1)
+  if [ -n "$tail_txt" ]; then
+    hint=" Last log lines: steps.smoke_test.service_log_tail."
+  else
+    hint=" Check the server's log (journalctl --user -u ${SYSTEMD_SVC}.service)."
+  fi
+  emit false "smoke test: the server did not come up on port $SVC_PORT.${why:+ It said: $why}$hint"
 fi
 
 # A server that answers is not enough: it must be running on the config this
 # installer wrote. Compare what /health reports with what the config says.
 expected=$(agentb_py "$CONFIG_FILE" "$SMOKE_AGENT" <<'PY'
-import json, sys
+import json, os, sys
 from agentb.config import load_config, get_agent_data_dir
 cfg = load_config(sys.argv[1])
 label = lambda p: f"{p.provider}/{p.model}"
 print(json.dumps({"reasoning": label(cfg.reasoning.primary),
                   "embedding": label(cfg.embedding.primary),
-                  "memory_dir": str(get_agent_data_dir(cfg, sys.argv[2]) / "memory")}))
+                  "memory_dir": os.path.abspath(get_agent_data_dir(cfg, sys.argv[2]) / "memory")}))
 PY
 )
 mismatch=$(python3 - "$health" "$expected" <<'PY'

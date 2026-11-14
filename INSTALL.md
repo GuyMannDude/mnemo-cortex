@@ -88,14 +88,19 @@ file alongside the systemd unit. Never paste keys into the JSON
 manifest.
 
 The service loads the config the script writes
-(`~/.config/mnemo-cortex/mnemo-cortex.yaml`), so every block in the
-manifest takes effect. A key variable that isn't set stops the install
+(`~/.config/mnemo-cortex/mnemo-cortex.yaml`), so on the first run every
+block in the manifest takes effect. A key variable that isn't set stops the install
 before anything is written. The smoke test checks that the running
 server reports the configured providers and saves into the configured
 data folder.
 
-Running it again is safe: the config is kept, the service restarts on
-the new settings. An install made before this (its `mnemo-cortex.env`
+Running it again is safe. The config is kept, and from then on it
+decides `data_dir`, `reasoning`, `embedding`, bind address and port
+(edit it, or move it aside to regenerate it from the manifest); decay
+settings come from the manifest each run, and the service restarts.
+
+**Robot install stopped starting after v4.9.5?** Run `./robot-install.sh`
+again. Your memories are kept. An install made before this (its `mnemo-cortex.env`
 has no `AGENTB_CONFIG` line) kept its memories in `~/.agentb`; running
 the script again copies them into `data_dir`, checks every file, and
 leaves the originals where they were. Details:

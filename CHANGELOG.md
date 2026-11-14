@@ -28,7 +28,13 @@ the reasoning provider an empty key; and a re-run used `systemctl enable
 - A provider whose `api_key_env` variable is unset stops the install
   before anything is written, with a plain-words error that points at the
   all-local reasoning block.
-- Re-runs restart the service (`enable` + `restart`).
+- Re-runs restart the service (`enable` + `restart`). Once a config
+  exists it is kept and decides `data_dir`, providers, host and port; the
+  unit binds the host and port the config names, so the auth check and
+  the real bind address can't disagree. Keys a kept config names as
+  `${VAR}` come from the environment or, if unset there, from the
+  previous env file; one with no value anywhere stops the run before
+  anything changes.
 - Upgrading an older install: when the env file has no `AGENTB_CONFIG` line,
   the installer asks the server's own config loader where the old service
   kept its data. If that folder holds files and the configured `data_dir`
@@ -41,7 +47,14 @@ the reasoning provider an empty key; and a re-run used `systemctl enable
   `.bak-<time>` copy of the file as it was. Safe to run twice.
 - The smoke test now fails unless `/health` reports the config's reasoning
   and embedding providers and the test memory lands in the config's data
-  folder. Before, a server running on the wrong settings passed.
+  folder. Before, a server running on the wrong settings passed. When the
+  server doesn't come up, the error quotes its last log line (for example
+  the auth refusal) and the JSON carries the log tail.
+
+**If your robot install stopped starting after v4.9.5:** run
+`./robot-install.sh` again. Your memories are kept: they are copied from
+`~/.agentb` into the configured folder and the originals stay where they
+were.
 
 Verified in scratch home folders with the real installer and a real server
 start: fresh install; an older install with memories in `~/.agentb`

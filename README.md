@@ -532,8 +532,10 @@ its data folder). API keys are read from the install-time environment
 (named in the manifest via `api_key_env`), copied into a 0600-permission
 env file alongside the config, and loaded by the systemd unit; the config
 only names them as `${VAR}`. A named key that isn't set stops the install
-before anything is written. Safe to re-run: an older install's memories
-in `~/.agentb` are copied (never moved) into the configured folder.
+before anything is written. Safe to re-run; an existing config is kept and
+wins over the manifest. **Robot install stopped starting after v4.9.5?**
+Re-run the installer: your memories in `~/.agentb` are copied (never
+moved) into the configured folder.
 
 **Sandbox testing** — override paths via env so you can dry-run without touching real state:
 
