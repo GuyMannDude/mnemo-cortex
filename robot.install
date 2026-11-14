@@ -40,7 +40,8 @@
   // Reasoning provider used for preflight checks and summarization.
   // Set api_key_env to a name the installer should pass through; the
   // installer reads that env var at install time and writes it into
-  // the service unit so the running daemon picks it up.
+  // the 0600 env file the service loads. Today the service does not
+  // use it (see the NOTE above "service").
   //
   // All local, no cloud calls: replace the block below with
   //   "reasoning": {"provider": "ollama", "model": "qwen2.5:32b-instruct",
