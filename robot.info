@@ -228,17 +228,17 @@
     "install": [
       "Have Ollama running with the embedding model pulled: ollama pull nomic-embed-text",
       "git clone https://github.com/GuyMannDude/mnemo-cortex && cd mnemo-cortex",
-      "export OPENROUTER_API_KEY=<key>. Or, for no key and no cloud: in robot.install, replace the \"reasoning\" block with the all-local block shown in its comment, and pull the model it names in Ollama (any chat model you have pulled works; put its name in \"model\")",
+      "export OPENROUTER_API_KEY=<key>. Or, for no key and no cloud: in robot.install (or a copy you pass as ./robot-install.sh <copy>), replace the \"reasoning\" block with the all-local block shown in its comment, and pull the model it names in Ollama (any chat model you have pulled works; put its name in \"model\")",
       "./robot-install.sh   (read the JSON on stdout: ok true = the server runs on 127.0.0.1:50001 on the settings it wrote, and a save + recall round-trip passed)",
       "Connect your agent: cd integrations/mcp-bridge && npm ci, then register node <repo>/integrations/mcp-bridge/server.js as an MCP server with MNEMO_URL=http://127.0.0.1:50001 and MNEMO_AGENT_ID=<a name for this agent>. Add BRAIN_DIR=<a git repo of markdown notes, with git user.name and user.email set> for the brain-file tools (agent_startup, read/write_brain_file, session_end); without a git identity the notes are written but not committed, and session_end reports the commit as blocked. Per-host steps: integrations/<host>/."
     ],
     "prove_it_works": [
       "curl -s http://127.0.0.1:50001/health: status ok (or degraded if one provider is down); reasoning.primary and embedding.primary name the providers you chose",
-      ".venv/bin/mnemo-cortex health: one line per check, exit 0 when all pass (--quiet for the exit code only)",
+      ".venv/bin/mnemo-cortex health http://127.0.0.1:50001: one line per check (without the URL it checks MNEMO_URL when set, else the setup wizard's ~/.config/agentb/agentb.yaml, else localhost:50001), exit 0 when all pass (--quiet for the exit code only)",
       "From the agent: mnemo_save a test fact, then mnemo_recall it by meaning in a new session"
     ],
     "routine": [
-      "Start: agent_startup when BRAIN_DIR is set (loads your notes file, named after MNEMO_AGENT_ID), then mnemo_recall on what you are about to work on. agent_startup brings no memories by itself",
+      "Start: agent_startup when BRAIN_DIR is set (loads your notes file, <MNEMO_AGENT_ID>.md in BRAIN_DIR, which your first write_brain_file creates), then mnemo_recall on what you are about to work on. agent_startup brings no memories by itself",
       "Before building anything: mnemo_recall it first. Someone may have decided or tried it already",
       "Save the why, when it happens: mnemo_save with the reason in the summary (\"chose X because Y\"), the bare facts in key_facts, category decision / incident / doctrine as it fits, and source user when your human said it (tool for command output; the default is inferred). Not batched to the end",
       "End: write_brain_file your notes file with what is current and what is next, then session_end with what is left open. Don't repeat an earlier save in the summary: a near-duplicate is held, not saved",
