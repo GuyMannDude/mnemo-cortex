@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — the nightly dream tries once more when a run fails (2026-11-14)
+
+**Problem.** The dream gets one attempt a night. On 2026-11-13 the run started
+during a two-hour Anthropic outage (503s on every call), exited 1 with no
+brief, and nothing tried again until the next night.
+
+**Fix.** A run that fails before writing its brief waits
+`MNEMO_DREAM_RETRY_MINUTES` (default 120; 0 turns it off) and runs ONCE more
+in the same process. It is never retried after the brief is written, on a
+dry run, or for a missing key or a non-Claude model id. A second failure
+exits 1 as before. A machine that is off at the scheduled time is not
+covered: that is a Task Scheduler setting. New `tests/test_dream_retry.py`.
+
 ## Unreleased — `mnemo-cortex health` stops printing "0 memories" (2026-11-13)
 
 **Problem.** `/health` stopped sending `memory_entries` in v2.11.0, but the
