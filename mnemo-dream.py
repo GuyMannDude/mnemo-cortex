@@ -715,6 +715,7 @@ def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: st
 # brief so a truncation reaches what agents boot on, not only the log.
 _truncated = False
 _brief_written = False  # set by write_dream(); a retry never runs after a brief landed
+_strategies_posted = False  # Stage 0.7 saves are not idempotent (new id each): post once per process
 
 
 def _brief_stamp() -> dict:
@@ -1097,6 +1098,10 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
     }
     json_path = DREAMER_MEMORY_DIR / f"{dream_id}.json"
     json_path.write_text(json.dumps(memory_entry, indent=2, default=str), encoding="utf-8")
+    # The JSON moves the "since last dream" window (get_last_dream_time), so
+    # from here a retry would re-dream an empty window: count the brief as landed.
+    global _brief_written
+    _brief_written = True
 
     # Write human-readable markdown
     md_content = f"""# Mnemo Dream — {date_str}
@@ -1112,8 +1117,6 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
 """
     md_path = DREAM_DIR / f"{date_str}.md"
     md_path.write_text(md_content, encoding="utf-8")
-    global _brief_written
-    _brief_written = True
     boot_path = DREAM_DIR / f"{date_str}-boot.md"
     boot_path.write_text(md_content.replace(dream_text, boot_text, 1), encoding="utf-8")
 
@@ -2260,13 +2263,15 @@ def run_with_one_retry(run, *, retry: bool, minutes: float | None = None, sleep=
         if code in (0, None) or not retry or minutes <= 0 or _brief_written:
             raise
         log.error(f"Dream run failed before writing a brief ({e!r}); ONE retry in {minutes:g} min "
-                  "(MNEMO_DREAM_RETRY_MINUTES)")
+                  "(MNEMO_DREAM_RETRY_MINUTES)", exc_info=not isinstance(e, SystemExit))
     (sleep or time.sleep)(minutes * 60)
     log.info("Dream retry: second and last attempt")
     return run()
 
 
 def _dream_once(args):
+    global _truncated, _strategies_posted
+    _truncated = False  # a failed attempt's truncation must not stamp the retry's brief
     # Determine time window
     if args.hours > 0:
         since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
@@ -2329,7 +2334,9 @@ def _dream_once(args):
     # without posting them is exactly the human quality gate the rollout plan
     # requires (bus #996). Live posting only when the env gate is set AND not
     # a dry run.
-    if MNEMO_DREAM_STRATEGIES:
+    if MNEMO_DREAM_STRATEGIES and _strategies_posted:
+        log.info("Stage 0.7 skipped on the retry: the first attempt already posted its strategies")
+    elif MNEMO_DREAM_STRATEGIES:
         log.info("Stage 0.7: distilling task strategies from session streams...")
         streams = _session_streams(all_memories)
         if not streams:
@@ -2344,6 +2351,7 @@ def _dream_once(args):
                 print(f"\n--- Stage 0.7 dry-run: {len(items)} strategy item(s) for {agent_id} ---")
                 print(json.dumps(items, indent=2, ensure_ascii=False))
             else:
+                _strategies_posted = True
                 saved, failed_n = post_strategies(items)
                 total_saved += saved
                 total_failed += failed_n
