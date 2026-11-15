@@ -224,6 +224,10 @@ MNEMO_DREAM_BUS_TARGETS = [
 MNEMO_DREAM_DISCORD_WEBHOOK = os.getenv("MNEMO_DREAM_DISCORD_WEBHOOK", "")
 # Disable Stage 0.5 extraction entirely (e.g. to debug pure-synthesis runs)
 DREAM_SKIP_FACTS = os.getenv("DREAM_SKIP_FACTS", "").lower() in ("1", "true", "yes")
+# A run that dies before writing its brief (provider outage: 11-13 was two
+# hours of Anthropic 503s) tries ONCE more after this many minutes, in the same
+# process. One retry, not a loop. 0 turns it off.
+DREAM_RETRY_MINUTES = float(os.getenv("MNEMO_DREAM_RETRY_MINUTES", "120"))
 
 # Cap per-agent section size. One high-volume agent (opie's auto-capture has hit
 # ~19MB / ~4.9M tokens) alone exceeds the synthesis model's 1M-token context
@@ -710,6 +714,7 @@ def _quarantine_rejected(rejected_text: str, first_report: str, outcome_note: st
 # Set by any Claude API reply that stopped on a length cap; stamped into the
 # brief so a truncation reaches what agents boot on, not only the log.
 _truncated = False
+_brief_written = False  # set by write_dream(); a retry never runs after a brief landed
 
 
 def _brief_stamp() -> dict:
@@ -1107,6 +1112,8 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
 """
     md_path = DREAM_DIR / f"{date_str}.md"
     md_path.write_text(md_content, encoding="utf-8")
+    global _brief_written
+    _brief_written = True
     boot_path = DREAM_DIR / f"{date_str}-boot.md"
     boot_path.write_text(md_content.replace(dream_text, boot_text, 1), encoding="utf-8")
 
@@ -2234,8 +2241,32 @@ def main():
     for _noisy in ("httpx", "httpcore"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
     if not args.dry_run or MNEMO_DREAM_STRATEGIES:  # a dry run calls the API only in Stage 0.7
-        _require_claude()
+        _require_claude()  # config errors exit here, outside the retry: waiting will not fix them
 
+    run_with_one_retry(lambda: _dream_once(args), retry=not args.dry_run)
+
+
+def run_with_one_retry(run, *, retry: bool, minutes: float | None = None, sleep=None):
+    """Run the dream; if it fails before writing a brief, wait and run it ONCE
+    more (snag-dreamer-no-second-attempt, 2026-11-13). The stages fail with
+    sys.exit(1), so SystemExit is the failure signal; a crash is one too. A
+    failure AFTER the brief landed is never retried (it would re-dream an empty
+    window). A second failure exits non-zero like before, so the monitor sees it."""
+    minutes = DREAM_RETRY_MINUTES if minutes is None else minutes
+    try:
+        return run()
+    except (SystemExit, Exception) as e:
+        code = e.code if isinstance(e, SystemExit) else 1
+        if code in (0, None) or not retry or minutes <= 0 or _brief_written:
+            raise
+        log.error(f"Dream run failed before writing a brief ({e!r}); ONE retry in {minutes:g} min "
+                  "(MNEMO_DREAM_RETRY_MINUTES)")
+    (sleep or time.sleep)(minutes * 60)
+    log.info("Dream retry: second and last attempt")
+    return run()
+
+
+def _dream_once(args):
     # Determine time window
     if args.hours > 0:
         since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
