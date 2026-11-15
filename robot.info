@@ -38,7 +38,7 @@
     "Cortex Stick (v4.10.0, encrypted v4.11.0) — USB courier sync between two full Mnemo installations: memories, trajectories, brain git repo, and a project pad travel by sneakernet (no cloud, no VPN). Safe by construction: plan-pass before any mutation, per-file SHA-256 manifest commit point, torn-generation detection + in-tool repair, mass-delete guard, conflict losers preserved. Encrypted at rest: AES-256-SIV file crypto with a passphrase-derived key that lives on the hosts, never on the stick — a lost stick leaks structure at most, never content.",
     "Persistent semantic memory across agent sessions (~sub-100ms local recall on a 4k-record corpus).",
     "Indexed sqlite-vec backend (v2.11.0) — per-agent vec0 virtual table answers k-NN semantic queries in ~3ms on a 1.4k-record corpus, replacing the linear-scan cosine pass.",
-    "v3 provenance tagging — every record carries source (user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, current_state, session_log, unknown).",
+    "v3 provenance tagging — every record carries source (user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, idea, current_state, session_log, unknown).",
     "Category-aware decay — topology warns at 30d / stale at 90d; doctrine, incident, identity, decision are perpetual.",
     "Structured stale_warning field on recall — programmatic enforcement, not advisory prose.",
     "Regex-based category auto-suggester at write time — zero-cost, deterministic, returns matched keywords so the agent learns the conventions.",
@@ -49,7 +49,7 @@
     "The Librarian — local document discovery (librarian.py, stdlib only): one SQLite FTS5 index over filenames, paths and the first chunk of text (PDF/DOCX included), refreshed by cron or on demand, so an agent turns 'the file about X' into a real path. It replaced WikAI, the auto-compiled wiki: existing wiki pages stay readable through wiki_search / wiki_read / wiki_index but are no longer recompiled nightly.",
     "Embedding hosted fallback — embeddings default to local Ollama (nomic-embed-text). With a hosted fallback configured under embedding.fallbacks (agentb.yaml.example recommends Google Gemini; the wizard and robot-install.sh don't add one), recall queries fall back to it when Ollama is unreachable (Matryoshka-truncated to match the 768-dim store width) so reads keep working; saves refuse-and-alert instead of falling back (v4.9.9), because a different model's vectors occupy a different embedding space and storing them would corrupt the index.",
     "Per-agent memory namespaces — shared, isolated, or hybrid deployments.",
-    "OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
+    "Bearer-token auth for non-loopback binds: a master server.auth_token, or scoped tokens pinned to one agent tenant and a subset of endpoints.",
     "Developer Dump — JSONL trace of every MCP tool call through the bridge (tool, params, response, latency, ok/error). Off by default; flip on with MNEMO_DUMP=on. One file per agent per day, greppable with jq. CLI: mnemo-cortex dump list / dump tail <agent>.",
     "Trajectory store (v4.5–4.7) — save/recall procedural how-to recipes separate from episodic memory; the nightly Dreamer distills strategy lessons (successes AND failures) from real session streams, and recall reinforcement tracks which recipes actually get used.",
     "Scoped tokens (v4.9.0) — per-tenant, per-endpoint bearer credentials beside the master key; only pin-enforcing endpoints can be allowlisted, enforced at config load, constant-time compares throughout.",
@@ -89,7 +89,6 @@
         {"path": "/facts/proposals", "method": "GET", "purpose": "v4.23 — writes a locked slot held (pending / accepted / rejected / all)."},
         {"path": "/facts/proposals/{id}/resolve", "method": "POST", "purpose": "v4.23 — accept (Guy's word: proposed value lands verified, tier stays) or reject a proposal."},
         {"path": "/memories/demote", "method": "POST", "purpose": "v4.23 — demote one memory by id: out of recall, JSON + ledger entry kept. Requires a reason."},
-        {"path": "/mcp", "method": "POST", "purpose": "MCP Streamable HTTP facade (OAuth 2.1 Resource Server mode for remote clients)."},
         {"path": "/chat", "method": "POST", "purpose": "Pocket Mnemo: one turn = recall -> reason -> save inside one tenant (message, history, session_id, save, max_memories). Scopable; a scoped token may omit agent_id — the pin is the identity. save_status reports archived / held / paused / skipped / failed."},
         {"path": "/app/", "method": "GET", "purpose": "Pocket Mnemo phone web app (static shell, no auth, no secrets; token entered on the phone). Tailnet / LAN only by design."},
         {"path": "/ledger/verify", "method": "GET", "purpose": "Memory Ledger: walk the tenant's tamper-evident chain and check every sealed record on disk. Reports chain intact/broken/empty and per-record sealed/altered/missing/unsealed (plus disputed on a broken chain: matches an entry past the break the chain cannot vouch for). Read-only. Scopable."},
@@ -105,6 +104,11 @@
       {"name": "mnemo_recall", "purpose": "Recall memories scoped to the calling agent. Supports v3 source/category/exclude_stale filters. Returns inline ⚠️ STALE banner when chunks exceed their decay threshold."},
       {"name": "mnemo_save", "purpose": "Save a memory with optional v3 provenance fields. Bridge auto-suggests category from content if omitted, returning the suggestion + matched keywords so the agent learns."},
       {"name": "mnemo_search", "purpose": "Cross-agent semantic search (gated by share mode). Same filter surface as mnemo_recall."},
+      {"name": "mnemo_save_trajectory", "purpose": "Save a proven task recipe after a task: the ordered steps taken, the outcome and an honest 1-5 rating."},
+      {"name": "mnemo_recall_trajectory", "purpose": "Recall proven task recipes before a task, ranked by similarity, then rating, then recency, each with its full steps."},
+      {"name": "mnemo_transcript_push", "purpose": "Archive this chat's turns to the transcript tier by passing them as text, no file export needed. Later pushes of the same chat pass back its chat_id."},
+      {"name": "mnemo_capture_pause", "purpose": "Pause ambient auto-capture before sensitive work (this agent by default); auto-resumes after `minutes` (default 15, max 240). Activity in the window is discarded."},
+      {"name": "mnemo_capture_resume", "purpose": "Resume auto-capture early after mnemo_capture_pause."},
       {"name": "mnemo_share", "purpose": "Toggle cross-agent sharing for the current session."},
       {"name": "mnemo_fact_get", "purpose": "Look up a single structured fact by (entity, attribute). Sub-millisecond exact lookup with confidence + evidence source."},
       {"name": "mnemo_fact_query", "purpose": "Filtered fact list by entity / attribute / value_contains / confidence."},
@@ -197,13 +201,13 @@
       "ChatGPT (Custom GPT Actions via the tenant-pinned gate in integrations/chatgpt/ — not MCP; see docs/install-chatgpt.md for OpenAI plan requirements)"
     ],
     "models": "Any LLM with tool-use support. Embedding via Ollama (nomic-embed-text) or OpenAI / Google cloud fallback. Reasoning (preflight/compaction) via Ollama or any OpenAI-compatible provider (OpenRouter, Anthropic, Google).",
-    "protocols": ["MCP/2025-03-26", "OAuth 2.1 RS (RFC 9728)", "Streamable HTTP transport"]
+    "protocols": ["MCP over stdio (the Node bridge in integrations/mcp-bridge)", "REST / JSON over HTTP"]
   },
 
   "privacy": {
     "telemetry": "none",
     "data_location": "Local disk: SQLite + JSON memory files in per-agent subdirectories of the data directory. Default ~/.agentb (the init wizard sets it, and a config with no data_dir falls back to it). robot.install sets ~/.mnemo-cortex for a robot install (install.install_paths).",
-    "auth": "Loopback-only by default (127.0.0.1). Optional X-API-Key for non-localhost binds (legacy sk-mnemo-* tokens). OAuth 2.1 Resource Server mode for remote MCP clients (Auth0-compatible).",
+    "auth": "Loopback-only by default (127.0.0.1). Any other bind needs server.auth_token (or scoped tokens), sent as X-API-Key or Authorization: Bearer; the server refuses to start without one unless server.allow_unauthenticated is set. There is no hosted HTTP MCP endpoint: MCP clients connect through the stdio bridge.",
     "outbound_calls": [
       "Reasoning provider (configurable): /preflight checks, save-time classification of uncategorized memories (Smart Ingestion, on by default; classification.enabled: false turns it off), Pocket /chat replies, and the background session-summary and reclassify passes. Default: local Ollama (qwen2.5:32b-instruct) for the init wizard and for a config that names no provider. A robot install defaults to OpenRouter (google/gemini-2.5-flash) and needs OPENROUTER_API_KEY; robot.install shows an all-local block (install.install_paths).",
       "Embedding provider for semantic indexing (default Ollama localhost; a hosted fallback such as Google Gemini, Matryoshka-truncated to the 768-dim store width, is used only if you configure one under embedding.fallbacks, and only when Ollama is unreachable).",
@@ -277,7 +281,7 @@
     },
     {
       "q": "What does the v3 decay system do?",
-      "a": "Every memory record now carries provenance (source: user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, current_state, session_log, unknown). Topology decays fast — warn at 30 days, stale at 90 — because IPs and ports change. Doctrine, incident, identity, and decision are perpetual. Recall returns a structured stale_warning field when a record exceeds its category's threshold, so an agent code-paths around it instead of trusting a 3-month-old fact."
+      "a": "Every memory record now carries provenance (source: user|tool|inferred|brain|migrated) and category (topology, doctrine, incident, identity, relationship, decision, idea, current_state, session_log, unknown). Topology decays fast — warn at 30 days, stale at 90 — because IPs and ports change. Doctrine, incident, identity, and decision are perpetual. Recall returns a structured stale_warning field when a record exceeds its category's threshold, so an agent code-paths around it instead of trusting a 3-month-old fact."
     },
     {
       "q": "What are Structured Facts (the v3.0 / Phase 3 addition)?",
@@ -301,7 +305,7 @@
     },
     {
       "q": "What's the auth model?",
-      "a": "Loopback-only by default — 127.0.0.1, no auth required. For non-localhost binds you can use legacy sk-mnemo-* API keys via X-API-Key header, or OAuth 2.1 Resource Server mode (Auth0-compatible) for remote MCP clients."
+      "a": "Loopback-only by default — 127.0.0.1, no auth required. Any other bind needs server.auth_token (or scoped tokens pinned to one agent and a subset of endpoints), sent as X-API-Key or Authorization: Bearer; the server refuses to start without one unless you set server.allow_unauthenticated."
     },
     {
       "q": "Does it phone home?",
@@ -431,6 +435,6 @@
     "docs": "https://github.com/GuyMannDude/mnemo-cortex#readme"
   },
 
-  "generated_at": "2026-11-14T02:10:00Z",
+  "generated_at": "2026-11-15T06:30:00Z",
   "spec_url": "./ROBOT-INFO-SPEC.md"
 }
