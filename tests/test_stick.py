@@ -1031,8 +1031,15 @@ def test_eject_stick_windows_invokes_shell_eject_on_drive(monkeypatch):
                                       subprocess.CompletedProcess(argv, 0, stdout="", stderr=""))[1])
         m.setattr(cli, "_volume_present_nt", lambda d: False)   # letter gone → verified
         m.setenv("SystemDrive", "C:")
+        # the Win32 route runs first; never against a real volume here.
+        # Failing at the lock is what sends the eject to this Shell verb
+        # (the Win32 route itself: tests/test_stick_eject_win32.py).
+        w32 = []
+        m.setattr(cli, "_eject_volume_win32",
+                  lambda d: (w32.append(d), (False, "FSCTL_LOCK_VOLUME failed", True))[1])
         ok, detail = cli._eject_stick(r"E:\cortex")
         assert ok, detail
+        assert w32 == ["E:"]
         assert calls[0][0] == "powershell"
         ps = calls[0][-1]
         assert "ParseName('E:')" in ps
@@ -1048,6 +1055,7 @@ def test_eject_stick_windows_invokes_shell_eject_on_drive(monkeypatch):
             ok, detail = cli._eject_stick(bad)
             assert ok is False and why in detail, (bad, detail)
         assert len(calls) == 1                     # none of the refusals ran a command
+        assert w32 == ["E:"]                       # ...nor touched the Win32 route
 
 
 @pytest.mark.parametrize("eject_result,expect_title", [

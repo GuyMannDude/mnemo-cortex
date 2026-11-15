@@ -1668,6 +1668,173 @@ def _volume_present_nt(drive: str) -> bool:
     return os.path.exists(drive + "\\")
 
 
+# ── Windows: Win32 volume eject (lock → dismount → allow removal → eject) ──
+# Control codes, from the Windows SDK's um/winioctl.h (10.0.26100.0):
+#   CTL_CODE(DeviceType, Function, Method, Access) =
+#       (DeviceType << 16) | (Access << 14) | (Function << 2) | Method
+#   FILE_DEVICE_FILE_SYSTEM = 0x09; FILE_DEVICE_MASS_STORAGE = 0x2d
+#   (= IOCTL_STORAGE_BASE); METHOD_BUFFERED = 0; FILE_ANY_ACCESS = 0;
+#   FILE_READ_ACCESS = 1.
+#   FSCTL_LOCK_VOLUME           = CTL_CODE(0x09, 6,     0, 0) = 0x00090018
+#   FSCTL_DISMOUNT_VOLUME       = CTL_CODE(0x09, 8,     0, 0) = 0x00090020
+#   IOCTL_STORAGE_MEDIA_REMOVAL = CTL_CODE(0x2d, 0x201, 0, 1) = 0x002D4804
+#   IOCTL_STORAGE_EJECT_MEDIA   = CTL_CODE(0x2d, 0x202, 0, 1) = 0x002D4808
+def _ctl_code(device_type: int, function: int, method: int, access: int) -> int:
+    return (device_type << 16) | (access << 14) | (function << 2) | method
+
+
+FSCTL_LOCK_VOLUME = _ctl_code(0x09, 6, 0, 0)
+FSCTL_DISMOUNT_VOLUME = _ctl_code(0x09, 8, 0, 0)
+IOCTL_STORAGE_MEDIA_REMOVAL = _ctl_code(0x2D, 0x201, 0, 1)
+IOCTL_STORAGE_EJECT_MEDIA = _ctl_code(0x2D, 0x202, 0, 1)
+
+_GENERIC_READ, _GENERIC_WRITE = 0x80000000, 0x40000000
+_FILE_SHARE_READ, _FILE_SHARE_WRITE = 0x1, 0x2
+_OPEN_EXISTING = 3
+# 20 tries x 0.5 s = the 10 s lock window of Microsoft's own eject sample
+# (KB165721): a holder that is mid-write often lets go within it.
+_LOCK_TRIES, _LOCK_WAIT = 20, 0.5
+
+# winerror.h. The names are what a human pastes into a search box; the
+# numbers are what the tests and the docs agree on.
+_WIN32_ERROR_NAMES = {
+    1: "ERROR_INVALID_FUNCTION",
+    2: "ERROR_FILE_NOT_FOUND",
+    3: "ERROR_PATH_NOT_FOUND",
+    5: "ERROR_ACCESS_DENIED",
+    6: "ERROR_INVALID_HANDLE",
+    21: "ERROR_NOT_READY",
+    32: "ERROR_SHARING_VIOLATION",
+    33: "ERROR_LOCK_VIOLATION",
+    50: "ERROR_NOT_SUPPORTED",
+    87: "ERROR_INVALID_PARAMETER",
+    1112: "ERROR_NO_MEDIA_IN_DRIVE",
+    2404: "ERROR_DEVICE_IN_USE",
+}
+
+
+def _win32_format_message(code: int) -> str:
+    """FormatMessage text for a code we have no name for ('' off-Windows)."""
+    import ctypes
+    try:
+        return ctypes.FormatError(code).strip()
+    except Exception:                # noqa: BLE001 — AttributeError off-Windows
+        return ""
+
+
+def _win32_error_text(code: int) -> str:
+    """'ERROR_ACCESS_DENIED (5)', or 'Win32 error 1117 (<FormatMessage>)'."""
+    name = _WIN32_ERROR_NAMES.get(code)
+    if name:
+        return f"{name} ({code})"
+    text = _win32_format_message(code)
+    return f"Win32 error {code}" + (f" ({text})" if text else "")
+
+
+def _win32_step_failure(step: str, code: int, drive: str, tries: int = 1) -> str:
+    """'<STEP> failed: <ERROR_NAME> (<n>), <what that means here>'."""
+    holder = (f"a process still has files open on {drive} (a cloud-sync "
+              "client such as Google Drive, an Explorer window, an antivirus "
+              "scan, or a shell whose current folder is on the stick)")
+    hints = {
+        1: "the device or its driver does not support this request",
+        21: f"{drive} is not ready (no media?)",
+        1112: f"{drive} has no media",
+    }
+    if step.startswith("CreateFileW"):
+        hints.update({
+            2: f"no volume at {drive} (already gone?)",
+            3: f"no volume at {drive} (already gone?)",
+            5: f"this process may not open {drive} for raw access (try an "
+               "elevated shell, or check the removable-storage policy)",
+            32: f"another process has {drive} open exclusively",
+        })
+    elif step == "FSCTL_LOCK_VOLUME":
+        hints.update({5: holder, 32: holder, 33: holder, 2404: holder})
+    hint = hints.get(code)
+    after = f" after {tries} tries" if tries > 1 else ""
+    return (f"{step} failed{after}: {_win32_error_text(code)}"
+            + (f", {hint}" if hint else ""))
+
+
+def _win32_kernel32():
+    """kernel32 with typed signatures, plus its last-error reader. Raises
+    (AttributeError / OSError) where there is no kernel32."""
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)   # own instance: argtypes stay local
+    vp, u32 = ctypes.c_void_p, ctypes.c_uint32
+    k32.CreateFileW.argtypes = [ctypes.c_wchar_p, u32, u32, vp, u32, u32, vp]
+    k32.CreateFileW.restype = vp
+    # pointers as void*: lpBytesReturned takes any byref() without a
+    # DWORD-alias mismatch (c_uint vs c_ulong)
+    k32.DeviceIoControl.argtypes = [vp, u32, vp, u32, vp, u32, vp, vp]
+    k32.DeviceIoControl.restype = ctypes.c_int
+    k32.CloseHandle.argtypes = [vp]
+    k32.CloseHandle.restype = ctypes.c_int
+    return k32, ctypes.get_last_error
+
+
+def _eject_volume_win32(drive: str, api=None) -> tuple[bool, str, bool]:
+    """Eject the volume at `drive` ('E:') through the Win32 storage stack:
+    open \\\\.\\E:, FSCTL_LOCK_VOLUME (retried), FSCTL_DISMOUNT_VOLUME,
+    IOCTL_STORAGE_MEDIA_REMOVAL(PreventMediaRemoval=FALSE),
+    IOCTL_STORAGE_EJECT_MEDIA, CloseHandle.
+
+    Returns (ok, detail, early). `early` is True when the failure came at
+    the open or the lock — nothing about the volume changed yet, so the
+    caller may fall back to the Shell verb. A failure from the dismount on
+    is final. Never raises for a Win32 failure; every detail names the step
+    and the error by name and number (the Shell verb alone returned 0 on
+    IGOR-2 with the volume still mounted and no reason anyone could act on).
+    `api` = (kernel32, get_last_error), injectable for tests."""
+    import ctypes
+    try:
+        k32, last_error = api or _win32_kernel32()
+    except (AttributeError, OSError) as e:
+        return False, f"Win32 API unavailable ({type(e).__name__}: {e})", True
+    path = "\\\\.\\" + drive
+    h = k32.CreateFileW(path, _GENERIC_READ | _GENERIC_WRITE,
+                        _FILE_SHARE_READ | _FILE_SHARE_WRITE, None,
+                        _OPEN_EXISTING, 0, None)
+    if h is None or h in (-1, ctypes.c_void_p(-1).value):   # INVALID_HANDLE_VALUE
+        return False, _win32_step_failure(f"CreateFileW({path})",
+                                          last_error(), drive), True
+    returned = ctypes.c_uint32(0)
+
+    def ioctl(code, inbuf=None, insize=0):
+        if k32.DeviceIoControl(h, code, inbuf, insize, None, 0,
+                               ctypes.byref(returned), None):
+            return 0
+        return last_error() or -1
+
+    try:
+        for attempt in range(_LOCK_TRIES):
+            err = ioctl(FSCTL_LOCK_VOLUME)
+            if not err:
+                break
+            if attempt + 1 < _LOCK_TRIES:
+                time.sleep(_LOCK_WAIT)
+        else:
+            return False, _win32_step_failure("FSCTL_LOCK_VOLUME", err, drive,
+                                              tries=_LOCK_TRIES), True
+        err = ioctl(FSCTL_DISMOUNT_VOLUME)
+        if err:
+            return False, _win32_step_failure("FSCTL_DISMOUNT_VOLUME", err, drive), False
+        # PREVENT_MEDIA_REMOVAL is one BOOLEAN (an unsigned byte); FALSE = allow
+        allow = ctypes.c_ubyte(0)
+        err = ioctl(IOCTL_STORAGE_MEDIA_REMOVAL, ctypes.byref(allow), ctypes.sizeof(allow))
+        if err:
+            return False, (_win32_step_failure("IOCTL_STORAGE_MEDIA_REMOVAL", err, drive)
+                           + " (the volume was dismounted cleanly, not ejected)"), False
+        err = ioctl(IOCTL_STORAGE_EJECT_MEDIA)
+        if err:
+            return False, (_win32_step_failure("IOCTL_STORAGE_EJECT_MEDIA", err, drive)
+                           + " (the volume was dismounted cleanly, not ejected)"), False
+        return True, "ejected (Win32)", False
+    finally:
+        k32.CloseHandle(h)
+
+
 def _eject_stick(stick_dir, extra_roots=None) -> tuple[bool, str]:
     """Unmount/eject the volume that holds the stick, so "safe to remove" is
     literal. Returns (ok, detail); never raises. Refuses anything that is
@@ -1679,14 +1846,17 @@ def _eject_stick(stick_dir, extra_roots=None) -> tuple[bool, str]:
     Windows desk nags "scan and fix" (S303: kernel logged "not properly
     unmounted" twice in one carry). Linux: `udisksctl unmount -b <dev>`
     (device via findmnt; plain `umount` if udisks is absent); macOS:
-    `diskutil unmount <mount>`; Windows: Shell.Application InvokeVerb
-    ("Eject") on the drive letter. Success is verified by the volume being
+    `diskutil unmount <mount>`; Windows: lock, dismount and eject through
+    Win32 (`_eject_volume_win32`), falling back to Shell.Application's Eject
+    verb on the drive letter when the open or the lock fails; when both fail
+    the detail says why each did. Success is verified by the volume being
     gone, not by the command's exit code — Windows' eject is asynchronous.
     """
     import re
     import shutil
     from pathlib import PureWindowsPath
     from agentb.stick import candidate_mount_roots
+    w32_fail = None                  # Windows: why the Win32 route fell back
     try:
         if os.name == "nt":
             # PureWindowsPath only: a concrete Path() here would pick
@@ -1698,19 +1868,27 @@ def _eject_stick(stick_dir, extra_roots=None) -> tuple[bool, str]:
             system = os.environ.get("SystemDrive", "C:")
             if drive.upper() == system.upper():
                 return False, f"{drive} is the system drive — refusing to eject"
-            # The verb is offered as "E&ject" (accelerator ampersand) and
-            # InvokeVerb('Eject') matched nothing while returning 0 — proven
-            # on the first Windows eject (S304). Enumerate, strip '&', DoIt.
-            ps = ("$it = (New-Object -ComObject Shell.Application).Namespace(17)"
-                  f".ParseName('{drive}'); "
-                  "if (-not $it) { Write-Error 'drive not found in shell'; exit 2 }; "
-                  "$v = @($it.Verbs() | Where-Object { ($_.Name -replace '&','') "
-                  "-ieq 'Eject' }); "
-                  "if ($v.Count -eq 0) { Write-Error 'no Eject verb offered'; exit 3 }; "
-                  "$v[0].DoIt()")
-            argv = ["powershell", "-NoProfile", "-NonInteractive",
-                    "-Command", ps]
             still_present = lambda: _volume_present_nt(drive)  # noqa: E731
+            # Win32 first: lock/dismount/eject on \\.\E: says WHY it failed.
+            w32_ok, w32_detail, w32_early = _eject_volume_win32(drive)
+            if w32_ok:
+                argv = None                  # already ejected; only verify below
+            elif not w32_early:
+                return False, f"Win32 eject: {w32_detail}"
+            else:
+                w32_fail = w32_detail        # open/lock failed: try the Shell verb
+                # The verb is offered as "E&ject" (accelerator ampersand) and
+                # InvokeVerb('Eject') matched nothing while returning 0 — proven
+                # on the first Windows eject (S304). Enumerate, strip '&', DoIt.
+                ps = ("$it = (New-Object -ComObject Shell.Application).Namespace(17)"
+                      f".ParseName('{drive}'); "
+                      "if (-not $it) { Write-Error 'drive not found in shell'; exit 2 }; "
+                      "$v = @($it.Verbs() | Where-Object { ($_.Name -replace '&','') "
+                      "-ieq 'Eject' }); "
+                      "if ($v.Count -eq 0) { Write-Error 'no Eject verb offered'; exit 3 }; "
+                      "$v[0].DoIt()")
+                argv = ["powershell", "-NoProfile", "-NonInteractive",
+                        "-Command", ps]
         else:
             mount = Path(stick_dir).resolve()
             while not os.path.ismount(mount) and mount.parent != mount:
@@ -1735,15 +1913,27 @@ def _eject_stick(stick_dir, extra_roots=None) -> tuple[bool, str]:
             else:
                 argv = ["umount", str(mount)]
             still_present = lambda: os.path.ismount(mount)  # noqa: E731
-        r = subprocess.run(argv, timeout=60, check=False,
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            msg = (r.stderr or r.stdout or "").strip()
-            return False, (msg[:200] or f"exit {r.returncode}")
+        if argv is not None:
+            r = subprocess.run(argv, timeout=60, check=False,
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                msg = (r.stderr or r.stdout or "").strip()
+                msg = msg[:200] or f"exit {r.returncode}"
+                if w32_fail:
+                    return False, (f"both eject routes failed — Win32: {w32_fail}; "
+                                   f"Shell verb: {msg}")
+                return False, msg
         for _ in range(60):          # 30 s: Windows' Eject returns before the letter drops
             if not still_present():
                 return True, "ejected"
             time.sleep(0.5)
+        held = ("the volume is still mounted after 30 s "
+                "— something holds it open (a cloud-sync client?)")
+        if w32_fail:
+            return False, (f"both eject routes failed — Win32: {w32_fail}; "
+                           f"Shell verb: returned 0 but {held}")
+        if argv is None:
+            return False, f"Win32 eject reported success but {held}"
         return False, ("eject command returned 0 but the volume is still mounted "
                        "— something holds it open (a cloud-sync client?)")
     except Exception as e:           # noqa: BLE001 — a sync already landed; never raise past it

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — Cortex Stick: the Windows eject says why it failed (2026-11-14)
+
+**Problem.** On IGOR-2 the Shell.Application Eject verb returned 0 while
+the volume stayed mounted: something held a handle (GoogleDriveFS is the
+suspect). All anyone got was "still mounted, a cloud-sync client?" — no
+step, no error, nothing to act on.
+
+**Fix.** Windows now ejects through Win32 first: open `\\.\E:`, then
+`FSCTL_LOCK_VOLUME` (20 tries over 10 s, the window of Microsoft's own
+eject sample, since a holder may let go), `FSCTL_DISMOUNT_VOLUME`,
+`IOCTL_STORAGE_MEDIA_REMOVAL` (allow removal) and
+`IOCTL_STORAGE_EJECT_MEDIA`, via ctypes (no new dependency; the control
+codes are derived with `CTL_CODE` from the SDK's `winioctl.h`, derivation
+in the code). Every failure names the step and the Win32 error by name and
+number, e.g. `FSCTL_LOCK_VOLUME failed after 20 tries: ERROR_ACCESS_DENIED
+(5), a process still has files open on H: …`; codes without a name fall
+back to the FormatMessage text. When the open or the lock fails, the Shell
+verb still runs as the fallback, and if that fails too the message says
+both routes failed and why each did. A failure from the dismount on is
+final (the volume's state already changed) and says so. Success is still
+the volume being gone after 30 s, never an exit code, and the EJECT FAILED
+line and toast carry the named reason. Linux and macOS are unchanged. New
+`tests/test_stick_eject_win32.py` (kernel32 is always faked; no test
+touches a real volume).
+
 ## Unreleased — the nightly dream tries once more when a run fails (2026-11-14)
 
 **Problem.** The dream gets one attempt a night. On 2026-11-13 the run started
