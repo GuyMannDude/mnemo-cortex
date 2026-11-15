@@ -1687,11 +1687,11 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
 
 // ── Tool: agent_startup ────────────────────────────────────────
 // Neutral session-boot tool. Loads the lane file matching
-// MNEMO_AGENT_ID (or its `-session.md` variant), cross-agent docs,
-// recent Mnemo memories, and the latest dream brief. Returns an
+// MNEMO_AGENT_ID (or its `-session.md` variant), the shared docs
+// the brain has, and the latest dream brief. Returns an
 // agent-neutral header + content. Identity stays in the agent's
 // system prompt (SOUL.md / instruction); this tool just provides
-// continuity. Use this for any agent — Rocky, CC, BW, you, them.
+// continuity. Works for any agent.
 
 server.registerTool(
   "agent_startup",
@@ -1760,7 +1760,7 @@ Call \`session_end\` before wrapping — flushes auto-capture, persists the summ
 
 # LANE PROTOCOL
 
-The brain follows the **Lane Protocol** — a six-step session ritual. ${hasClaudeMd ? "See CLAUDE.md (loaded above) for the full convention." : "This brain has no CLAUDE.md; the steps below are the default."} Brain pull above: ${pullStatus}.
+The brain follows the **Lane Protocol** — a six-step session ritual. ${hasClaudeMd ? "See CLAUDE.md (loaded below) for the full convention." : "This brain has no CLAUDE.md; the steps below are the default."} Brain pull above: ${pullStatus}.
 
 This call handled steps 1–2 (pull + load your lane + shared docs). Continue:
 
