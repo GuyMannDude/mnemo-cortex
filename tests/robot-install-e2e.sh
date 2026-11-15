@@ -14,6 +14,8 @@
 #
 # Env: OLLAMA_URL (default http://localhost:11434)
 #      ROBOT_E2E_VENV=<dir> reuses a venv between runs (else one per run)
+#      ROBOT_E2E_REQUIRE_OLLAMA=1 makes a missing Ollama a failure, not a
+#        skip (CI sets it: a run that skipped the saving cases proves little)
 # Exit: 0 = every case that ran passed; 1 = a failure.
 
 set -uo pipefail
@@ -240,6 +242,10 @@ echo "scratch: $WORK"
 HAVE_OLLAMA=0
 curl -s -m 3 "$OLLAMA/api/tags" | grep -q '"nomic-embed-text' && HAVE_OLLAMA=1
 [ "$HAVE_OLLAMA" = 1 ] || echo "(no Ollama with nomic-embed-text at $OLLAMA: cases that save memories are skipped)"
+if [ "$HAVE_OLLAMA" != 1 ] && [ -n "${ROBOT_E2E_REQUIRE_OLLAMA:-}" ]; then
+  echo "FAIL ROBOT_E2E_REQUIRE_OLLAMA is set and there is no Ollama with nomic-embed-text at $OLLAMA"
+  exit 1
+fi
 
 # The venv is built by the first install that needs it; g never gets there.
 if [ ! -x "$VENV/bin/python" ]; then

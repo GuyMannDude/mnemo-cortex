@@ -84,6 +84,35 @@ jobs:
       - name: Build bundle + handshake
         run: bash scripts/build-mcpb.sh "$RUNNER_TEMP/mnemo-cortex.mcpb"
 
+  # robot-install.sh end to end: the real installer in a scratch HOME, the
+  # real server started from the unit file it writes, embeddings from a real
+  # Ollama. An installer that cannot start its own server fails here, not on
+  # a user's machine. The script's mutant case (installer without
+  # AGENTB_CONFIG) proves this job can go red.
+  robot-install-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      ollama:
+        image: ollama/ollama:0.12.1
+        ports:
+          - 11434:11434
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Pull nomic-embed-text into the Ollama service
+        run: |
+          for i in $(seq 30); do curl -sf http://localhost:11434/api/tags >/dev/null && break; sleep 2; done
+          curl -sf http://localhost:11434/api/pull -d '{"model": "nomic-embed-text", "stream": false}'
+      - name: Run robot-install e2e
+        env:
+          ROBOT_E2E_REQUIRE_OLLAMA: "1"
+        run: bash tests/robot-install-e2e.sh
+
   wheel-smoke:
     runs-on: ubuntu-latest
     steps:
