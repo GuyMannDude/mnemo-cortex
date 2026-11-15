@@ -12,6 +12,17 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.40.2 — 2026-11-14 — startup line no longer says "undefined memories" (#26)
+
+**Why.** `GET /health` stopped sending a top-level `memory_entries` when the
+health reply was reshaped, so the bridge's first log line read
+`Connected to Mnemo Cortex (undefined memories, ...)`. It made a working
+connection look broken.
+
+**Fix.** The connect and reconnect lines print the server version instead
+(`server 4.28.4`), or `version unknown` when the server does not send one.
+Claude Desktop bundle rebuilt on 2.40.2.
+
 ## 2.40.1 — 2026-10-30 — SECURITY: wiki_search no longer runs a shell (GHSA-h2jf-xmmf-2w8p)
 
 **Why.** Reported by Artur Chlebicki (@Artur12555). `wiki_search` passed the
