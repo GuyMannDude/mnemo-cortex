@@ -208,6 +208,9 @@ agents:
 #   MNEMO_DREAM_AGENTS    — comma-separated agent allowlist; omit to
 #                           auto-discover from ~/.agentb/agents/*/memory/
 #   DREAM_SKIP_FACTS      — set to 1 to disable Stage 0.5 fact extraction
+#   MNEMO_DREAM_RETRY_MINUTES — a run that fails before writing its brief
+#                           waits this long and tries ONCE more in the same
+#                           process (default 120; 0 turns the retry off)
 #
 # Contradiction notification (opt-in, all three needed together):
 #   MNEMO_DREAM_BUS_URL       — base URL of your bus/dispatcher
