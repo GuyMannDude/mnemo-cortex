@@ -130,7 +130,7 @@ export function createTranscriptWatch({
     scan(callsSinceLanded >= threshold);
     if (callsSinceLanded < threshold) return null;
     if (denied) {
-      return `\n\n---\n📤 **Checkpoint nudge:** ${callsSinceLanded} tool calls since your last checkpoint, and the transcript export is denied from this seat. Call \`mnemo_transcript_push\` now with the turns since your last push (the text goes over the network, no file copy), or \`session_checkpoint\` with the chat's substance (decisions, Guy's words, what changed) — that is this session's only record.`;
+      return `\n\n---\n📤 **Checkpoint nudge:** ${callsSinceLanded} tool calls since your last checkpoint, and the transcript export is denied from this seat. Call \`mnemo_transcript_push\` now with the turns since your last push (the text goes over the network, no file copy), or \`session_checkpoint\` with the chat's substance (decisions, the user's words, what changed) — that is this session's only record.`;
     }
     const since = landed ? `since the last transcript landed (${landed.file})` : "and NO transcript has landed this session";
     return `\n\n---\n📤 **Transcript nudge:** ${callsSinceLanded} tool calls ${since}. Ship it now${shipInstructions ? `: ${shipInstructions}` : "."} The bridge resets this nudge when the file lands in ${dirs.join(" or ")}.`;

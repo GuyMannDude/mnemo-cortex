@@ -12,6 +12,35 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.41.0 — 2026-11-14 — product text says what the bridge does, without our team's names
+
+**Why.** A cold test with only the public guides found bridge text that was
+wrong for a new user or named the maintainers' own agents.
+
+**Fixes.**
+- `agent_startup`'s description said it loads "recent Mnemo memories". It
+  does not (the boot carries the lane, the shared docs the brain has, and the
+  dream brief); it now says so and points to `mnemo_recall` / `mnemo_search`.
+  The Claude Desktop manifest line says the same.
+- `session_end` said a lane "was NOT updated this session" when the lane WAS
+  written but its commit did not land. It now checks the file against git
+  (`git status`, content, not dates) and says "has changes that are NOT
+  committed" (new `fileUncommitted()` in brain-git.js, tested).
+- The boot pointed at "CLAUDE.md below/above" in brains that have none. It
+  now says the brain has no CLAUDE.md.
+- A blocked session-end commit paged a bus agent hard-coded as `CC` and told
+  the user to "tell CC yourself". The recipient is now `DISCOBUS_STEWARD`
+  (default `CC`, so existing setups are unchanged), and with no bus the line
+  says nobody was paged.
+- Tool descriptions and replies no longer name a maintainer: "Guy" became
+  "the user" or "the owner"; the examples `rocky.md` / `opie.md` /
+  `peter-widget.md` became generic. The fact-authority evidence prefix
+  `statement:guy` is the server's fixed contract and is unchanged; the
+  descriptions now say so.
+
+Not changed: the deprecated `opie_startup` alias (removing a tool would break
+old installs) and `lane-guard.js`'s protected `cc-session.md`.
+
 ## 2.40.2 — 2026-11-14 — startup line no longer says "undefined memories" (#26)
 
 **Why.** `GET /health` stopped sending a top-level `memory_entries` when the

@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, gateVerdict, gateRefused, COMMIT_BLOCKED, brainStamp } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, gateVerdict, gateRefused, COMMIT_BLOCKED, brainStamp, fileUncommitted } from "./brain-git.js";
 
 let passed = 0;
 let failed = 0;
@@ -324,6 +324,18 @@ async function asyncTest(name, fn) {
   }
 }
 
+test("fileUncommitted: written-but-uncommitted lane is seen; committed is not; no repo is false", () => {
+  writeFileSync(join(clone, "lane-dirty.md"), "v1\n");
+  assert(fileUncommitted(clone, "lane-dirty.md") === true, "untracked file must read as uncommitted");
+  git(["add", "lane-dirty.md"], clone);
+  git(["commit", "-m", "lane v1"], clone);
+  assert(fileUncommitted(clone, "lane-dirty.md") === false, "committed file must read clean");
+  writeFileSync(join(clone, "lane-dirty.md"), "v2\n");
+  assert(fileUncommitted(clone, "lane-dirty.md") === true, "edited file must read as uncommitted");
+  git(["checkout", "--", "lane-dirty.md"], clone);
+  assert(fileUncommitted(join(root, "nope"), "x.md") === false, "missing dir must be false, never throw");
+});
+
 await asyncTest("pageCommitBlocked: posts the blocked line to CC on the bus and returns the ping id", async () => {
   let seen = null;
   const fetchImpl = async (url, init) => {
@@ -344,9 +356,18 @@ await asyncTest("pageCommitBlocked: nothing blocked → null (no ping)", async (
   assert(line === null && !called, `line=${line} called=${called}`);
 });
 
-await asyncTest("pageCommitBlocked: no dispatcher → says CC was NOT paged (never silent)", async () => {
+await asyncTest("pageCommitBlocked: no dispatcher → says nobody was paged (never silent)", async () => {
   const line = await pageCommitBlocked({ dispatcher: "", agent: "Rocky", lines: blockedLines });
-  assert(line && line.includes("NOT paged"), line);
+  assert(line && line.includes("Nobody was paged") && line.includes("DISCOBUS_DISPATCHER"), line);
+  assert(!/\bCC\b/.test(line), `fleet name in product text: ${line}`);
+});
+
+await asyncTest("pageCommitBlocked: steward is configurable (DISCOBUS_STEWARD)", async () => {
+  let seen = null;
+  const fetchImpl = async (url, init) => { seen = JSON.parse(init.body); return { ok: false, status: 503 }; };
+  const line = await pageCommitBlocked({ dispatcher: "http://bus.test", agent: "Rocky", steward: "keeper", lines: blockedLines, fetchImpl });
+  assert(seen.to === "keeper", JSON.stringify(seen));
+  assert(line.includes("keeper") && line.includes("FAILED") && !/\bCC\b/.test(line), line);
 });
 
 await asyncTest("pageCommitBlocked: bus down → loud FAILED, never throws", async () => {

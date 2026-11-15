@@ -18,7 +18,7 @@ import {
   getBootCuts,
   formatCutManifest,
 } from "./boot-budget.js";
-import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, fastForwardBrain, lastCommitLine, brainStamp } from "./brain-git.js";
+import { autoCommitBrainFile, sessionEndCommit, pageCommitBlocked, fastForwardBrain, lastCommitLine, brainStamp, fileUncommitted } from "./brain-git.js";
 import { recordSeen, isCurrent, staleWriteRefusal } from "./write-guard.js";
 import { refusesBrainWrite } from "./lane-guard.js";
 import { laneCandidates, sessionPrefix, laneOwner } from "./lane-candidates.js";
@@ -89,6 +89,8 @@ const DREAM_DIR =
   process.env.DREAM_DIR || join(process.env.HOME || ".", ".agentb/dreams");
 const DISCOBUS_DISPATCHER = process.env.DISCOBUS_DISPATCHER || "";
 const DISCOBUS_AGENT = process.env.DISCOBUS_AGENT || AGENT_ID;
+// Bus name that keeps the brain: a blocked session-end commit is paged to it.
+const DISCOBUS_STEWARD = process.env.DISCOBUS_STEWARD || "CC";
 
 // Lane freshness is reported on EVERY boot (Guy, 2026-07-05: "every agent
 // every time — I notice when the last session is missing"). Older than this
@@ -934,7 +936,7 @@ server.registerTool(
       .enum(["user", "tool", "inferred", "brain", "migrated"])
       .optional()
       .describe(
-        "Where this fact came from. Defaults to 'inferred'. Use 'user' when Guy stated it directly, 'tool' for deterministic outputs, 'brain' when pulled from a brain file."
+        "Where this fact came from. Defaults to 'inferred'. Use 'user' when the user stated it directly, 'tool' for deterministic outputs, 'brain' when pulled from a brain file."
       ),
     category: z
       .enum([
@@ -1637,7 +1639,8 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
       // session-start marker is best-effort
     }
 
-    const header = identityHeader({ pullStatus, laneLoaded, sessionId });
+    const hasClaudeMd = existsSync(join(BRAIN_DIR, "CLAUDE.md"));
+    const header = identityHeader({ pullStatus, laneLoaded, sessionId, hasClaudeMd });
 
     // Guy's rule (2026-07-30): nothing gets cut silently — he is notified
     // BEFORE any more is. The manifest leads the block so it cannot itself
@@ -1693,17 +1696,17 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
 server.registerTool(
   "agent_startup",
   {
-    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (named after your MNEMO_AGENT_ID env, e.g. rocky.md / cc-session.md / opie.md, or the file MNEMO_LANE names), the cross-agent operating docs (CLAUDE.md, active.md, people.md, doctrines.md), recent Mnemo memories tagged to your agent_id, and the latest dream brief. Returns an agent-neutral session-boot block — your identity comes from your system prompt, this gives you continuity.",
+    description: "CALL THIS FIRST in every new conversation. Loads your brain lane (named after your MNEMO_AGENT_ID env, e.g. <agent>.md or <agent>-session.md, or the file MNEMO_LANE names), the shared docs the brain has (CLAUDE.md, active.md, people.md, doctrines.md), and the latest dream brief. It does not search your memories: use mnemo_recall or mnemo_search for that. Returns an agent-neutral session-boot block — your identity comes from your system prompt, this gives you continuity.",
     annotations: { "title": 'Agent session boot', "readOnlyHint": false, "idempotentHint": false, "openWorldHint": true },
   },
   () => _runStartup({
     effectiveAgentId: AGENT_ID,
     sessionPrefix: SESSION_PREFIX,
     laneCandidates: LANE_CANDIDATES,
-    identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
+    identityHeader: ({ pullStatus, laneLoaded, sessionId, hasClaudeMd }) =>
       `# AGENT BOOT — ${AGENT_ID}
 
-This is your session boot from the Mnemo MCP bridge. Your **lane file** below is your continuity; your **system prompt** establishes who you are and how you work. Lane Protocol applies if your brain follows it (read CLAUDE.md below for the six-step session ritual).
+This is your session boot from the Mnemo MCP bridge. Your **lane file** below is your continuity; your **system prompt** establishes who you are and how you work. ${hasClaudeMd ? "Lane Protocol applies if your brain follows it (read CLAUDE.md below for the six-step session ritual)." : "This brain has no CLAUDE.md, so there is no shared session ritual to read."}
 
 - **Brain pull:** ${pullStatus}
 - **Lane file loaded:** ${laneLoaded || "(none — see warning below)"}
@@ -1734,7 +1737,7 @@ server.registerTool(
     effectiveAgentId: "opie",
     sessionPrefix: "opie",
     laneCandidates: ["opie.md"],
-    identityHeader: ({ pullStatus, laneLoaded, sessionId }) =>
+    identityHeader: ({ pullStatus, laneLoaded, sessionId, hasClaudeMd }) =>
       `# OPIE STARTUP (deprecated alias — call \`agent_startup\` instead going forward)
 
 This call loaded the **opie.md** lane and forced agent_id="opie" for back-compat.
@@ -1757,8 +1760,7 @@ Call \`session_end\` before wrapping — flushes auto-capture, persists the summ
 
 # LANE PROTOCOL
 
-The brain follows the **Lane Protocol** — a six-step session ritual. See CLAUDE.md (loaded above
-if present in the brain) for the full convention. Brain pull above: ${pullStatus}.
+The brain follows the **Lane Protocol** — a six-step session ritual. ${hasClaudeMd ? "See CLAUDE.md (loaded above) for the full convention." : "This brain has no CLAUDE.md; the steps below are the default."} Brain pull above: ${pullStatus}.
 
 This call handled steps 1–2 (pull + load your lane + shared docs). Continue:
 
@@ -1791,7 +1793,7 @@ server.registerTool(
     inputSchema: {
     filename: z
       .string()
-      .describe("Filename to read, e.g. 'opie.md', 'active.md', 'stack.md'"),
+      .describe("Filename to read, e.g. 'my-agent.md', 'active.md'"),
     pull: z
       .boolean()
       .optional()
@@ -1861,7 +1863,7 @@ server.registerTool(
     inputSchema: {
     filename: z
       .string()
-      .describe("Filename to write, e.g. 'opie.md', 'active.md'"),
+      .describe("Filename to write, e.g. 'my-agent.md', 'active.md'"),
     content: z.string().describe("Full file content to write"),
   },
     annotations: { "title": 'Write Brain File', "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true },
@@ -2185,10 +2187,11 @@ server.registerTool(
     // v2.35.0: a red pre-commit gate used to be reported ONLY here, to the
     // agent that is ending — and die with it, lane staged, every other
     // agent's pull --rebase blocked (snag-rocky-session-end-swallowed-red-gate).
-    // Page CC on the bus so the verdict has an audience outside this session.
+    // Page the steward on the bus so the verdict has an audience outside this session.
     const page = await pageCommitBlocked({
       dispatcher: DISCOBUS_DISPATCHER,
       agent: DISCOBUS_AGENT,
+      steward: DISCOBUS_STEWARD,
       lines: commitLines,
     });
     if (page) results.push(page);
@@ -2226,8 +2229,16 @@ server.registerTool(
             stdio: ["ignore", "pipe", "ignore"],
           }).trim();
           const checkpointOnly = Boolean(ctAny) && Number(ctAny) >= startEpoch;
+          // The commit dates above cannot see a lane that was WRITTEN this
+          // session but never committed (commit blocked, or written with a
+          // plain file tool): "NOT updated" was a false reason there.
+          const uncommitted = fileUncommitted(BRAIN_DIR, lane);
           results.push(
-            checkpointOnly
+            uncommitted
+              ? `⚠️ ${lane} has changes that are NOT committed (last commit ${ageDays} days ago). ` +
+                `The file was written but the commit did not land it; see the commit line above. ` +
+                `Fix what blocked it, then call session_end again.`
+              : checkpointOnly
               ? `⚠️ ${lane}: only a CHECKPOINT landed this session (last KICKSTART rewrite ${ageDays} days ago). ` +
                 `A checkpoint is a dated record appended at the end; the Lane Protocol asks for the KICKSTART rewrite, so checkpoints don't count by design. ` +
                 `write_brain_file("${lane}", ...) with a date bump + what changed, then call session_end again.`
@@ -2354,12 +2365,12 @@ server.registerTool(
 server.registerTool(
   "wiki_read",
   {
-    description: "Read a specific static wiki page by path (relative to ~/wiki/). Example: 'projects/peter-widget.md', 'entities/rocky.md'. Use wiki_search first to find the right page, then wiki_read to get the full content. Pages are a legacy WikAI snapshot — no longer recompiled nightly.",
+    description: "Read a specific static wiki page by path (relative to ~/wiki/). Example: 'projects/my-project.md', 'entities/some-person.md'. Use wiki_search first to find the right page, then wiki_read to get the full content. Pages are a legacy WikAI snapshot — no longer recompiled nightly.",
     inputSchema: {
     path: z
       .string()
       .describe(
-        "Relative path within ~/wiki/, e.g. 'projects/peter-widget.md' or 'entities/guy.md'"
+        "Relative path within ~/wiki/, e.g. 'projects/my-project.md' or 'entities/some-person.md'"
       ),
   },
     annotations: { "title": 'Read Wiki Page', "readOnlyHint": true, "idempotentHint": true },
@@ -2782,7 +2793,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_get",
   {
-    description: "Look up a single fact by (entity, attribute). Instant key-value retrieval, NOT semantic search. Use for queries like 'what's Guy's location' where you want one definitive answer. Returns {found: false} if missing. By default excludes facts with confidence='false' (use include_false=true to see them for audit).",
+    description: "Look up a single fact by (entity, attribute). Instant key-value retrieval, NOT semantic search. Use for queries like 'where does the user live' where you want one definitive answer. Returns {found: false} if missing. By default excludes facts with confidence='false' (use include_false=true to see them for audit).",
     inputSchema: {
       entity: z.string().describe("Thing the fact is about (person, machine, product, store, project). Case + spacing normalized."),
       attribute: z.string().describe("Property of the entity (location, owner, port, url, version). Snake_case normalized."),
@@ -2813,7 +2824,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_query",
   {
-    description: "List facts matching filters. All filters optional; AND-joined. Use for queries like 'all facts about Guy' or 'all unverified facts'. Default limit 20, max 100.",
+    description: "List facts matching filters. All filters optional; AND-joined. Use for queries like 'all facts about the user' or 'all unverified facts'. Default limit 20, max 100.",
     inputSchema: {
       entity: z.string().optional().describe("Filter to facts about this entity."),
       attribute: z.string().optional().describe("Filter to this attribute name."),
@@ -2849,7 +2860,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_save",
   {
-    description: "Assert a structured fact. UPSERT semantics — same (entity, attribute) updates in place. Different value triggers contradiction handling: higher-or-equal confidence overwrites with audit log; lower confidence is REJECTED if existing is higher. Use confidence='verified' only when confirmed (source code, direct Guy statement, tool output). Use 'high_probability' for strong inference. evidence_source uses prefix convention: memory:<id>, commit:<sha>, file:<path>:<line>, statement:<who>, bus:#<id>, dream:<date>.",
+    description: "Assert a structured fact. UPSERT semantics — same (entity, attribute) updates in place. Different value triggers contradiction handling: higher-or-equal confidence overwrites with audit log; lower confidence is REJECTED if existing is higher. Use confidence='verified' only when confirmed (source code, a direct statement by the user, tool output). Use 'high_probability' for strong inference. evidence_source uses prefix convention: memory:<id>, commit:<sha>, file:<path>:<line>, statement:<who>, bus:#<id>, dream:<date>.",
     inputSchema: {
       entity: z.string().describe("Thing the fact is about. Normalized lowercase."),
       attribute: z.string().describe("Property of the entity. Normalized snake_case."),
@@ -2878,7 +2889,7 @@ server.registerTool(
         lines.push(`  contradiction with previous: ${data.previous_value} [${data.previous_confidence}]`);
       }
       if (data.proposal_id) {
-        lines.push(`  recorded as proposal #${data.proposal_id} — this slot is ${data.authority}; only its own kind of evidence writes it. Guy's word resolves it (mnemo_fact_proposals).`);
+        lines.push(`  recorded as proposal #${data.proposal_id} — this slot is ${data.authority}; only its own kind of evidence writes it. The owner's word resolves it (mnemo_fact_proposals).`);
       }
       // A held write is the tier working, not an error.
       return { content: [{ type: "text", text: lines.join("\n") }], isError: !data.written && !locked };
@@ -2907,7 +2918,7 @@ server.registerTool(
         entity, attribute, reason, changed_by: AGENT_ID, evidence_source: evidence_source || null,
       });
       if (data.proposal_id) {
-        return { content: [{ type: "text", text: `Demote HELD — ${entity}.${attribute} is ${data.authority}; recorded as proposal #${data.proposal_id}. Guy's word resolves it (mnemo_fact_proposals).` }] };
+        return { content: [{ type: "text", text: `Demote HELD — ${entity}.${attribute} is ${data.authority}; recorded as proposal #${data.proposal_id}. The owner's word resolves it (mnemo_fact_proposals).` }] };
       }
       if (!data.written) return { content: [{ type: "text", text: `Demote: ${data.reason}` }] };
       return {
@@ -2926,11 +2937,11 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_authority",
   {
-    description: "Set a fact slot's authority tier: 'open' (anyone, default), 'probe' (only a machine may change it — evidence must start with probe: or tool:; needs probe_cmd, the command that re-asks it), or 'declared' (only Guy's word — evidence statement:guy…). Locking or unlocking is itself Guy's act: evidence_source must start with statement:guy, and you must be relaying his actual ruling (cite the turn or ping). Writes that do not match a locked slot's tier land as proposals, never as the value.",
+    description: "Set a fact slot's authority tier: 'open' (anyone, default), 'probe' (only a machine may change it — evidence must start with probe: or tool:; needs probe_cmd, the command that re-asks it), or 'declared' (only the owner's word — evidence statement:guy…, the server's fixed prefix for the owner). Locking or unlocking is itself the owner's act: evidence_source must start with statement:guy, and you must be relaying their actual ruling (cite the turn or message). Writes that do not match a locked slot's tier land as proposals, never as the value.",
     inputSchema: {
       entity: z.string().describe("Thing the fact is about."),
       attribute: z.string().describe("Property to lock or unlock."),
-      authority: z.enum(["open", "probe", "declared"]).describe("open = confidence ladder only. probe = machine-owned. declared = Guy-owned."),
+      authority: z.enum(["open", "probe", "declared"]).describe("open = confidence ladder only. probe = machine-owned. declared = owner-only."),
       evidence_source: z.string().describe("Must start with statement:guy — name the ruling (e.g. 'statement:guy S337 chat')."),
       probe_cmd: z.string().optional().describe("probe tier only, required: the command that re-verifies the value (dmidecode -t 2, nc -z host 22, curl /health)."),
       probe_host: z.string().optional().describe("probe tier: which machine can run probe_cmd."),
@@ -2957,14 +2968,14 @@ server.registerTool(
 server.registerTool(
   "mnemo_fact_proposals",
   {
-    description: "List proposals, or resolve one. A proposal is a machine write that waits on Guy. kind 'fact' (the default): a write a lock held — the value some agent, the dreamer, or a seed script tried to put on a probe/declared slot. kind 'memory_category': a classifier (Jev shadow) disagrees with a memory's stored category; the memory is unchanged until accepted. kind 'memory_note': listed only, not yet acceptable. Listing is safe. Resolving is Guy's word relayed by you: 'accept' writes the proposed value (a fact lands verified past its lock; a category is amended, the first value kept as category_original), 'reject' closes it and leaves the target alone. Only resolve with an actual ruling from Guy — cite it in reason.",
+    description: "List proposals, or resolve one. A proposal is a machine write that waits on the owner. kind 'fact' (the default): a write a lock held — the value some agent, the dreamer, or a seed script tried to put on a probe/declared slot. kind 'memory_category': a classifier (Jev shadow) disagrees with a memory's stored category; the memory is unchanged until accepted. kind 'memory_note': listed only, not yet acceptable. Listing is safe. Resolving is the owner's word relayed by you: 'accept' writes the proposed value (a fact lands verified past its lock; a category is amended, the first value kept as category_original), 'reject' closes it and leaves the target alone. Only resolve with an actual ruling from the owner — cite it in reason.",
     inputSchema: {
       kind: z.enum(["fact", "memory_category", "memory_note", "all"]).optional().describe("Which proposals to list (default fact)."),
       status: z.enum(["pending", "accepted", "rejected", "all"]).optional().describe("Which proposals to list (default pending)."),
       limit: z.number().int().min(1).max(200).optional().describe("Max rows (default 50)."),
       resolve_id: z.number().int().optional().describe("Proposal id to resolve (any kind). Omit to list."),
       action: z.enum(["accept", "reject"]).optional().describe("Required with resolve_id."),
-      reason: z.string().optional().describe("Why — cite Guy's ruling. Logged to fact history."),
+      reason: z.string().optional().describe("Why — cite the owner's ruling. Logged to fact history."),
     },
     annotations: { "title": "Fact Proposals", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
   },
@@ -3087,7 +3098,7 @@ server.registerTool(
       // A pre-4.28 server has one global switch and returns no `scopes`.
       const text = data && data.scopes !== undefined
         ? `▶ Ambient capture RESUMED for ${AGENT_ID} (other agents' pauses untouched).`
-        : "▶ Ambient capture RESUMED — fleet-wide (this Cortex is older than 4.28 and has one switch for every agent).";
+        : "▶ Ambient capture RESUMED for every agent (this Cortex is older than 4.28 and has one switch for every agent).";
       return { content: [{ type: "text", text }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Capture resume error: ${err.message}` }], isError: true };

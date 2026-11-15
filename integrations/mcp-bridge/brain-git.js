@@ -157,6 +157,19 @@ export function brainStamp(brainDir, host, pulledAt) {
   return `[brain @ ${sha} on ${host}, last pulled ${pulledAt || "never this session"}]`;
 }
 
+/**
+ * True when the file differs from its last commit (written but not committed,
+ * or never added). Content, not mtime or commit dates. Never throws: a git
+ * failure reads as false, so callers fall back to their old message.
+ */
+export function fileUncommitted(brainDir, filename) {
+  try {
+    return git(["status", "--porcelain", "--", filename], brainDir) !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** One-line last commit for a brain file, for refusal context. Never throws. */
 export function lastCommitLine(brainDir, filename) {
   try {
@@ -317,8 +330,8 @@ export function sessionEndCommit({ brainDir, agentId, dateStr, owner }) {
 }
 
 /**
- * Report a blocked session-end commit OUTWARD: a bus ping to CC (fleet
- * steward) from the ending agent. The agent that hit the red gate is
+ * Report a blocked session-end commit OUTWARD: a bus ping to the brain's
+ * steward (DISCOBUS_STEWARD) from the ending agent. The agent that hit the red gate is
  * ending its session, so its own tool response is the one place the
  * verdict is guaranteed to die (snag-rocky-session-end-swallowed-red-gate:
  * the ritual "ended silently"). Best effort, never throws; returns a status
@@ -328,14 +341,15 @@ export function sessionEndCommit({ brainDir, agentId, dateStr, owner }) {
  * @param {string}   opts.dispatcher  DISCOBUS_DISPATCHER base URL ("" = no bus)
  * @param {string}   opts.agent       bus sender name (DISCOBUS_AGENT)
  * @param {string[]} opts.lines       sessionEndCommit() output
+ * @param {string}   [opts.steward]   bus name that keeps the brain (DISCOBUS_STEWARD)
  * @param {Function} [opts.fetchImpl] fetch (tests inject)
  * @param {number}   [opts.timeoutMs]
  * @returns {Promise<string|null>}
  */
-export async function pageCommitBlocked({ dispatcher, agent, lines, fetchImpl = fetch, timeoutMs = 3_000 }) {
+export async function pageCommitBlocked({ dispatcher, agent, lines, steward = "CC", fetchImpl = fetch, timeoutMs = 3_000 }) {
   const blocked = (lines || []).filter((l) => String(l).startsWith(COMMIT_BLOCKED));
   if (!blocked.length) return null;
-  if (!dispatcher) return "CC NOT paged (no DISCOBUS_DISPATCHER) — tell CC yourself before you end";
+  if (!dispatcher) return "Nobody was paged (no DISCOBUS_DISPATCHER set) — tell whoever keeps this brain yourself before you end";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -346,7 +360,7 @@ export async function pageCommitBlocked({ dispatcher, agent, lines, fetchImpl = 
       body: JSON.stringify({
         mesh_version: "0.5",
         from: agent,
-        to: "CC",
+        to: steward,
         subject: `brain-commit-BLOCKED-${agent}`,
         body: {
           agent,
@@ -355,12 +369,12 @@ export async function pageCommitBlocked({ dispatcher, agent, lines, fetchImpl = 
         },
       }),
     });
-    if (!res.ok) return `CC page FAILED (HTTP ${res.status}) — tell CC yourself before you end`;
+    if (!res.ok) return `Paging ${steward} FAILED (HTTP ${res.status}) — tell ${steward} yourself before you end`;
     let id = "?";
     try { id = (await res.json()).id ?? "?"; } catch { /* body optional */ }
-    return `CC paged on the bus (#${id}) — the blocked commit is now visible outside this session`;
+    return `${steward} paged on the bus (#${id}) — the blocked commit is now visible outside this session`;
   } catch (err) {
-    return `CC page FAILED (${firstLine(err)}) — tell CC yourself before you end`;
+    return `Paging ${steward} FAILED (${firstLine(err)}) — tell ${steward} yourself before you end`;
   } finally {
     clearTimeout(timer);
   }

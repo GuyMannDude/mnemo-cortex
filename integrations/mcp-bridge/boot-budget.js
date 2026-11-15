@@ -218,8 +218,8 @@ export function formatCutManifest() {
     `(${Math.round((100 * dropped) / actual)}% of ${bootCuts.length} file(s)).**\n\n` +
     `| section | actual | delivered | **withheld** | kept |\n` +
     `|---|---:|---:|---:|---:|\n${rows}\n\n` +
-    `**Guy's standing rule (2026-07-30): he is to be NOTIFIED BEFORE ANY MORE IS CUT.** ` +
-    `If this boot is the first you have seen these numbers, tell him — do not treat this ` +
+    `**Tell your user before anything more is cut.** ` +
+    `If this boot is the first you have seen these numbers, tell them — do not treat this ` +
     `table as boot furniture. You are reading a partial brain: anything you conclude from ` +
     `a file above may be contradicted by the part you were not given. ` +
     `\`read_brain_file\` fetches any of them in full.`
