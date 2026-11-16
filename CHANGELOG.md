@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — the installed service backs off when the server keeps failing to start (2026-11-15)
+
+**Problem.** The systemd unit `robot-install.sh` writes restarts the server 5 s after every failure, forever. systemd's default start limit (5 starts in 10 s) never trips at that pace. So a server that refuses its config (a wrong-size embedding model, or a network address with no auth token) restarted every 5 s until someone noticed, and with a hosted embedding model each start is a paid call.
+
+**Fix.**
+- The unit backs off: `RestartSteps=4` and `RestartMaxDelaySec=60` next to `RestartSec=5` in `[Service]`. Retries come at about 5, 9, 17 and 32 s, then once a minute, so a refused config costs at most 1,440 starts a day. It never gives up: a server whose LAN or Tailscale address is not up yet at boot still comes back by itself once the address is. A start limit was the other choice, and it would have left that server down until someone ran `systemctl --user reset-failed`.
+- Seen on systemd 259: a good run does not reset the backoff. A later failure waits the next step up, not 5 s. That is why the cap is short: after a slow boot, every later crash waits up to the cap. A manual start or restart (rerunning the installer is one) starts it over at 5 s.
+- systemd older than 254 ignores the two keys with a warning and keeps the plain 5 s loop.
+- `tests/test_robot_install_unit.py` pins the keys to `[Service]`, checks they take effect, and checks there is no start limit.
+- The units shown in `docs/cortex-stick.md` and `docs/install-chatgpt.md` get the same two lines. The ChatGPT gate's unit also gets `RestartSec=5`: with systemd's 0.1 s default it hit the default start limit within a second and stayed down.
+- macOS, documented only: on a startup refusal launchd restarts the server every 10 s until the config is fixed. launchd has no backoff setting. The comment in `deploy/macos/com.mnemo-cortex.server.plist` says so.
+
 ## Unreleased — hosted embedding models get the index's size; a wrong size stops the server at startup (2026-11-15)
 
 **Problem.** Mnemo's index holds 768 numbers per memory. OpenAI's text-embedding-3 models answer 1536 or 3072 unless asked, and the OpenAI and OpenRouter embedders never asked, so with either as the embedding model every save failed with a 500. Nothing said why until the first save.

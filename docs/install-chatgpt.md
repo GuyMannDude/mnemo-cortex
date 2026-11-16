@@ -92,6 +92,9 @@ On the machine that runs (or can reach) your Mnemo server:
    WorkingDirectory=%h/mnemo-cortex/integrations/chatgpt
    ExecStart=/usr/bin/python3 -m uvicorn server:create_app --factory --host 127.0.0.1 --port 50002 --no-access-log
    Restart=on-failure
+   RestartSec=5
+   RestartSteps=4
+   RestartMaxDelaySec=60
 
    [Install]
    WantedBy=default.target

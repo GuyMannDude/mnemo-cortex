@@ -63,6 +63,8 @@ Description=Cortex Stick courier — auto-sync on plug-in
 ExecStart=%h/.local/bin/mnemo-cortex stick watch --poll 5 --notify
 Restart=on-failure
 RestartSec=15
+RestartSteps=4
+RestartMaxDelaySec=60
 
 [Install]
 WantedBy=default.target

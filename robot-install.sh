@@ -749,8 +749,13 @@ Type=simple
 WorkingDirectory=$REPO_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$PY_BIN -m uvicorn agentb.server:create_app --factory --host $SVC_HOST --port $SVC_PORT --log-level info
+# On a failure it retries at 5 s, slowing to one try a minute, and
+# never gives up. systemd older than 254 ignores the two keys below with a
+# warning and keeps the plain 5 s loop.
 Restart=on-failure
 RestartSec=5
+RestartSteps=4
+RestartMaxDelaySec=60
 StandardOutput=journal
 StandardError=journal
 

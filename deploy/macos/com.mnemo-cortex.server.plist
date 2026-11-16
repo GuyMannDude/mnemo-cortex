@@ -51,7 +51,10 @@
         <false/>
     </dict>
 
-    <!-- Don't restart-loop faster than every 10s if the server is failing. -->
+    <!-- Don't restart-loop faster than every 10s if the server is failing.
+         On a startup refusal (a wrong-size embedding model, or a network
+         address with no auth token) launchd retries every 10s until the
+         config is fixed: launchd has no backoff setting. -->
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
