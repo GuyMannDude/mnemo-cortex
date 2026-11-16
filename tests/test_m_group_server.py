@@ -293,6 +293,8 @@ def test_preflight_enforces_scoped_token_pin(tmp_path):
 
 class SwitchEmbedding(FakeEmbedding):
     down = False
+    @property
+    def primary(self): return self
     async def embed(self, text, *, use_breaker=True, task_type="document"):
         if self.down:
             raise RuntimeError("All connection attempts failed")

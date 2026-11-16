@@ -117,6 +117,22 @@ async def test_reindex_skips_and_removes_superseded(tmp_path):
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_backfill_does_not_index_a_memory_demoted_during_its_embed(tmp_path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    mem = tmp_path / "memory"
+    _write(mem, "x", "demoted while embedding")
+
+    class DemotesMidEmbed(Embed):
+        async def __call__(self, text):
+            _write(mem, "x", "demoted while embedding", superseded_by="demoted:cc:1")
+            return await super().__call__(text)
+
+    stats = await backfill(store, mem, DemotesMidEmbed(), adaptive=False)
+    assert stats["embedded"] == 0
+    assert not store.has("x")
+
+
 # ── 9b: the pending list ──
 
 @pytest.mark.asyncio
@@ -178,22 +194,54 @@ async def test_drain_keeps_ids_added_while_it_ran(tmp_path):
     assert pending.ids() == ["late"]
 
 
+@pytest.mark.asyncio
+async def test_drain_does_not_index_a_memory_demoted_during_its_embed(tmp_path):
+    store = VecStore(tmp_path / "vec.sqlite")
+    mem = tmp_path / "memory"
+    pending = PendingIndex(tmp_path / "vec_pending.txt")
+    _write(mem, "x", "demoted while embedding")
+    pending.add("x")
+
+    class DemotesMidEmbed(Embed):
+        async def __call__(self, text):
+            _write(mem, "x", "demoted while embedding", superseded_by="demoted:cc:1")
+            return await super().__call__(text)
+
+    stats = await drain_pending(store, mem, pending, DemotesMidEmbed())
+    assert stats["embedded"] == 0 and stats["left"] == 0
+    assert not store.has("x")
+
+
 # ── 9b through the server ──
 
 STATUS = {"primary": "fake", "active": "fake", "failed_over": False,
           "circuit_open": False, "primary_retry_in": None, "fallback_count": 0}
 
 
+class _Primary:
+    def __init__(self, outer):
+        self.outer = outer
+
+    async def embed(self, text, *, task_type="document"):
+        if self.outer.down and task_type == "document":
+            raise RuntimeError("All connection attempts failed")
+        return list(VEC)
+
+
 class SwitchEmbedding:
-    """Server-side fake: `down` makes every document embed fail."""
+    """Server-side fake: `down` makes the primary's document embeds fail.
+    With `fallback_up`, the wrapper answers anyway (a fallback provider
+    serving), so a catch-up that goes through the wrapper is caught."""
     active_label = "fake/embed"
     status = STATUS
 
     def __init__(self):
         self.down = False
+        self.fallback_up = False
+        self.primary = _Primary(self)
 
     async def embed(self, text, *, use_breaker=True, task_type="document"):
-        if self.down and task_type == "document":
+        if self.down and task_type == "document" and not self.fallback_up:
             raise RuntimeError("All connection attempts failed")
         return list(VEC)
 
@@ -284,3 +332,31 @@ def test_vec_backfill_dry_run_endpoint(tmp_path):
         body = r.json()
         assert body["dry_run"] is True and body["unindexed"] == 1
         assert not client.app.state.tenants.get("cody")["vec"].has("raw1")
+
+
+def test_catch_up_never_goes_through_a_fallback_provider(tmp_path):
+    emb = SwitchEmbedding()
+    pending_file = tmp_path / "cody" / "vec_pending.txt"
+    _write(tmp_path / "cody" / "memory", "m1", "saved raw before the restart")
+    pending_file.write_text("m1\n")
+    emb.down = True
+    emb.fallback_up = True  # the wrapper would answer; the primary is down
+    with _client(tmp_path, emb) as client:
+        _save(client, "s1", "a save served by the fallback")
+        time.sleep(0.3)
+        assert not client.app.state.tenants.get("cody")["vec"].has("m1")
+        assert "m1" in pending_file.read_text().split()
+
+
+def test_startup_drain_survives_a_tenant_it_cannot_open(tmp_path, caplog):
+    emb = SwitchEmbedding()
+    bad = tmp_path / "default" / "agents" / "bad.name"  # fails validate_agent_id
+    bad.mkdir(parents=True)
+    (bad / "vec_pending.txt").write_text("zz\n")
+    pending_file = tmp_path / "cody" / "vec_pending.txt"
+    _write(tmp_path / "cody" / "memory", "m1", "saved raw before the restart")
+    pending_file.write_text("m1\n")
+    with _client(tmp_path, emb) as client:
+        assert _wait_for(lambda: not pending_file.exists())
+        assert client.app.state.tenants.get("cody")["vec"].has("m1")
+        assert _wait_for(lambda: "startup skipped 'bad.name'" in caplog.text)

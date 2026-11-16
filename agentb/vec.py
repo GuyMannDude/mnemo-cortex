@@ -1009,6 +1009,17 @@ def detect_mode(memory_dir: Path) -> str:
     return "clean"
 
 
+def _superseded_now(path: Path) -> bool:
+    """Re-read a record's demotion mark. Called after an embed await and
+    before the upsert, with no await in between: a demote that landed while
+    the embed ran deleted a vector that did not exist yet, so the upsert
+    would put the demoted memory back in recall."""
+    try:
+        return bool(json.loads(path.read_text(encoding="utf-8")).get("superseded_by"))
+    except Exception:
+        return False
+
+
 def memory_text(entry: dict, memory_id: str) -> str:
     """The text writeback embeds for a memory record: summary + key_facts,
     stripped, capped at MAX_EMBED_INPUT_CHARS. Empty string = nothing to embed."""
@@ -1142,6 +1153,9 @@ async def backfill(
             else:
                 vec = await embed(text)
                 stored_text = text
+            if _superseded_now(path):
+                superseded.append(memory_id)
+                continue
             store.upsert(
                 memory_id,
                 stored_text,
@@ -1246,6 +1260,10 @@ async def drain_pending(
             continue
         try:
             vec, stored_text = await embed_with_adaptive_truncation(embed, text)
+            if _superseded_now(path):
+                done.add(memory_id)
+                dropped += 1
+                continue
             store.upsert(
                 memory_id, stored_text, vec,
                 source_file=path.as_posix(),

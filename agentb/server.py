@@ -1016,8 +1016,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # Item 9b: a save the embedder missed (writeback keeps it raw) goes on the
     # tenant's pending list and is indexed once the embedder answers again:
-    # on that tenant's next good save, and at startup. Same embed call as
-    # writeback; never a second provider. One drain per tenant at a time.
+    # on that tenant's next good save, and at startup. PRIMARY embedder only,
+    # like /vec/backfill: a fallback would mix vector spaces in one index or
+    # send memory text off the box. One drain per tenant at a time.
     drain_tasks: set = set()
     draining: set[str] = set()
 
@@ -1028,7 +1029,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         try:
             stats = await drain_pending(
                 tenant["vec"], tenant["memory_dir"], tenant["pending"],
-                lambda t: embedder.embed(t, task_type="document"))
+                lambda t: embedder.primary.embed(t, task_type="document"))
             log.info(f"Pending re-index '{key}': {stats['embedded']} indexed, "
                      f"{stats['dropped']} dropped, {stats['left']} still owed")
         except Exception as e:
@@ -1043,8 +1044,16 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     async def _startup_drain() -> None:
         for name, d in _tenant_data_dirs():
-            if (d / "vec_pending.txt").exists():
-                await _drain_tenant(name, tenants.get(name))
+            if not (d / "vec_pending.txt").exists():
+                continue
+            if name in config.agents and config.agents[name].read_only:
+                continue
+            try:
+                tenant = tenants.get(name)
+            except Exception as e:  # one bad tenant must not end the sweep
+                log.error(f"Pending re-index at startup skipped '{name}': {e!r}")
+                continue
+            await _drain_tenant(name, tenant)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
