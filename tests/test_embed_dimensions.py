@@ -89,10 +89,33 @@ def test_probe_wrong_size_names_model_and_both_sizes():
     assert "nomic-embed-text" in msg and "text-embedding-3-small" in msg
 
 
+@pytest.mark.parametrize("provider,hint", [
+    ("google", f"extra.output_dimensionality: {EMBED_DIM}"),
+    ("openai", f"extra.dimensions: {EMBED_DIM}"),
+    ("openrouter", f"extra.dimensions: {EMBED_DIM}"),
+    ("ollama", None),
+    ("huggingface", None),
+])
+def test_refusal_names_only_a_setting_the_embedder_reads(provider, hint):
+    emb = _Emb(n=3072)
+    emb.config = ProviderConfig(provider=provider, model="m")
+    msg = asyncio.run(probe_embedding_dim(emb))
+    if hint:
+        assert hint in msg
+    else:
+        assert "extra." not in msg
+
+
+def test_empty_extra_does_not_break_embeds():
+    pc = _pc("text-embedding-3-small")
+    pc.extra = None   # `extra:` with no value in YAML
+    assert _dimensions_field(pc) == {"dimensions": EMBED_DIM}
+
+
 @pytest.mark.parametrize("emb", [
     _Emb(exc=httpx.ConnectError("refused")),
     _Emb(exc=RuntimeError("boom")),
-    _Emb(delay=1.0),                      # slower than the timeout below
+    _Emb(n=1536, delay=1.0),   # wrong size but slower than the timeout: only the timeout returns None
 ], ids=["unreachable", "error", "timeout"])
 def test_probe_outage_is_not_a_refusal(emb):
     assert asyncio.run(probe_embedding_dim(emb, timeout=0.2)) is None

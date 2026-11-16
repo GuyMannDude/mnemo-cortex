@@ -108,8 +108,9 @@ def _dimensions_field(config) -> dict:
     sets extra.dimensions: OpenAI-compatible servers (vLLM and others) reject
     it for models that cannot shorten their vectors. extra.dimensions: 0
     sends nothing."""
-    if "dimensions" in config.extra:
-        n = int(config.extra["dimensions"])
+    extra = config.extra or {}  # `extra:` left empty in YAML loads as None
+    if "dimensions" in extra:
+        n = int(extra["dimensions"])
         return {"dimensions": n} if n > 0 else {}
     if config.model.rsplit("/", 1)[-1].startswith("text-embedding-3"):
         from agentb.vec import EMBED_DIM
@@ -135,10 +136,16 @@ async def probe_embedding_dim(embedder, timeout: float = 20.0) -> Optional[str]:
         return None
     if n == EMBED_DIM:
         return None
+    # Only the setting this provider's embedder actually reads.
+    provider = getattr(getattr(primary, "config", None), "provider", "")
+    shorten = {
+        "google": f" Or set embedding extra.output_dimensionality: {EMBED_DIM}.",
+        "openai": f" Or, if this model can shorten its vectors, set embedding extra.dimensions: {EMBED_DIM}.",
+        "openrouter": f" Or, if this model can shorten its vectors, set embedding extra.dimensions: {EMBED_DIM}.",
+    }.get(provider, "")
     return (f"{label} returns {n} numbers per memory; Mnemo's index holds {EMBED_DIM}. "
             f"Use Ollama nomic-embed-text, or OpenAI text-embedding-3-small / -large "
-            f"(Mnemo asks them for {EMBED_DIM}), or set embedding extra.dimensions: {EMBED_DIM} "
-            f"if your model can shorten its vectors.")
+            f"(Mnemo asks them for {EMBED_DIM}).{shorten}")
 
 
 class EmbeddingProvider(ABC):
