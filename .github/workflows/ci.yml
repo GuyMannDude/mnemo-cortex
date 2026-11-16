@@ -94,7 +94,9 @@ jobs:
     timeout-minutes: 30
     services:
       ollama:
-        image: ollama/ollama:0.12.1
+        # Pinned to the Ollama our own Mnemo host runs every day (0.40.16),
+        # so CI tests what production runs; move it when the host moves.
+        image: ollama/ollama:0.40.16
         ports:
           - 11434:11434
     steps:
