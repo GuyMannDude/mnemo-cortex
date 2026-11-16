@@ -232,7 +232,11 @@ EOF
   # now refuses its 0.0.0.0 default): data dir and providers stay default.
   printf 'server:\n  host: "127.0.0.1"\nembedding:\n  provider: ollama\n  model: nomic-embed-text\n  api_base: "%s"\n' \
     "$OLLAMA" > "$WORK/$1-seed.yaml"
-  (cd "$REPO" && env -i HOME="$home" PATH=/usr/bin:/bin AGENTB_CONFIG="$WORK/$1-seed.yaml" \
+  # exec: $seed is uvicorn itself, so `wait $seed` below returns only once the
+  # server has closed its sqlite files. Without it, wait returned when the
+  # subshell died, and a snapshot could catch -wal/-shm files that the
+  # server's shutdown checkpoint removes a moment later (case h, CI e9f6308).
+  (cd "$REPO" && exec env -i HOME="$home" PATH=/usr/bin:/bin AGENTB_CONFIG="$WORK/$1-seed.yaml" \
     "$VENV/bin/python" -m uvicorn agentb.server:create_app --factory --host 127.0.0.1 --port "$port" \
     > "$WORK/$1-seed.log" 2>&1) & local seed=$!
   for _ in $(seq 1 60); do health "$port" >/dev/null && break; sleep 0.5; done
@@ -241,7 +245,7 @@ EOF
     curl -s -m 60 -X POST "http://127.0.0.1:$port/writeback" -H 'Content-Type: application/json' \
       -d "{\"session_id\":\"old\",\"summary\":\"$text\",\"key_facts\":[],\"projects_referenced\":[],\"decisions_made\":[],\"agent_id\":\"old-agent\",\"source\":\"user\",\"category\":\"decision\"}" >/dev/null
   done
-  pkill -TERM -P "$seed" 2>/dev/null; kill "$seed" 2>/dev/null; wait "$seed" 2>/dev/null
+  kill -TERM "$seed" 2>/dev/null; wait "$seed" 2>/dev/null
   for _ in $(seq 1 40); do health "$port" >/dev/null || break; sleep 0.25; done
 }
 
