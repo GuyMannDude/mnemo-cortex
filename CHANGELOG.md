@@ -40,6 +40,13 @@ real installer against a real Ollama on every push;
 `ROBOT_E2E_REQUIRE_OLLAMA=1` makes a missing Ollama a failure there instead
 of a skip. No server or bridge code changed.
 
+The REST endpoint check now goes both ways, like the MCP tool check:
+`robot.info` gained the 16 routes the server served and the guide left out
+(`/ingest`, `/sessions*`, `/capture/*`, `/proposals*`, `/passport/*`), each
+with a purpose line, and a route added to the server without a line in
+`robot.info` now fails the build. The CI Ollama is pinned to 0.40.16, the
+version our own Mnemo host runs.
+
 ## Unreleased — Cortex Stick: the Windows eject says why it failed (2026-11-14)
 
 **Problem.** On IGOR-2 the Shell.Application Eject verb returned 0 while
