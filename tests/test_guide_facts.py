@@ -101,6 +101,18 @@ def test_init_wizard_paths_and_defaults():
     )
     cfg = _apply_defaults(AgentBConfig())
     assert tilde(cli.DATA_DIR) == tilde(cfg.data_dir) == wiz["data_dir"]
+
+    # The wizard's own prompt defaults (cli.py keeps a copy of them).
+    src = (ROOT / "agentb/cli.py").read_text(encoding="utf-8")
+    ask = lambda label: re.search(rf'Prompt\.ask\(\s*"{label}",\s*default="([^"]+)"\)', src)
+    ollama = re.search(r'if provider == "ollama":(.*?)\n\s*elif', src, flags=re.S).group(1)
+    url = re.search(r'"  Ollama URL", default="([^"]+)"', ollama).group(1)
+    r_model, e_model = re.findall(r'"  Model", default="([^"]+)"', ollama)
+    assert re.search(r'"Provider",\s*choices=\[[^\]]*\],\s*default="ollama"', src)
+    assert wiz["reasoning_default"].startswith(f"ollama, {r_model}, {url}")
+    assert wiz["embedding_default"] == f"ollama, {e_model}"
+    assert ask("Bind host").group(1) == "127.0.0.1"
+    assert "bind the server to loopback (127.0.0.1)" in LLMS
     assert "`%s`" % wiz["data_dir"] in LLMS, "llms.txt names a different default data dir"
 
     r, e = cfg.reasoning.primary, cfg.embedding.primary
@@ -164,20 +176,25 @@ def test_embedding_size():
 
 
 def _claimed_lists(text: str):
-    srcs = re.findall(r"source[^(]{0,20}\(([a-z_ |/]+)\)", text)
+    srcs = re.findall(r"source[^(:]{0,20}[(:]\s*([a-z_ |/]+)\)", text)
     cats = re.findall(r"category[^(]{0,20}\(([a-z_, ]+)\)", text)
     split = lambda s: {w for w in re.split(r"[\s|/,]+", s) if w}
     return [split(s) for s in srcs], [split(c) for c in cats]
 
 
-@pytest.mark.parametrize("where,text", [
-    ("robot.info", json.dumps(INFO, ensure_ascii=False)),
-    ("llms.txt", LLMS),
+@pytest.mark.parametrize("where,text,n_src,n_cat", [
+    ("robot.info", json.dumps(INFO, ensure_ascii=False), 2, 2),
+    ("llms.txt", LLMS, 1, 0),
 ], ids=["robot.info", "llms.txt"])
-def test_sources_and_categories(where, text):
+def test_sources_and_categories(where, text, n_src, n_cat):
+    """The counts are pinned so a reworded list that the regex stops seeing
+    fails here instead of passing with nothing checked."""
     from agentb.provenance import VALID_CATEGORIES, VALID_SOURCES
     srcs, cats = _claimed_lists(text)
-    assert srcs, f"{where} no longer lists the sources; update this test with the guide"
+    assert (len(srcs), len(cats)) == (n_src, n_cat), (
+        f"{where}: found {len(srcs)} source and {len(cats)} category lists, expected "
+        f"{n_src} and {n_cat}; a list was reworded or added: update this test with the guide"
+    )
     for s in srcs:
         assert s == VALID_SOURCES, f"{where} lists sources {sorted(s)}, code has {sorted(VALID_SOURCES)}"
     for c in cats:
@@ -188,19 +205,14 @@ def test_sources_and_categories(where, text):
 
 def test_decay_claims():
     from agentb.provenance import DECAY_THRESHOLDS, VALID_CATEGORIES
-    d = INSTALL["decay"]
-    assert d["topology_warn_days"] == DECAY_THRESHOLDS["topology"]["warn"]
-    assert d["topology_stale_days"] == DECAY_THRESHOLDS["topology"]["stale"]
-    assert d["current_state_warn_days"] == DECAY_THRESHOLDS["current_state"]["warn"]
-    assert d["relationship_warn_days"] == DECAY_THRESHOLDS["relationship"]["warn"]
-    assert d["session_log_warn_days"] == DECAY_THRESHOLDS["session_log"]["warn"]
+    for key, days in INSTALL["decay"].items():  # e.g. topology_warn_days
+        cat, kind = re.fullmatch(r"(.+)_(warn|stale)_days", key).groups()
+        assert days == DECAY_THRESHOLDS[cat][kind], f"robot.install decay.{key}"
     warn, stale = DECAY_THRESHOLDS["topology"]["warn"], DECAY_THRESHOLDS["topology"]["stale"]
     assert f"warn at {warn} days, stale at {stale}" in LLMS
+    assert "doctrine, incident, identity and decision never decay" in LLMS
+    assert "Doctrine, incident, identity, and decision are perpetual" in json.dumps(INFO, ensure_ascii=False)
     perpetual = VALID_CATEGORIES - set(DECAY_THRESHOLDS)
-    for claim in ("doctrine, incident, identity and decision never decay",
-                  "Doctrine, incident, identity, and decision are perpetual"):
-        where = LLMS if "never decay" in claim else json.dumps(INFO, ensure_ascii=False)
-        assert claim in where, f"guide no longer says {claim!r}; update this test with the guide"
     assert {"doctrine", "incident", "identity", "decision"} <= perpetual
 
 
@@ -209,7 +221,9 @@ def test_decay_claims():
 def _bridge_tools() -> set[str]:
     src = (ROOT / "integrations/mcp-bridge/server.js").read_text(encoding="utf-8")
     tools = set(re.findall(r"registerTool\(\s*[\"']([a-z_]+)[\"']", src))
-    assert len(tools) > 10, "could not read the bridge's tool registrations"
+    assert len(tools) == src.count("server.registerTool("), (
+        "a registerTool call whose name this regex cannot read: widen the regex"
+    )
     return tools
 
 

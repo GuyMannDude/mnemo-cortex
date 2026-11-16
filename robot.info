@@ -207,7 +207,7 @@
   "privacy": {
     "telemetry": "none",
     "data_location": "Local disk: SQLite + JSON memory files in per-agent subdirectories of the data directory. Default ~/.agentb (the init wizard sets it, and a config with no data_dir falls back to it). robot.install sets ~/.mnemo-cortex for a robot install (install.install_paths).",
-    "auth": "Loopback-only by default (127.0.0.1). Any other bind needs server.auth_token (or scoped tokens), sent as X-API-Key or Authorization: Bearer; the server refuses to start without one unless server.allow_unauthenticated is set. There is no hosted HTTP MCP endpoint: MCP clients connect through the stdio bridge.",
+    "auth": "The setup wizard and the installer bind loopback (127.0.0.1), where no token is needed. Any other bind needs server.auth_token (or scoped tokens), sent as X-API-Key or Authorization: Bearer; the server refuses to start without one unless server.allow_unauthenticated is set. There is no hosted HTTP MCP endpoint: MCP clients connect through the stdio bridge.",
     "outbound_calls": [
       "Reasoning provider (configurable): /preflight checks, save-time classification of uncategorized memories (Smart Ingestion, on by default; classification.enabled: false turns it off), Pocket /chat replies, and the background session-summary and reclassify passes. Default: local Ollama (qwen2.5:32b-instruct) for the init wizard and for a config that names no provider. A robot install defaults to OpenRouter (google/gemini-2.5-flash) and needs OPENROUTER_API_KEY; robot.install shows an all-local block (install.install_paths).",
       "Embedding provider for semantic indexing (default Ollama localhost; a hosted fallback such as Google Gemini, Matryoshka-truncated to the 768-dim store width, is used only if you configure one under embedding.fallbacks, and only when Ollama is unreachable).",
@@ -305,7 +305,7 @@
     },
     {
       "q": "What's the auth model?",
-      "a": "Loopback-only by default — 127.0.0.1, no auth required. Any other bind needs server.auth_token (or scoped tokens pinned to one agent and a subset of endpoints), sent as X-API-Key or Authorization: Bearer; the server refuses to start without one unless you set server.allow_unauthenticated."
+      "a": "The setup wizard and the installer bind loopback (127.0.0.1), where no auth is required. Any other bind needs server.auth_token (or scoped tokens pinned to one agent and a subset of endpoints), sent as X-API-Key or Authorization: Bearer; the server refuses to start without one unless you set server.allow_unauthenticated."
     },
     {
       "q": "Does it phone home?",
