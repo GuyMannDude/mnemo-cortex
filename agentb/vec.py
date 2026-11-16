@@ -1246,7 +1246,8 @@ async def drain_pending(
     """Index every pending memory that is still live and still unindexed.
 
     Stops at the first embed failure (the embedder is still down; the rest
-    wait for the next drain). Ids that are superseded, already indexed, gone
+    wait for the next drain) and moves that id to the tail, so a record that
+    always fails cannot hold up the others. Ids that are superseded, already indexed, gone
     from disk, or empty leave the list without an embed.
     Returns {embedded, dropped, failed, left}.
     """

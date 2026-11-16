@@ -9,7 +9,7 @@
 **Fix.**
 - `/context` drops any hit whose record carries `superseded_by`, in the vector lane, the recent lens and the lexical lane. `/preflight` drops it from the two memories it shows the reasoner. Each such id is logged once at warning ("Demoted memory <id> is still in the vec index"), since it means the index is damaged; `POST /vec/backfill` removes it. A record that cannot be read is served as before.
 - A drain that stops on a failure moves that id to the tail of the pending list, so the next drain starts on the others. During an outage this only changes the order; one embed is still tried per drain.
-- Tests: `tests/test_recall_drops_superseded.py` (4): the vector lane, the lexical lane with the kNN blinded, preflight's reasoner prompt, warn-once, and the drain tail. Each fails on the code before this fix. One assertion in `tests/test_vec_catchup.py` now expects the failed id at the tail.
+- Tests: `tests/test_recall_drops_superseded.py` (4): the vector lane (with warn-once), the lexical lane with the kNN blinded, preflight's reasoner prompt, and the drain tail. Each fails on the code before this fix. One assertion in `tests/test_vec_catchup.py` now expects the failed id at the tail.
 
 ## Unreleased — a demoted memory stays demoted, and a save the embedder missed is indexed later (2026-11-15)
 
