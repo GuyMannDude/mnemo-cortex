@@ -1222,8 +1222,13 @@ class PendingIndex:
             return []
         return list(dict.fromkeys(lines))
 
-    def discard(self, done: set[str]) -> None:
+    def discard(self, done: set[str], *, to_tail: Optional[str] = None) -> None:
+        """Drop the `done` ids; move `to_tail` (an id that just failed) to the
+        end, so one record that always fails cannot hold up the rest."""
         left = [m for m in self.ids() if m not in done]
+        if to_tail in left:
+            left.remove(to_tail)
+            left.append(to_tail)
         if not left:
             self.path.unlink(missing_ok=True)
             return
@@ -1247,6 +1252,7 @@ async def drain_pending(
     """
     done: set[str] = set()
     embedded = dropped = failed = 0
+    stuck: Optional[str] = None
     for memory_id in pending.ids():
         path = memory_dir / f"{memory_id}.json"
         try:
@@ -1272,11 +1278,12 @@ async def drain_pending(
             )
         except Exception as e:
             failed += 1
+            stuck = memory_id
             log.warning(f"Pending re-index stopped at {memory_id}: {e}")
             break
         done.add(memory_id)
         embedded += 1
-    pending.discard(done)
+    pending.discard(done, to_tail=stuck)
     return {"embedded": embedded, "dropped": dropped, "failed": failed,
             "left": len(pending.ids())}
 

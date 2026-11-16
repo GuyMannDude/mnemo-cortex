@@ -148,7 +148,7 @@ async def test_drain_indexes_pending_and_keeps_the_rest_while_down(tmp_path):
     stats = await drain_pending(store, mem, pending, embed)
     assert stats["embedded"] == 0 and stats["left"] == 2
     assert len(embed.calls) == 1  # stops at the first failure, no hammering
-    assert pending.ids() == ["a", "b"]
+    assert pending.ids() == ["b", "a"]  # 9d: the id that failed goes to the tail
 
     embed.down = False
     stats = await drain_pending(store, mem, pending, embed)

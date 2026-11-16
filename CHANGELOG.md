@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — recall never serves a demoted memory, whatever put its vector back (2026-11-16)
+
+**Problem.**
+- The fix below keeps backfill from re-indexing demoted memories, but `/context` and `/preflight` still trusted the index. A demoted memory whose vector was back in it (an older backfill, a hand repair, an old copy of the index) was served as live, and fed to the preflight reasoner as memory context.
+- The pending list drains in order and stops at the first failure. One record that fails every time (not an outage) sat at the head and held up every id behind it, with one failing embed per save.
+
+**Fix.**
+- `/context` drops any hit whose record carries `superseded_by`, in the vector lane, the recent lens and the lexical lane. `/preflight` drops it from the two memories it shows the reasoner. Each such id is logged once at warning ("Demoted memory <id> is still in the vec index"), since it means the index is damaged; `POST /vec/backfill` removes it. A record that cannot be read is served as before.
+- A drain that stops on a failure moves that id to the tail of the pending list, so the next drain starts on the others. During an outage this only changes the order; one embed is still tried per drain.
+- Tests: `tests/test_recall_drops_superseded.py` (4): the vector lane, the lexical lane with the kNN blinded, preflight's reasoner prompt, warn-once, and the drain tail. Each fails on the code before this fix. One assertion in `tests/test_vec_catchup.py` now expects the failed id at the tail.
+
 ## Unreleased — a demoted memory stays demoted, and a save the embedder missed is indexed later (2026-11-15)
 
 **Problem.**

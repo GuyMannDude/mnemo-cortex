@@ -1022,6 +1022,25 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     drain_tasks: set = set()
     draining: set[str] = set()
 
+    # 9d: a demoted memory never surfaces, whatever put its vector back.
+    # Recall and preflight drop a hit whose record carries superseded_by,
+    # and say so once per id: such a vector means the index is damaged.
+    warned_superseded: set[str] = set()
+
+    def _drop_superseded(memory_id: str) -> None:
+        if memory_id not in warned_superseded:
+            warned_superseded.add(memory_id)
+            log.warning(f"Demoted memory {memory_id} is still in the vec index; dropped from "
+                        f"recall. POST /vec/backfill removes it.")
+
+    def _is_superseded(source_file: Optional[str]) -> bool:
+        if not source_file:
+            return False
+        try:
+            return bool(json.loads(Path(source_file).read_text(encoding="utf-8")).get("superseded_by"))
+        except Exception:
+            return False
+
     async def _drain_tenant(key: str, tenant: dict) -> None:
         if key in draining:
             return
@@ -1375,7 +1394,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # max_results regardless.
             vec_filter_active = bool(req.category) or bool(effective_exclude)
 
-            def _chunk_from_vec_hit(hit) -> ContextChunk:
+            def _chunk_from_vec_hit(hit) -> Optional[ContextChunk]:
                 # vec0 distance is L2 by default; convert to similarity-ish (0..1)
                 relevance = 1.0 / (1.0 + hit.distance)
                 # v4.0.1: load category/source from the memory's JSON so the
@@ -1388,6 +1407,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 if hit.source_file and os.path.exists(hit.source_file):
                     try:
                         mj = json.loads(Path(hit.source_file).read_text(encoding="utf-8"))
+                        if mj.get("superseded_by"):
+                            _drop_superseded(hit.memory_id)
+                            return None
                         category = mj.get("category")
                         provenance_source = mj.get("source")
                         # v4.18.4: the near-duplicates this write was FORCED past
@@ -1434,7 +1456,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         if hit.memory_id in seen_memory_ids:
                             continue
                         c = _chunk_from_vec_hit(hit)
-                        if keep_chunk(c):
+                        if c is not None and keep_chunk(c):
                             pass_chunks.append(c)
                             seen_memory_ids.add(hit.memory_id)
                     return True
@@ -1470,7 +1492,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                         if hit.memory_id in seen_memory_ids:
                             continue
                         c = _chunk_from_vec_hit(hit)
-                        if keep_chunk(c):
+                        if c is not None and keep_chunk(c):
                             pass_chunks.append(c)
                             seen_memory_ids.add(hit.memory_id)
 
@@ -1550,6 +1572,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             source_file=lh.source_file, created_at=lh.created_at,
                             category=lh.category,
                         ))
+                        if c is None:
+                            continue
                         c.cache_tier = "LEX"
                         c.lexical = evidence
                         c.exact = lh.memory_id in exact_ids
@@ -1804,6 +1828,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # auto-capture, archived-session summaries) never feed a verdict.
             hits = vec_store.search(query_embedding, top_k=2,
                                     exclude_categories=DEFAULT_HIDDEN_CATEGORIES)
+            live = []
+            for h in hits:
+                if _is_superseded(h.source_file):
+                    _drop_superseded(h.memory_id)
+                else:
+                    live.append(h)
+            hits = live
             if hits:
                 context_text = "\n\n".join(f"[VEC] {h.text}" for h in hits)
                 user_prompt = f"MEMORY CONTEXT:\n{context_text}\n\n{user_prompt}"
