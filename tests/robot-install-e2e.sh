@@ -37,6 +37,14 @@ free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0)
 # eval is safe here: every expression is a literal written in this script.
 jget() { python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(eval(sys.argv[2]))" "$1" "$2" 2>/dev/null; }
 snap() { (cd "$1" && find . -type f ! -path './.config/systemd/*' -exec sha256sum {} + | sort -k2); }
+# unchanged <before> <after>: true when equal; otherwise print which files
+# differ, so a red "files changed" carries its own evidence.
+unchanged() {
+  [ "$1" = "$2" ] && return 0
+  echo "    files that differ (< before, > after):"
+  diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") | grep '^[<>]' | sed 's/^/      /'
+  return 1
+}
 
 # ── stand-ins ────────────────────────────────────────────────────────────
 mkdir -p "$WORK/bin"
@@ -305,7 +313,7 @@ else
   r=$(curl -s -m 60 -X POST "http://127.0.0.1:$PB/context" -H 'Content-Type: application/json' \
       -d '{"prompt":"where does the blue teapot live","agent_id":"old-agent","max_results":2}')
   grep -q "shelf three" <<<"$r" && pass "old memory recalled through the new server" || fail "recall: $r"
-  (cd "$WORK/b/.agentb" && find . -type f -exec sha256sum {} + | sort -k2) | diff -q - "$WORK/b.orig.sha" >/dev/null \
+  unchanged "$(cat "$WORK/b.orig.sha")" "$(cd "$WORK/b/.agentb" && find . -type f -exec sha256sum {} + | sort -k2)" \
     && pass "originals in ~/.agentb unchanged" || fail "originals changed"
   stop_svc b
 
@@ -325,7 +333,7 @@ else
   before=$(snap "$WORK/c")
   install c "$(manifest "$PC")"
   [ "$RC" = 1 ] && [ "$(jget "$WORK/c.json" 'd["steps"]["migration"]["action"]')" = stop ] && pass "stops" || fail "rc=$RC"
-  [ "$(snap "$WORK/c")" = "$before" ] && pass "nothing changed" || fail "files changed"
+  unchanged "$before" "$(snap "$WORK/c")" && pass "nothing changed" || fail "files changed"
 
   # ── h: embedding model differs from the one the memories were made with ─
   echo "== h: config names a different embedding model"
@@ -334,7 +342,7 @@ else
   before=$(snap "$WORK/h")
   install h "$(manifest "$PH")"
   [ "$RC" = 1 ] && grep -q "embedded with" <<<"$(jget "$WORK/h.json" 'd["error"]')" && pass "stops, names both models" || fail "rc=$RC: $(jget "$WORK/h.json" 'd.get("error")')"
-  [ "$(snap "$WORK/h")" = "$before" ] && pass "nothing changed" || fail "files changed"
+  unchanged "$before" "$(snap "$WORK/h")" && pass "nothing changed" || fail "files changed"
 fi
 
 echo
