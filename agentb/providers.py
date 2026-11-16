@@ -3,6 +3,7 @@ AgentB Provider Abstraction Layer v0.3.0
 Pluggable backends with circuit-breaker fallback chains.
 """
 
+import asyncio
 import os
 import time
 import logging
@@ -96,6 +97,48 @@ class ReasoningProvider(ABC):
     @property
     def label(self) -> str:
         return f"{self.config.provider}/{self.config.model}"
+
+
+def _dimensions_field(config) -> dict:
+    """The OpenAI-style `dimensions` field for an /embeddings request.
+
+    Mnemo's index holds EMBED_DIM numbers per memory. OpenAI's
+    text-embedding-3 models answer 1536 / 3072 unless asked, so they are asked
+    for EMBED_DIM by default. Other models get the field only when the config
+    sets extra.dimensions: OpenAI-compatible servers (vLLM and others) reject
+    it for models that cannot shorten their vectors. extra.dimensions: 0
+    sends nothing."""
+    if "dimensions" in config.extra:
+        n = int(config.extra["dimensions"])
+        return {"dimensions": n} if n > 0 else {}
+    if config.model.rsplit("/", 1)[-1].startswith("text-embedding-3"):
+        from agentb.vec import EMBED_DIM
+        return {"dimensions": EMBED_DIM}
+    return {}
+
+
+async def probe_embedding_dim(embedder, timeout: float = 20.0) -> Optional[str]:
+    """Embed one short string with the primary embedder at startup.
+
+    Returns a plain-words refusal when the model's vector size is not the
+    index's (every save would fail later with a 500), else None. An embedder
+    that cannot be reached or errors is NOT a refusal: outages are the
+    resilient layer's job and the server should still start."""
+    from agentb.vec import EMBED_DIM
+    primary = getattr(embedder, "primary", embedder)
+    label = getattr(primary, "label", "the embedder")
+    try:
+        vec = await asyncio.wait_for(primary.embed("Mnemo startup check", task_type="query"), timeout)
+        n = len(vec)
+    except Exception as e:
+        log.warning(f"Startup embedding check skipped: {label} did not answer ({e!r})")
+        return None
+    if n == EMBED_DIM:
+        return None
+    return (f"{label} returns {n} numbers per memory; Mnemo's index holds {EMBED_DIM}. "
+            f"Use Ollama nomic-embed-text, or OpenAI text-embedding-3-small / -large "
+            f"(Mnemo asks them for {EMBED_DIM}), or set embedding extra.dimensions: {EMBED_DIM} "
+            f"if your model can shorten its vectors.")
 
 
 class EmbeddingProvider(ABC):
@@ -505,7 +548,8 @@ class OpenAIEmbedding(EmbeddingProvider):
         headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{self._url()}/embeddings", headers=headers,
-                                     json={"model": self.config.model, "input": text})
+                                     json={"model": self.config.model, "input": text,
+                                           **_dimensions_field(self.config)})
             resp.raise_for_status()
             return _require_vector(resp.json()["data"][0]["embedding"], self.label)
 
@@ -628,7 +672,8 @@ class OpenRouterEmbedding(EmbeddingProvider):
         base = self.config.api_base or "https://openrouter.ai/api/v1"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{base}/embeddings", headers=headers,
-                                     json={"model": self.config.model, "input": text})
+                                     json={"model": self.config.model, "input": text,
+                                           **_dimensions_field(self.config)})
             resp.raise_for_status()
             return _require_vector(resp.json()["data"][0]["embedding"], self.label)
 

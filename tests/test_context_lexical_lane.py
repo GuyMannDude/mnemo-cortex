@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -261,8 +261,11 @@ def test_dimension_mismatch_keeps_the_lane_out_of_the_pool(tmp_path):
         async def embed(self, text, *, use_breaker=True, task_type="document"):
             return [1.0] * (EMBED_DIM // 2)
 
+    # The startup check would refuse this embedder outright; this test is
+    # about a wrong-size query reaching recall anyway, so skip the check.
     with patch("agentb.server.create_resilient_embedding", return_value=ShortEmbedding()), \
-         patch("agentb.server.create_resilient_reasoning", return_value=FakeReasoning()):
+         patch("agentb.server.create_resilient_reasoning", return_value=FakeReasoning()), \
+         patch("agentb.server.probe_embedding_dim", new=AsyncMock(return_value=None)):
         from agentb.server import create_app
         cfg = AgentBConfig(
             reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama", model="x")),

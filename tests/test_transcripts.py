@@ -286,6 +286,7 @@ def make_client(tmp_path):
 @pytest.fixture
 def client(make_client):
     with make_client() as c:
+        FakeEmbedding.calls = []  # drop the server's startup embedding check
         yield c
 
 

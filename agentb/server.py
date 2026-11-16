@@ -48,7 +48,7 @@ from agentb.config import (
     validate_agent_id, validate_session_id,
     ExpansionConfig,
 )
-from agentb.providers import create_resilient_reasoning, create_resilient_embedding
+from agentb.providers import create_resilient_reasoning, create_resilient_embedding, probe_embedding_dim
 from agentb.cache import l3_scan, ContextChunk
 from agentb.fsutil import atomic_write_text as _atomic_write_text
 from agentb.ledger import get_ledger, LedgerBroken
@@ -1014,6 +1014,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # `python -m agentb.server`. Refuses to serve a non-loopback bind with
         # no auth unless server.allow_unauthenticated is set.
         assert_safe_auth_posture(config)
+        # A model whose vectors are not the index's size cannot save anything;
+        # say so now in one line instead of a 500 on every save.
+        if (problem := await probe_embedding_dim(embedder)):
+            raise RuntimeError(f"Refusing to start: {problem}")
         log.info(f"⚡ Mnemo Cortex v{__version__} — I remember everything so your agent doesn't have to.")
         log.info(f"  Reasoning: {reasoner.status}")
         log.info(f"  Embedding: {embedder.status}")
