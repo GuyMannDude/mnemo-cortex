@@ -6,7 +6,7 @@
 
 **Fix.**
 - The OpenAI and OpenRouter embedders send `dimensions: 768` for text-embedding-3 models. Other models get the field only from `extra.dimensions` in the embedding provider config (`0` = never send it), because OpenAI-compatible servers reject it for models that cannot shorten their vectors.
-- At startup the server embeds one short string with the primary embedding model. If the answer is not 768 numbers it refuses to start, with one line naming the model, both sizes and what to use. An embedder that is down or slow (20 s) only logs a warning, and the server starts as before.
+- At startup the server embeds one short string with the primary embedding model. If the answer is not 768 numbers it refuses to start, with one line naming the model, both sizes and what to use. An embedder that is down or slow (8 s, well inside the installer's 15 s wait for /health) only logs a warning, and the server starts as before.
 - `agentb.yaml.example`, `robot.install` and the Model Tiers note in `integrations/claude-code/README.md` say so. Google gemini-embedding still needs `extra.output_dimensionality: 768`, as before.
 
 ## Unreleased — the agent guides are held to the code (2026-11-15)

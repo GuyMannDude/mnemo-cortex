@@ -118,7 +118,14 @@ def _dimensions_field(config) -> dict:
     return {}
 
 
-async def probe_embedding_dim(embedder, timeout: float = 20.0) -> Optional[str]:
+# The startup check holds /health closed while it waits, and robot-install.sh
+# gives the new server 15 s to answer /health. 8 s leaves 7 s for import and
+# app start (about 1-2.5 s measured). A check that times out is skipped, which
+# is the safe side. tests/test_embed_dimensions.py pins the pair.
+PROBE_TIMEOUT_S = 8.0
+
+
+async def probe_embedding_dim(embedder, timeout: float = PROBE_TIMEOUT_S) -> Optional[str]:
     """Embed one short string with the primary embedder at startup.
 
     Returns a plain-words refusal when the model's vector size is not the

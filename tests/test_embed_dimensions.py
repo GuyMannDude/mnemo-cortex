@@ -12,8 +12,11 @@ from fastapi.testclient import TestClient
 
 from agentb.config import (AgentBConfig, CacheConfig, ClassificationConfig, DEFAULT_PERSONAS,
                            ProviderConfig, ResilientProviderConfig, ServerConfig)
-from agentb.providers import (OpenAIEmbedding, OpenRouterEmbedding, _dimensions_field,
-                              probe_embedding_dim)
+from pathlib import Path
+import re
+
+from agentb.providers import (PROBE_TIMEOUT_S, OpenAIEmbedding, OpenRouterEmbedding,
+                              _dimensions_field, probe_embedding_dim)
 from agentb.vec import EMBED_DIM
 
 
@@ -119,6 +122,18 @@ def test_empty_extra_does_not_break_embeds():
 ], ids=["unreachable", "error", "timeout"])
 def test_probe_outage_is_not_a_refusal(emb):
     assert asyncio.run(probe_embedding_dim(emb, timeout=0.2)) is None
+
+
+def test_probe_leaves_the_installer_room():
+    """/health stays closed while the check waits; robot-install.sh gives up
+    after its wait. Keep at least 5 s for import + app start (1-2.5 s seen)."""
+    src = (Path(__file__).resolve().parent.parent / "robot-install.sh").read_text(encoding="utf-8")
+    m = re.search(r"while \[ \$attempts -lt (\d+) \]; do.*?\n\s*sleep 1\n", src, flags=re.S)
+    assert m, "robot-install.sh's /health wait loop moved; update this test"
+    assert int(m.group(1)) - PROBE_TIMEOUT_S >= 5, (
+        f"startup check timeout {PROBE_TIMEOUT_S}s leaves under 5 s of the installer's "
+        f"{m.group(1)} s /health wait"
+    )
 
 
 def _cfg(tmp_path):
