@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — the agent guides are held to the code (2026-11-15)
+
+**Problem.** `robot.info`, `robot.install` and `llms.txt` are what an agent
+reads instead of the code, and nothing checked them against it. Two of them
+had drifted into claims the code never backed: `robot.info` listed a
+`POST /mcp` Streamable HTTP endpoint, an OAuth 2.1 Resource Server mode and
+`sk-mnemo-*` API keys, and `llms.txt` named the same HTTP MCP facade. None of
+that exists in the code, and none of it ever did. `robot.info` was also
+missing five bridge tools (`mnemo_save_trajectory`,
+`mnemo_recall_trajectory`, `mnemo_transcript_push`, `mnemo_capture_pause`,
+`mnemo_capture_resume`) and the `idea` category.
+
+**Fix.** The guides now say what the server does. MCP clients connect
+through the stdio bridge; there is no hosted HTTP MCP endpoint. The setup
+wizard and the installer bind loopback (127.0.0.1), where no token is
+needed; any other bind needs `server.auth_token` or scoped tokens, sent as
+`X-API-Key` or `Authorization: Bearer`, and the server refuses to start
+without one unless `server.allow_unauthenticated` is set. The five tools and
+the category are listed. If you were planning around the HTTP endpoint or
+OAuth: they were a documentation error, not a removed feature.
+
+New `tests/test_guide_facts.py` pairs each checkable claim in the three
+files with its source of truth (version, Python floor, dependency floors,
+port, wizard and installer defaults, embedding size, sources, categories,
+decay, MCP tools in both directions, REST endpoints, CLI commands and
+flags), so a guide edit or a code change that breaks a pair fails the
+build and names the file to fix. New CI job `robot-install-e2e` runs the
+real installer against a real Ollama on every push;
+`ROBOT_E2E_REQUIRE_OLLAMA=1` makes a missing Ollama a failure there instead
+of a skip. No server or bridge code changed.
+
 ## Unreleased — Cortex Stick: the Windows eject says why it failed (2026-11-14)
 
 **Problem.** On IGOR-2 the Shell.Application Eject verb returned 0 while
