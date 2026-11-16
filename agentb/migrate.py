@@ -274,7 +274,8 @@ async def _reindex_one(agent_id: str, data_dir: Path, embed, *, dry_run: bool,
         console.print(f"  [yellow]{agent_id}: no memory dir at {memory_dir} — skipping[/]")
         return {"agent": agent_id, "skipped_empty": True}
 
-    entries = list(iter_memory_entries(memory_dir))
+    superseded: list[str] = []
+    entries = list(iter_memory_entries(memory_dir, superseded))
     traj_dir = data_dir / "trajectories"
     traj_records: list[dict] = []
     if include_trajectories and traj_dir.is_dir():
@@ -286,7 +287,7 @@ async def _reindex_one(agent_id: str, data_dir: Path, embed, *, dry_run: bool,
 
     stats = {"agent": agent_id, "memories": len(entries), "trajectories": len(traj_records),
              "reembedded": 0, "traj_reembedded": 0, "truncated": 0, "cache_files_wiped": 0,
-             "backup": None}
+             "superseded_removed": 0, "backup": None}
     if dry_run:
         return stats
 
@@ -315,6 +316,12 @@ async def _reindex_one(agent_id: str, data_dir: Path, embed, *, dry_run: bool,
                 )
                 stats["reembedded"] += 1
                 progress.update(task, advance=1)
+        # Demoted/superseded records are not re-embedded; one an earlier run
+        # put back in the index leaves it now (demotion = the vector is gone).
+        for memory_id in superseded:
+            if store.has(memory_id):
+                store.delete(memory_id)
+                stats["superseded_removed"] += 1
     finally:
         store.close()
 

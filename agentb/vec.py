@@ -1009,8 +1009,25 @@ def detect_mode(memory_dir: Path) -> str:
     return "clean"
 
 
+def memory_text(entry: dict, memory_id: str) -> str:
+    """The text writeback embeds for a memory record: summary + key_facts,
+    stripped, capped at MAX_EMBED_INPUT_CHARS. Empty string = nothing to embed."""
+    summary = entry.get("summary", "") or ""
+    key_facts = entry.get("key_facts") or []
+    text = summary + "\n" + "\n".join(key_facts) if key_facts else summary
+    text = text.strip()
+    if len(text) > MAX_EMBED_INPUT_CHARS:
+        log.warning(
+            f"Truncating oversize memory {memory_id} for embedding: "
+            f"{len(text)} -> {MAX_EMBED_INPUT_CHARS} chars"
+        )
+        text = text[:MAX_EMBED_INPUT_CHARS]
+    return text
+
+
 def iter_memory_entries(
     memory_dir: Path,
+    superseded: Optional[list[str]] = None,
 ) -> Iterable[tuple[str, str, Path, Optional[float], Optional[str]]]:
     """Yield (memory_id, canonical_text, source_path, created_at, category) per memory JSON.
 
@@ -1018,6 +1035,11 @@ def iter_memory_entries(
     by newline. Texts longer than MAX_EMBED_INPUT_CHARS are truncated — the
     embedder's context window is finite and an oversize input would 400, trip
     the circuit breaker, and kill the rest of the run.
+
+    Records carrying `superseded_by` (replaced by a newer save, or demoted)
+    are NOT yielded: demotion's whole effect on recall is that the vector
+    leaves the index, so re-embedding them would undo it. Pass a list as
+    `superseded` to collect their ids.
     """
     for path in sorted(memory_dir.glob("*.json")):
         try:
@@ -1026,18 +1048,13 @@ def iter_memory_entries(
             log.warning(f"Skipping malformed memory file {path}: {e}")
             continue
         memory_id = entry.get("id") or path.stem
-        summary = entry.get("summary", "") or ""
-        key_facts = entry.get("key_facts") or []
-        text = summary + "\n" + "\n".join(key_facts) if key_facts else summary
-        text = text.strip()
+        if entry.get("superseded_by"):
+            if superseded is not None:
+                superseded.append(memory_id)
+            continue
+        text = memory_text(entry, memory_id)
         if not text:
             continue
-        if len(text) > MAX_EMBED_INPUT_CHARS:
-            log.warning(
-                f"Truncating oversize memory {memory_id} for embedding: "
-                f"{len(text)} -> {MAX_EMBED_INPUT_CHARS} chars"
-            )
-            text = text[:MAX_EMBED_INPUT_CHARS]
         yield memory_id, text, path, entry.get("created_at"), entry.get("category")
 
 
@@ -1082,15 +1099,22 @@ async def backfill(
     skip_existing: bool = True,
     progress_every: int = 50,
     adaptive: bool = True,
+    dry_run: bool = False,
 ) -> dict:
-    """Walk memory_dir, embed entries that aren't in the vec index, upsert.
+    """Walk memory_dir, embed live entries that aren't in the vec index, upsert.
+
+    Superseded/demoted records are never embedded, and any of them still in
+    the index (an earlier backfill or reindex put it back) is deleted from it.
 
     `adaptive=True` (default) retries on HTTP 400 with progressively shorter
     input — the safe path for production backfill. `adaptive=False` falls
     back to the raw embed call, used by tests with synthetic embedders.
+    `dry_run=True` embeds and deletes nothing; it only counts.
 
     Returns a stats dict: {total, embedded, skipped, failed, elapsed_sec,
-    truncated}.
+    truncated, unindexed, superseded_indexed, superseded_removed, dry_run}.
+    `unindexed` = live records that were not in the index when the walk
+    reached them; `superseded_indexed` = demoted records found in the index.
     """
     start = time.time()
     total = 0
@@ -1098,10 +1122,17 @@ async def backfill(
     skipped = 0
     failed = 0
     truncated = 0
-    for memory_id, text, path, created_at, category in iter_memory_entries(memory_dir):
+    unindexed = 0
+    superseded: list[str] = []
+    for memory_id, text, path, created_at, category in iter_memory_entries(memory_dir, superseded):
         total += 1
-        if skip_existing and store.has(memory_id):
+        indexed = store.has(memory_id)
+        if not indexed:
+            unindexed += 1
+        if skip_existing and indexed:
             skipped += 1
+            continue
+        if dry_run:
             continue
         try:
             if adaptive:
@@ -1128,11 +1159,16 @@ async def backfill(
                 f"Backfill progress: {total} seen, {embedded} embedded, "
                 f"{skipped} skipped, {failed} failed, {truncated} adaptively truncated"
             )
+    revived = [m for m in superseded if store.has(m)]
+    if not dry_run:
+        for memory_id in revived:
+            store.delete(memory_id)
     elapsed = time.time() - start
     log.info(
-        f"Backfill done: {total} seen, {embedded} embedded, "
-        f"{skipped} skipped, {failed} failed, {truncated} adaptively truncated, "
-        f"{elapsed:.1f}s"
+        f"Backfill {'dry run' if dry_run else 'done'}: {total} seen, {unindexed} unindexed, "
+        f"{embedded} embedded, {skipped} skipped, {failed} failed, "
+        f"{truncated} adaptively truncated, {len(revived)} superseded found in the index"
+        f"{'' if dry_run else ' (removed)'}, {elapsed:.1f}s"
     )
     return {
         "total": total,
@@ -1140,8 +1176,91 @@ async def backfill(
         "skipped": skipped,
         "failed": failed,
         "truncated": truncated,
+        "unindexed": unindexed,
+        "superseded_indexed": len(revived),
+        "superseded_removed": 0 if dry_run else len(revived),
+        "dry_run": dry_run,
         "elapsed_sec": round(elapsed, 2),
     }
+
+
+class PendingIndex:
+    """Ids of memories saved raw because the embedder failed, one per line.
+
+    Writeback adds an id when it cannot index a save; `drain_pending` embeds
+    them once the embedder answers again (next good save, and at startup).
+    The file is removed when the list is empty, so `path.exists()` is the
+    cheap "anything owed?" check. Callers run on the event loop, the same
+    rule as VecStore, so add and the drain's rewrite never interleave.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def add(self, memory_id: str) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(memory_id + "\n")
+
+    def ids(self) -> list[str]:
+        try:
+            lines = self.path.read_text(encoding="utf-8").split()
+        except FileNotFoundError:
+            return []
+        return list(dict.fromkeys(lines))
+
+    def discard(self, done: set[str]) -> None:
+        left = [m for m in self.ids() if m not in done]
+        if not left:
+            self.path.unlink(missing_ok=True)
+            return
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text("".join(m + "\n" for m in left), encoding="utf-8")
+        tmp.replace(self.path)
+
+
+async def drain_pending(
+    store: VecStore,
+    memory_dir: Path,
+    pending: PendingIndex,
+    embed: Callable[[str], Awaitable[list[float]]],
+) -> dict:
+    """Index every pending memory that is still live and still unindexed.
+
+    Stops at the first embed failure (the embedder is still down; the rest
+    wait for the next drain). Ids that are superseded, already indexed, gone
+    from disk, or empty leave the list without an embed.
+    Returns {embedded, dropped, failed, left}.
+    """
+    done: set[str] = set()
+    embedded = dropped = failed = 0
+    for memory_id in pending.ids():
+        path = memory_dir / f"{memory_id}.json"
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            entry = None
+        text = memory_text(entry, memory_id) if entry else ""
+        if store.has(memory_id) or not text or entry.get("superseded_by"):
+            done.add(memory_id)
+            dropped += 1
+            continue
+        try:
+            vec, stored_text = await embed_with_adaptive_truncation(embed, text)
+            store.upsert(
+                memory_id, stored_text, vec,
+                source_file=path.as_posix(),
+                created_at=entry.get("created_at"),
+                category=entry.get("category"),
+            )
+        except Exception as e:
+            failed += 1
+            log.warning(f"Pending re-index stopped at {memory_id}: {e}")
+            break
+        done.add(memory_id)
+        embedded += 1
+    pending.discard(done)
+    return {"embedded": embedded, "dropped": dropped, "failed": failed,
+            "left": len(pending.ids())}
 
 
 def backfill_categories(store: VecStore, memory_dir: Path) -> dict:

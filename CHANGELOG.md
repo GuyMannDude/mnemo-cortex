@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — a demoted memory stays demoted, and a save the embedder missed is indexed later (2026-11-15)
+
+**Problem.**
+- `POST /vec/backfill` put demoted memories back. Demoting a memory (a `supersedes` save, or `POST /memories/demote`) keeps its file and takes its vector out of the index, and that is all that keeps it out of recall. The backfill walker never looked at `superseded_by`, so one backfill re-indexed every demoted memory in the tenant. `mnemo-cortex migrate reindex` used the same walker and did the same.
+- A save made while the embedding model was unreachable (an Ollama restart, say) was kept on disk but never indexed: the log said "raw memory retained unindexed" and nothing came back for it. Only a hand-run backfill would.
+- Server, watcher and refresher log lines carried a time but no date, so a log that lives for months could not say which day an error happened.
+
+**Fix.**
+- The walker skips records with `superseded_by`. Backfill and reindex never embed them, and they delete any they find still in the index, so a store an earlier backfill damaged is mended by the next one. Backfill reports `superseded_indexed` and `superseded_removed`; reindex reports `superseded_removed`.
+- `POST /vec/backfill?dry_run=true` embeds and deletes nothing. It returns `unindexed` (live memories not in the index) and `superseded_indexed` (demoted memories that are), so you can see the damage before repairing it.
+- When a save cannot be indexed (a writeback, or the summary memory of an archived session), its id goes on the tenant's pending list, `vec_pending.txt` in the tenant's data dir. The server indexes the list on that tenant's next save that embeds, and at startup. It uses the same embedding call as a save and never another provider: two models' vectors in one index would not compare, and a hosted fallback would send memory text off the machine. A drain stops at the first failure, so a model that is still down is not hammered; a pending id that was demoted, deleted or indexed meanwhile leaves the list without an embed.
+- Log times read `2026-11-15 20:27:03` (`%Y-%m-%d %H:%M:%S`) in `server.py`, `watcher.py` and `refresher.py`. Nothing in the repo parses the old form.
+- Tests: `tests/test_vec_catchup.py` (10) and one archived-session test in `tests/test_m_group_server.py`; each of 12 deliberate breaks of the fix fails at least one.
+
 ## Unreleased — the installed service backs off when the server keeps failing to start (2026-11-15)
 
 **Problem.** The systemd unit `robot-install.sh` writes restarts the server 5 s after every failure, forever. systemd's default start limit (5 starts in 10 s) never trips at that pace. So a server that refuses its config (a wrong-size embedding model, or a network address with no auth token) restarted every 5 s until someone noticed, and with a hosted embedding model each start is a paid call.

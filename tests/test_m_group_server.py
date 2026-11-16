@@ -289,6 +289,50 @@ def test_preflight_enforces_scoped_token_pin(tmp_path):
         assert own.status_code == 200
 
 
+# ── item 9b: an archived session the embedder missed is owed, then indexed ──
+
+class SwitchEmbedding(FakeEmbedding):
+    down = False
+    async def embed(self, text, *, use_breaker=True, task_type="document"):
+        if self.down:
+            raise RuntimeError("All connection attempts failed")
+        return list(VEC)
+
+
+def test_archived_session_unindexed_while_embedder_down_is_indexed_later(tmp_path):
+    emb = SwitchEmbedding()
+    app = make_app(tmp_path, reasoner=VerdictReasoning(reply="cc talked about anvils"),
+                   embedder=emb)
+    with TestClient(app) as c:
+        r = c.post("/ingest", json={"agent_id": "cc", "prompt": "hello", "response": "world"},
+                   headers=_auth(MASTER))
+        assert r.status_code == 200, r.text
+        tenant = app.state.tenants._tenants["cc"]
+        sm = tenant["sessions"]
+        sm.config.hot_days = 0
+        sm._current_session_id = None
+        sm._current_session_file = None
+        time.sleep(0.05)
+        emb.down = True
+        asyncio.run(app.state.maintenance_cycle(1))
+        mems = [json.loads(p.read_text(encoding="utf-8"))
+                for p in tenant["memory_dir"].glob("*.json")]
+        mids = [m["id"] for m in mems if "archived-session" in m.get("additional_tags", [])]
+        assert len(mids) == 1, "archived session did not become a session_log memory"
+        assert tenant["pending"].ids() == mids
+        assert not tenant["vec"].has(mids[0])
+
+        emb.down = False
+        r = c.post("/writeback", json=_writeback_body(summary="the embedder is back"),
+                   headers=_auth(MASTER))
+        assert r.status_code == 200, r.text
+        end = time.time() + 5
+        while tenant["pending"].path.exists() and time.time() < end:
+            time.sleep(0.05)
+        assert tenant["vec"].has(mids[0])
+        assert not tenant["pending"].path.exists()
+
+
 # ── v4.21.5: an archived session's memory is dated by the session, not the janitor ──
 
 def test_archived_session_memory_carries_exchange_time_not_archival_time(tmp_path):

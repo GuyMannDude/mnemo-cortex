@@ -70,6 +70,7 @@ from agentb.ranking import composite_score, pool_similarities, explore_score, or
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
+    PendingIndex, drain_pending,
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
@@ -81,7 +82,7 @@ from agentb.jev_live import JevShadow, day_verdict, utc_day
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 # httpx/httpcore log every request URL at INFO. The embedder alert posts to a
 # Discord webhook whose URL IS the credential; it leaked into server.log
@@ -457,6 +458,8 @@ class TenantManager:
             "sessions": SessionManager(data_dir, session_cfg),
             "vec": vec_store,
             "vec_mode": vec_mode,
+            # saves the embedder missed, re-indexed later (drain_pending)
+            "pending": PendingIndex(data_dir / "vec_pending.txt"),
             "trajectories": traj_store,
             # v4.25: full client transcripts (never embedded; see transcripts.py)
             "transcripts": TranscriptArchive(data_dir, key),
@@ -970,9 +973,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     for agent_name in config.agents:
         tenants.get(agent_name)
 
-    def _startup_transcript_reprocess() -> list[dict]:
-        """Every tenant data dir that holds a transcript archive: configured
-        agents (which may set their own data_dir) plus <data_dir>/agents/*."""
+    def _tenant_data_dirs() -> list[tuple[str, Path]]:
+        """Every tenant data dir on disk: configured agents (which may set
+        their own data_dir) plus <data_dir>/agents/*."""
         dirs: dict[str, tuple[str, Path]] = {}
         for name in config.agents:
             d = get_agent_data_dir(config, name)
@@ -982,8 +985,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             for d in agents_root.iterdir():
                 if d.is_dir():
                     dirs.setdefault(str(d.resolve()), (d.name, d))
+        return list(dirs.values())
+
+    def _startup_transcript_reprocess() -> list[dict]:
+        """Every tenant data dir that holds a transcript archive."""
         reports = []
-        for name, d in dirs.values():
+        for name, d in _tenant_data_dirs():
             if not (d / "sessions" / "archive").is_dir():
                 continue
             if name in config.agents and config.agents[name].read_only:
@@ -1006,6 +1013,38 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             log.error(f"Startup transcript reprocess DIED: {exc!r} -- archived "
                       f"sessions may still carry the older redaction; "
                       f"POST /transcripts/reprocess per tenant")
+
+    # Item 9b: a save the embedder missed (writeback keeps it raw) goes on the
+    # tenant's pending list and is indexed once the embedder answers again:
+    # on that tenant's next good save, and at startup. Same embed call as
+    # writeback; never a second provider. One drain per tenant at a time.
+    drain_tasks: set = set()
+    draining: set[str] = set()
+
+    async def _drain_tenant(key: str, tenant: dict) -> None:
+        if key in draining:
+            return
+        draining.add(key)
+        try:
+            stats = await drain_pending(
+                tenant["vec"], tenant["memory_dir"], tenant["pending"],
+                lambda t: embedder.embed(t, task_type="document"))
+            log.info(f"Pending re-index '{key}': {stats['embedded']} indexed, "
+                     f"{stats['dropped']} dropped, {stats['left']} still owed")
+        except Exception as e:
+            log.error(f"Pending re-index '{key}' failed: {e!r}")
+        finally:
+            draining.discard(key)
+
+    def _schedule_drain(key: str, tenant: dict) -> None:
+        task = asyncio.create_task(_drain_tenant(key, tenant))
+        drain_tasks.add(task)  # a bare create_task can be garbage-collected
+        task.add_done_callback(drain_tasks.discard)
+
+    async def _startup_drain() -> None:
+        for name, d in _tenant_data_dirs():
+            if (d / "vec_pending.txt").exists():
+                await _drain_tenant(name, tenants.get(name))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1034,10 +1073,17 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # REDACTION_VERSION once per start, off the event loop.
         reprocess_task = asyncio.create_task(asyncio.to_thread(_startup_transcript_reprocess))
         reprocess_task.add_done_callback(_log_reprocess_exit)
+        startup_drain = asyncio.create_task(_startup_drain())
+        drain_tasks.add(startup_drain)
+        startup_drain.add_done_callback(drain_tasks.discard)
         try:
             yield
         finally:
             maintenance_task.cancel()
+            # a drain writes the vec index: stop it before the stores close
+            for task in list(drain_tasks):
+                task.cancel()
+            await asyncio.gather(*drain_tasks, return_exceptions=True)
             try:
                 with suppress(asyncio.CancelledError):
                     await maintenance_task
@@ -2023,6 +2069,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 # exact failure mode the dim guard was added to prevent.
                 log.error(f"vec_index dim mismatch on writeback {memory_id}: {e}")
                 raise HTTPException(500, f"vec index dim mismatch: {e}")
+            # The embedder answers again: catch up on saves it missed.
+            if tenant["pending"].path.exists():
+                _schedule_drain(req.agent_id or "default", tenant)
 
             # E3 follow-up: the per-project L1 bundles this used to write
             # (one embed per referenced project) fed a tier /context no
@@ -2031,7 +2080,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            log.error(f"Writeback indexing failed: {e}")
+            tenant["pending"].add(memory_id)
+            log.error(f"Writeback indexing failed: {e} (queued for re-index)")
 
         # 4.26.0: the save is committed (file + seal). The shadow runs as a
         # background task; submit() never awaits and never raises into here.
@@ -2671,7 +2721,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         }
 
     @app.post("/vec/backfill")
-    async def vec_backfill_endpoint(agent_id: Optional[str] = None, skip_existing: bool = True):
+    async def vec_backfill_endpoint(agent_id: Optional[str] = None, skip_existing: bool = True,
+                                    dry_run: bool = False):
         tenant = tenants.get(agent_id)
         vec_store: VecStore = tenant["vec"]
         memory_dir = tenant["memory_dir"]
@@ -2685,6 +2736,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             memory_dir,
             lambda t: embedder.primary.embed(t, task_type="document"),
             skip_existing=skip_existing,
+            dry_run=dry_run,
         )
         return {"agent_id": agent_id or "default", **stats}
 
@@ -3176,7 +3228,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             category="session_log",  # #468: matches the entry's category
                         )
                     except Exception as e:
-                        log.warning(f"Archived-session indexing failed for '{tenant_key}': {e}")
+                        # the memory may be on disk unindexed: owe it (a drain
+                        # drops the id if the file never landed)
+                        tenant["pending"].add(mid)
+                        log.warning(f"Archived-session indexing failed for '{tenant_key}': {e} (queued for re-index)")
             except Exception as e:
                 log.warning(f"Session archival error for '{tenant_key}': {e}")
 
