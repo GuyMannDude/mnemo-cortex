@@ -240,7 +240,13 @@ def test_tools_named_in_llms_txt_exist():
     assert named <= _bridge_tools(), f"llms.txt names tools the bridge does not have: {sorted(named - _bridge_tools())}"
 
 
-def test_rest_endpoints_exist(tmp_path):
+# Served but not product surface: FastAPI's own docs pages, the HEAD twin of
+# every GET, and the Pocket web app's page and assets (robot.info lists /app/).
+NOT_LISTED = {("GET", "/docs"), ("GET", "/docs/oauth2-redirect"), ("GET", "/redoc"),
+              ("GET", "/openapi.json"), ("GET", "/app"), ("GET", "/app/{}")}
+
+
+def test_robot_info_lists_exactly_the_rest_endpoints(tmp_path):
     from unittest.mock import patch
     from agentb.config import (AgentBConfig, CacheConfig, ClassificationConfig, DEFAULT_PERSONAS,
                                ProviderConfig, ResilientProviderConfig, ServerConfig)
@@ -264,6 +270,12 @@ def test_rest_endpoints_exist(tmp_path):
             real.add((m.upper(), norm(op)))
     claimed = {(e["method"], norm(e["path"])) for e in INFO["exposes"]["rest_api"]["endpoints"]}
     assert not claimed - real, f"robot.info lists endpoints the server does not serve: {sorted(claimed - real)}"
+    unlisted = {(m, p) for m, p in real - claimed - NOT_LISTED if m != "HEAD"}
+    assert not unlisted, (
+        f"the server serves endpoints robot.info does not list: {sorted(unlisted)}; "
+        "add each to exposes.rest_api.endpoints with its purpose"
+    )
+    assert not NOT_LISTED - real, f"stale NOT_LISTED entries: {sorted(NOT_LISTED - real)}"
 
 
 def test_cli_commands_and_flags_exist():

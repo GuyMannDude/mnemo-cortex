@@ -97,7 +97,23 @@
         {"path": "/transcripts", "method": "GET", "purpose": "v4.25 — FTS keyword search over every archived turn of one tenant (q, limit); without q, the newest archived sessions."},
         {"path": "/transcripts/{session_id}", "method": "GET", "purpose": "v4.25 — one archived transcript: format=manifest (default), turns (normalized), or raw (the redacted JSONL)."},
         {"path": "/transcripts/reprocess", "method": "POST", "purpose": "v4.25.1 — re-run the current redaction over one tenant's archived transcripts whose manifest predates it (redaction_version); also runs once per tenant at startup. Idempotent."},
-        {"path": "/transcripts/{session_id}/turns", "method": "GET", "purpose": "v4.25 — page normalized turns by seq (from, to, limit); next_from names the following page."}
+        {"path": "/transcripts/{session_id}/turns", "method": "GET", "purpose": "v4.25 — page normalized turns by seq (from, to, limit); next_from names the following page."},
+        {"path": "/ingest", "method": "POST", "purpose": "The Live Wire: append one prompt/response exchange to the agent's session log as it happens. Fast, append-only; discarded while capture is paused."},
+        {"path": "/sessions", "method": "GET", "purpose": "List an agent's hot and warm sessions with tier stats."},
+        {"path": "/sessions/recent", "method": "GET", "purpose": "The most recent exchanges as plain text (n, default 20), for injecting at session start."},
+        {"path": "/sessions/{session_id}/transcript", "method": "GET", "purpose": "The full transcript of one session."},
+        {"path": "/capture/pause", "method": "POST", "purpose": "Pause ambient capture for one agent (or every agent when agent_id is left out) for a number of minutes; activity in the window is discarded, deliberate saves still work."},
+        {"path": "/capture/resume", "method": "POST", "purpose": "Resume ambient capture early, for one agent or all."},
+        {"path": "/capture/status", "method": "GET", "purpose": "Which agents' capture is paused, and until when."},
+        {"path": "/proposals", "method": "POST", "purpose": "File a proposal against a memory (memory_category or memory_note) for the user to settle; the memory itself does not change."},
+        {"path": "/proposals", "method": "GET", "purpose": "List proposals of every kind (fact, memory_category, memory_note), filtered by kind and status, with pending counts per kind."},
+        {"path": "/proposals/{proposal_id}/resolve", "method": "POST", "purpose": "Accept or reject one proposal of any kind."},
+        {"path": "/proposals/jev-stats", "method": "GET", "purpose": "Per-day counts of the optional Jev category shadow's outcomes (default 7 days, max 90)."},
+        {"path": "/passport/observe", "method": "POST", "purpose": "Developer's Passport: submit a behavioural observation; it waits as a candidate."},
+        {"path": "/passport/pending", "method": "POST", "purpose": "Developer's Passport: list candidate observations awaiting review."},
+        {"path": "/passport/promote", "method": "POST", "purpose": "Developer's Passport: promote a candidate into a user-context claim."},
+        {"path": "/passport/context", "method": "POST", "purpose": "Developer's Passport: the promoted user-context claims, by scope and platform."},
+        {"path": "/passport/override", "method": "POST", "purpose": "Developer's Passport: forget a claim, or override it with a corrected one."}
       ]
     },
     "mcp_tools": [
