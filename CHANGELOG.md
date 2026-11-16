@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — hosted embedding models get the index's size; a wrong size stops the server at startup (2026-11-15)
+
+**Problem.** Mnemo's index holds 768 numbers per memory. OpenAI's text-embedding-3 models answer 1536 or 3072 unless asked, and the OpenAI and OpenRouter embedders never asked, so with either as the embedding model every save failed with a 500. Nothing said why until the first save.
+
+**Fix.**
+- The OpenAI and OpenRouter embedders send `dimensions: 768` for text-embedding-3 models. Other models get the field only from `extra.dimensions` in the embedding provider config (`0` = never send it), because OpenAI-compatible servers reject it for models that cannot shorten their vectors.
+- At startup the server embeds one short string with the primary embedding model. If the answer is not 768 numbers it refuses to start, with one line naming the model, both sizes and what to use. An embedder that is down or slow (20 s) only logs a warning, and the server starts as before.
+- `agentb.yaml.example`, `robot.install` and the Model Tiers note in `integrations/claude-code/README.md` say so. Google gemini-embedding still needs `extra.output_dimensionality: 768`, as before.
+
 ## Unreleased — the agent guides are held to the code (2026-11-15)
 
 **Problem.** `robot.info`, `robot.install` and `llms.txt` are what an agent

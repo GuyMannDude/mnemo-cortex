@@ -67,9 +67,12 @@ reasoning:
 # "Ollama is down" case — without it, every recall 500s during outages.
 #
 # Dimension lock: sqlite-vec store is 768 dims (nomic-embed-text native).
-# If your fallback provider's native dim doesn't match 768, use the
-# `extra.output_dimensionality` parameter (supported by Google's
-# gemini-embedding-* family via Matryoshka truncation) to coerce.
+# The server embeds one test string at startup and refuses to start if the
+# primary model answers another size. To get 768 from a hosted model:
+#   - OpenAI / OpenRouter text-embedding-3-*: asked for 768 automatically.
+#   - Any other OpenAI-style model that can shorten its vectors:
+#     extra.dimensions: 768 (extra.dimensions: 0 never sends the field).
+#   - Google gemini-embedding-*: extra.output_dimensionality: 768.
 embedding:
   provider: ollama
   model: nomic-embed-text
@@ -86,9 +89,7 @@ embedding:
       extra:
         output_dimensionality: 768  # truncates 3072 native → 768 to match store
 
-    # Alternative: OpenAI text-embedding-3-small (note: needs a provider
-    # patch to pass the dimensions parameter — see GoogleEmbedding for
-    # reference. Defaults to 1536 dims which WILL trip the vec dim guard).
+    # Alternative: OpenAI text-embedding-3-small (Mnemo asks it for 768).
     # - provider: openai
     #   model: text-embedding-3-small
     #   api_key: ${OPENAI_API_KEY}

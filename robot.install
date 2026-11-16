@@ -63,9 +63,11 @@
   },
 
   // Embedding provider — local Ollama by default. The memory index holds
-  // 768-number vectors (nomic-embed-text's size); a model that returns a
-  // different size is refused at save time, so keep nomic-embed-text
-  // unless you know your model returns 768. A hosted provider takes an
+  // 768-number vectors (nomic-embed-text's size); the server will not start
+  // with a model that returns a different size. OpenAI's text-embedding-3
+  // models are asked for 768, so they work too; another hosted model that
+  // can shorten its vectors needs extra.dimensions: 768 under embedding in
+  // the generated config (this file does not carry it). A hosted provider takes an
   // api_key_env here the same way reasoning does. Once memories exist,
   // keep the same model: vectors from two models don't compare.
   "embedding": {

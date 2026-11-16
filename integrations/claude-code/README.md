@@ -66,6 +66,8 @@ Mnemo Cortex needs two models: one for embeddings (semantic search) and one for 
 | **Cloud (Google)** | Google gemini-embedding-001 | Google gemini-2.5-flash | ~$0.05/mo | API key |
 | **Custom** | Any endpoint | Any endpoint | Varies | You configure |
 
+> **Embedding size:** Mnemo's index holds 768 numbers per memory, and the server will not start with an embedding model that answers another size. Ollama nomic-embed-text gives 768. OpenAI's text-embedding-3 models are asked for 768 automatically. For Google, set `extra: {output_dimensionality: 768}` on the embedding provider.
+
 > **Google users:** If you see `text-embedding-004` referenced anywhere, that model was shut down January 2026. Use `gemini-embedding-001` instead.
 
 Model configuration is done in Mnemo Cortex itself (see main README), not in these hooks.
