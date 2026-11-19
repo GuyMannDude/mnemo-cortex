@@ -402,6 +402,189 @@ _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
 
+# ── Capture-pause windows (item 18b') ──
+# The server filters every upload itself, whatever the client: a line whose
+# event time falls in a capture-pause window for this writer is replaced 1:1
+# by a stub, so turn order and count survive and the archive SAYS something
+# was withheld. The archive stores the filtered lines; sha256/bytes stay those
+# of the raw upload, so the append-only check is unchanged.
+#
+# Stability: a line already archived is FROZEN. Its decision is recorded
+# (filter_consumed_bytes + withheld_ranges in raw byte offsets) and replayed
+# on every later upload, so a window opened after a line was archived never
+# flips it (anything already uploaded before a pause stays uploaded), and a
+# line once withheld stays withheld.
+STUB_TYPE = "mnemo-withheld"
+FILTER_KEYS = ("filter_consumed_bytes", "withheld_ranges", "withheld_lines",
+               "withheld_turns", "windows", "trailing_untimed_held", "held_for_clock")
+
+
+def _line_time(line: bytes) -> Optional[float]:
+    try:
+        obj = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    ts = obj.get("timestamp")
+    if not isinstance(ts, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+# Untimed Claude Code line types that carry no conversation content (probe of
+# 10 real session files, 2026-11-19). Every other untimed type is treated as
+# content-bearing: last-prompt, ai-title, custom-title, api-request-blob, ...
+CONTENT_FREE_UNTIMED = frozenset({
+    "mode", "permission-mode", "atis-latch", "session-owner", "cost-state",
+    "tools-used", "agent-name",
+})
+
+
+def _untimed_type(line: bytes) -> Optional[str]:
+    try:
+        obj = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    return obj.get("type") if isinstance(obj, dict) and isinstance(obj.get("type"), str) else None
+
+
+def _stub(line: bytes, window_id: str, t: Optional[float]) -> bytes:
+    stub = {"type": STUB_TYPE, "window": window_id}
+    try:
+        obj = json.loads(line)
+        if isinstance(obj, dict) and isinstance(obj.get("type"), str):
+            stub["was"] = obj["type"][:64]
+    except (ValueError, RecursionError):
+        pass
+    if t is not None:
+        stub["ts"] = datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
+    return json.dumps(stub, separators=(",", ":")).encode("utf-8")
+
+
+@dataclass
+class FilterResult:
+    data: bytes                        # what the archive parses and stores
+    consumed: int                      # raw offset where the emitted lines end
+    ranges: list                       # [[start, end, window_id], ...] raw offsets
+    withheld_lines: int = 0
+    withheld_turns: int = 0
+    window_ids: list = field(default_factory=list)
+    trailing_untimed_held: int = 0
+    held_tail_bytes: int = 0
+    held_for_clock: int = 0
+
+
+def filter_lines(raw: bytes, *, frozen: int, frozen_ranges: list,
+                 covers, hold_fresh: bool = False) -> FilterResult:
+    """Decide every line of `raw`: verbatim, stub, or held (not archived yet).
+
+    frozen / frozen_ranges: the previous upload's decisions; every line ending
+      at or before `frozen` replays them.
+    covers(t) -> window id or None, for event time t (epoch seconds).
+    hold_fresh: the client's clock is not trusted while a window could apply;
+      no fresh line is archived this time (it ships with a trusted upload).
+
+    A timed line is withheld when its own time is covered. An untimed line is
+    withheld when EITHER timed neighbour's time is (api-request-blob is
+    written BEFORE its timed sibling, 190 of 190 in a probe of 10 real session files). A
+    trailing run of untimed lines has no next neighbour yet: it is held while
+    any window could still cover that neighbour (one open, or ending after the
+    run's previous timed line), else archived as today. An unterminated last
+    line is kept only when it is a complete JSON object (parse_transcript's
+    rule), and is then judged like any other line.
+    """
+    lines = []                         # (start, end, body, t)
+    pos = 0
+    held_tail = 0
+    while pos < len(raw):
+        nl = raw.find(b"\n", pos)
+        if nl < 0:
+            tail = raw[pos:]
+            try:
+                complete = isinstance(json.loads(tail), dict)
+            except (ValueError, RecursionError):
+                complete = False
+            if complete:
+                lines.append((pos, len(raw), tail, _line_time(tail)))
+            elif tail.strip():
+                held_tail = len(tail)
+            break
+        body = raw[pos:nl]
+        lines.append((pos, nl + 1, body, _line_time(body)))
+        pos = nl + 1
+
+    def frozen_wid(start: int) -> Optional[str]:
+        for a, b, wid in frozen_ranges:
+            if a <= start < b:
+                return wid
+        return None
+
+    last_timed = max((i for i, ln in enumerate(lines) if ln[3] is not None), default=-1)
+    out: list[bytes] = []
+    decided: list[tuple[int, int, Optional[str], bytes]] = []
+    res = FilterResult(b"", 0, [], held_tail_bytes=held_tail)
+    prev_t: Optional[float] = None
+    next_idx = 0                       # cursor for the next timed neighbour
+    first_wid: Optional[str] = None    # first window any earlier line was withheld by
+    for i, (start, end, body, t) in enumerate(lines):
+        lo = float("-inf") if prev_t is None else prev_t
+        if end <= frozen:
+            wid = frozen_wid(start)
+        elif hold_fresh:
+            res.held_for_clock = len(lines) - i
+            break
+        elif t is not None:
+            wid = covers(t)
+        elif first_wid and _untimed_type(body) not in CONTENT_FREE_UNTIMED:
+            # An untimed line can COPY earlier content long after it was
+            # written (last-prompt repeats a prompt; ai-title summarises the
+            # chat). Once anything was withheld, every later content-bearing
+            # untimed line is withheld too, whatever its neighbours' times.
+            wid = first_wid
+        elif i > last_timed:
+            if covers(lo, float("inf")):
+                res.trailing_untimed_held = len(lines) - i
+                break
+            wid = None
+        else:
+            if next_idx <= i:
+                next_idx = next(j for j in range(i + 1, len(lines)) if lines[j][3] is not None)
+            # It was written somewhere between its neighbours: any window
+            # touching that gap may hold it (an idle stretch inside a window).
+            wid = covers(lo, lines[next_idx][3])
+        if t is not None:
+            prev_t = t
+        if wid and first_wid is None:
+            first_wid = wid
+        decided.append((start, end, wid, body))
+
+    for start, end, wid, body in decided:
+        if wid is None:
+            out.append(body)
+            continue
+        stub = _stub(body, wid, _line_time(body))
+        out.append(stub)
+        res.withheld_lines += 1
+        if b'"was":"user"' in stub or b'"was":"assistant"' in stub:
+            res.withheld_turns += 1
+        if wid not in res.window_ids:
+            res.window_ids.append(wid)
+        if res.ranges and res.ranges[-1][1] == start and res.ranges[-1][2] == wid:
+            res.ranges[-1][1] = end
+        else:
+            res.ranges.append([start, end, wid])
+    res.consumed = decided[-1][1] if decided else 0
+    res.data = b"".join(b + b"\n" for b in out)
+    return res
+
+
 def _lock_for(path: Path) -> threading.Lock:
     key = str(path.resolve())
     with _LOCKS_GUARD:
@@ -551,7 +734,9 @@ class TranscriptArchive:
 
     def _store(self, session_id: str, parsed: ParsedTranscript, *, raw_sha: str,
                raw_bytes: int, agent_id: Optional[str], host: Optional[str],
-               existing: Optional[dict], counts_upload: bool) -> dict:
+               existing: Optional[dict], counts_upload: bool,
+               filt: Optional[FilterResult] = None,
+               window_meta: Optional[dict] = None) -> dict:
         """Write gz (atomic + fsync) -> index -> manifest (the commit marker).
         Caller holds the session lock."""
         for stale in (self._gz(session_id).with_name(f"{session_id}.jsonl.gz.tmp"),
@@ -601,6 +786,24 @@ class TranscriptArchive:
         }
         if prev.get("pointer_error") and not prev.get("pointer_memory_id"):
             manifest["pointer_error"] = prev["pointer_error"]
+        if filt is not None:
+            known = {w.get("id"): w for w in prev.get("windows") or [] if isinstance(w, dict)}
+            known.update(window_meta or {})
+            manifest.update({
+                "filter_consumed_bytes": filt.consumed,
+                "withheld_ranges": filt.ranges,
+                "withheld_lines": filt.withheld_lines,
+                "withheld_turns": filt.withheld_turns,
+                "windows": [known.get(w, {"id": w}) for w in filt.window_ids],
+                "trailing_untimed_held": filt.trailing_untimed_held,
+                "held_for_clock": filt.held_for_clock,
+                # the filter takes the unfinished line off before parsing
+                "unfinished_tail_bytes": filt.held_tail_bytes,
+            })
+        else:                          # reprocess: the decisions do not change
+            for k in FILTER_KEYS:
+                if k in prev:
+                    manifest[k] = prev[k]
 
         conn = self._connect(create=True)
         try:
@@ -634,14 +837,23 @@ class TranscriptArchive:
         return manifest
 
     def upload(self, session_id: str, raw: bytes, agent_id: Optional[str],
-               host: Optional[str]) -> tuple[str, dict]:
+               host: Optional[str], *, covers=None, clock_ok: bool = True,
+               window_meta: Optional[dict] = None) -> tuple[str, dict]:
         """Archive one transcript. Returns (status, manifest) where status is
-        archived | replaced | unchanged | repaired. Raises TranscriptConflict
-        (409) and ValueError (400: bad id, or nothing parseable).
+        archived | replaced | unchanged | repaired | held. Raises
+        TranscriptConflict (409) and ValueError (400: bad id, or nothing
+        parseable).
 
         repaired = the same bytes as the archive, but the stored copy was
         corrupt or redacted by an older REDACTION_VERSION, so it was rebuilt
-        from this upload."""
+        from this upload. held = nothing new could be archived yet (a trailing
+        untimed run, an unfinished line, or an untrusted clock); the archive
+        is untouched and the next upload decides.
+
+        covers(lo, hi=None) -> capture-pause window id or None (item 18b').
+        clock_ok=False: the client's clock is off, so its line times mean
+        nothing; fresh lines are held while any window touches the time since
+        the last upload."""
         validate_transcript_id(session_id)
         sha = hashlib.sha256(raw).hexdigest()
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -668,13 +880,46 @@ class TranscriptArchive:
                             "(the client file is append-only, so this is a different file)")
                     status = "replaced"
 
-            parsed = parse_transcript(raw)
+            cov = covers or (lambda lo, hi=None: None)
+            if existing is None:
+                frozen, franges = 0, []
+            elif "filter_consumed_bytes" in existing:
+                frozen = int(existing["filter_consumed_bytes"])
+                franges = existing.get("withheld_ranges") or []
+            else:                      # archived before windows: every line verbatim
+                frozen, franges = int(existing.get("bytes") or 0), []
+            hold = False
+            if not clock_ok:
+                since = float("-inf")
+                if existing and existing.get("uploaded_at"):
+                    since = datetime.fromisoformat(existing["uploaded_at"]).timestamp()
+                hold = cov(since, datetime.now(timezone.utc).timestamp()) is not None
+            filt = filter_lines(raw, frozen=frozen, frozen_ranges=franges,
+                                covers=cov, hold_fresh=hold)
+            if status != "repaired" and filt.consumed <= frozen and (
+                    existing is not None or filt.consumed == 0):
+                if existing is None:
+                    probe = parse_transcript(raw)
+                    if probe.line_count == 0 or probe.bad_lines == probe.line_count:
+                        raise ValueError("upload contains no complete JSON transcript lines")
+                log.info(f"Transcript held: {session_id} (nothing new to archive: "
+                         f"{filt.trailing_untimed_held} trailing untimed, "
+                         f"{filt.held_for_clock} held for clock, "
+                         f"{filt.held_tail_bytes} unfinished bytes)")
+                held = dict(existing or {"session_id": session_id})
+                held.update({"trailing_untimed_held": filt.trailing_untimed_held,
+                             "unfinished_tail_bytes": filt.held_tail_bytes,
+                             "held_for_clock": filt.held_for_clock})
+                return "held", held
+
+            parsed = parse_transcript(filt.data)
             if parsed.line_count == 0 or parsed.bad_lines == parsed.line_count:
                 raise ValueError("upload contains no complete JSON transcript lines")
 
             manifest = self._store(session_id, parsed, raw_sha=sha, raw_bytes=len(raw),
                                    agent_id=agent_id, host=host, existing=existing,
-                                   counts_upload=status != "repaired")
+                                   counts_upload=status != "repaired",
+                                   filt=filt, window_meta=window_meta)
             log.info(f"Transcript {status}: {session_id} ({len(raw)} bytes, "
                      f"{parsed.line_count} lines, {len(parsed.turns)} turns, "
                      f"tenant {agent_id or 'default'})")

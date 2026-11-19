@@ -150,13 +150,16 @@ def test_ship_conflict_is_partial_and_not_reposted(app_client, tmp_path, capsys)
     assert _run(app_client, root, state) == ship.EXIT_PARTIAL   # untouched: same verdict
 
 
-def test_ship_pause_is_partial_and_state_untouched(app_client, tmp_path, capsys):
+def test_ship_through_a_pause_archives_lines_outside_the_window(app_client, tmp_path, capsys):
+    # item 18b': the server no longer answers "paused" to an upload; it stubs
+    # the window's lines itself, so the shipper (unchanged) archives and moves on.
     root = _tree(tmp_path)
     state = tmp_path / "state.json"
     app_client[0].post("/capture/pause", json={"minutes": 5})
-    assert _run(app_client, root, state) == ship.EXIT_PARTIAL
-    assert "paused=3" in capsys.readouterr().out
-    assert not state.exists()
+    assert _run(app_client, root, state) == ship.EXIT_CLEAN
+    out = capsys.readouterr().out
+    assert "archived=3" in out and "paused=0" in out
+    assert state.exists()
 
 
 def test_ship_dry_run_sends_and_writes_nothing(app_client, tmp_path, capsys):

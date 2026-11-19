@@ -387,14 +387,15 @@ def test_endpoint_subagent_transcript_writes_no_pointer(client, tmp_path):
     assert _memories(tmp_path) == []
 
 
-def test_endpoint_capture_gate_pauses_uploads(client, tmp_path):
+def test_endpoint_capture_pause_withholds_its_window_not_the_upload(client, tmp_path):
+    # item 18b': a pause no longer refuses the upload ("paused"); the server
+    # stubs the lines whose event time is in the window and archives the rest.
+    # The specimen's lines are from 2026-09-22, outside a window opened now.
     client.post("/capture/pause", json={"minutes": 5, "reason": "rotation"})
     r = client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
-    assert r.status_code == 200 and r.json()["status"] == "paused"
-    assert not (tmp_path / "agents" / "cc" / "sessions" / "archive").exists()
-    client.post("/capture/resume")
-    assert client.post("/transcripts", params={"agent_id": "cc"},
-                       content=specimen()).json()["status"] == "archived"
+    assert r.status_code == 200 and r.json()["status"] == "archived"
+    assert r.json()["manifest"]["withheld_lines"] == 0
+    # (lines inside a window: tests/test_pause_windows.py)
 
 
 def test_endpoint_tenants_are_isolated(client):

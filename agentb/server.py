@@ -26,6 +26,7 @@ import ipaddress
 import socket
 import logging
 import asyncio
+from functools import partial
 import statistics
 import uuid
 import zlib
@@ -34,7 +35,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -65,7 +66,10 @@ from agentb.provenance import (
 from agentb.classify import classify_category, reclassify_memory_dir, is_routine_log
 from agentb.dedup import find_near_duplicates
 from agentb.redact import redact_text, redact_obj
-from agentb.capture_gate import CaptureGate
+from agentb.capture_gate import (
+    CaptureGate, GUARD_SECONDS, WRITEBACK_LAG_S, clock_trusted, to_epoch,
+    validate_seat, window_overlapping,
+)
 from agentb.ranking import composite_score, pool_similarities, explore_score, order_revisions, exact_first
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
@@ -339,6 +343,17 @@ class WritebackRequest(BaseModel):
     supersedes: list[str] = Field(
         default_factory=list,
         description="Save and demote these existing memory ids.")
+    # item 18b' — capture-pause windows on event time
+    seat: Optional[str] = Field(
+        None, description="Which seat of the tenant wrote this (e.g. cc-cc3). "
+        "Omitted: every pause window on the tenant applies.")
+    event_span: Optional[list[Union[str, float]]] = Field(
+        None, min_length=2, max_length=2,
+        description="[first, last] event time of what this write carries "
+        "(ISO-8601 or epoch seconds). Used only with a trusted client_now.")
+    client_now: Optional[Union[str, float]] = Field(
+        None, description="The client's clock when it posted. Further than "
+        "60 s from the server's, the write is treated as having no event time.")
 
 
 class WritebackResponse(BaseModel):
@@ -1924,14 +1939,52 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # Deliberate manual saves (user/inferred, real summary) still land:
         # saving the *why* of a sensitive operation while ambient capture is
         # off is the intended workflow.
-        if (req.category == "session_log" or req.source == "tool"
-                or is_routine_log(req.summary, req.key_facts)) and gate.is_paused(req.agent_id):
-            log.warning(f"Writeback discarded (capture paused for {req.agent_id or 'default'}): {req.session_id}")
-            return WritebackResponse(
-                status="paused", memory_id="", agent_id=req.agent_id,
-                l1_bundles_updated=0,
-                message="Capture is paused — ambient writeback discarded (auto-resumes).",
-            )
+        #
+        # item 18b': judged on EVENT time, not only on post time. A pause
+        # leaves a window (capture_gate.py); an ambient write is discarded
+        # when what it carries overlaps a window for its (agent, seat), or
+        # when it is posted inside one. Event times count only with a client
+        # clock we trust (change B); otherwise the write could hold anything
+        # from the last WRITEBACK_LAG_S, and is judged on that.
+        if req.category == "session_log" or req.source == "tool" \
+                or is_routine_log(req.summary, req.key_facts):
+            try:
+                validate_seat(req.seat)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            now = time.time()
+            windows = gate.windows_for(req.agent_id, req.seat)
+            span = None
+            ts = to_epoch(req.timestamp)
+            if windows and clock_trusted(req.client_now, now):
+                if req.event_span:
+                    times = [to_epoch(v) for v in req.event_span]
+                    if all(t is not None for t in times):
+                        span = (min(times), max(times))
+                elif ts is not None:
+                    # A timestamp alone says when the write STARTED, not what
+                    # it carries since: judge everything up to the post.
+                    span = (ts, now)
+            if span is not None:
+                wid = (window_overlapping(windows, *span)
+                       or window_overlapping(windows, now, now))
+            else:
+                # No trusted event time: the last LAG seconds, reaching back
+                # to an (untrusted) timestamp when one is given.
+                lo = now - WRITEBACK_LAG_S
+                if ts is not None:
+                    lo = min(lo, ts - GUARD_SECONDS)
+                wid = window_overlapping(windows, lo, now)
+            if wid:
+                log.warning(f"Writeback discarded (capture pause window {wid} for "
+                            f"{req.agent_id or 'default'}"
+                            f"{' seat ' + req.seat if req.seat else ''}): {req.session_id}")
+                return WritebackResponse(
+                    status="paused", memory_id="", agent_id=req.agent_id,
+                    l1_bundles_updated=0,
+                    message=f"Capture is paused — ambient writeback discarded "
+                            f"(window {wid}).",
+                )
 
         # v4.1 secret redaction — the single choke point for everything that
         # enters the store. Runs BEFORE classification so a leaked key never
@@ -2481,6 +2534,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             None, description="Pause only this agent's ambient capture. "
             "Omit for the FLEET-WIDE pause (every agent's capture discarded)."
         )
+        seat: Optional[str] = Field(
+            None, description="Pause only this seat of the agent (e.g. cc-cc3). "
+            "Omit to pause every seat of the agent."
+        )
 
     class CaptureResumeRequest(BaseModel):
         agent_id: Optional[str] = Field(
@@ -2488,6 +2545,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "Omit to lift only a fleet-wide pause; all=true clears every agent's pause."
         )
         all: bool = Field(False, description="Clear EVERY pause, every agent's.")
+        seat: Optional[str] = Field(None, description="Also clear this seat's own pause.")
 
     @app.post("/capture/pause")
     async def capture_pause(req: CapturePauseRequest):
@@ -2499,7 +2557,28 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 validate_agent_id(req.agent_id)  # rejects "" and "*" — both would mis-scope
             except ValueError as e:
                 raise HTTPException(400, str(e))
-        st = gate.pause(req.minutes, req.reason, agent_id=req.agent_id)
+        try:
+            st = gate.pause(req.minutes, req.reason, agent_id=req.agent_id, seat=req.seat)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # What the window does and does not cover, said once, by the server,
+        # so every client can print it the same way (item 18b').
+        st["withheld"] = [
+            "ambient writes from this seat with event times in the window "
+            "(bridge auto-capture, jsonl sync, mnemo_save source=tool / session_log): "
+            "whenever posted by a client that sends its seat and clock; from an older "
+            "client, only if posted within 10 minutes of the window",
+            "transcript lines with times in the window (archived as stubs)",
+            "/ingest and pocket /chat saves while the pause is live",
+        ]
+        st["not_withheld"] = [
+            "deliberate saves (source user or inferred)",
+            "other seats of this agent that send their seat (a client sending no seat "
+            "is withheld too)" if req.seat else "other agents",
+            "anything already uploaded before the pause stays uploaded",
+            "the raw session file on the client's own disk",
+        ]
+        st["guard_seconds"] = GUARD_SECONDS
         if req.agent_id is None:
             st["warning"] = ("FLEET-WIDE pause: every agent's ambient capture, "
                              "checkpoints and transcript uploads are discarded "
@@ -2513,11 +2592,33 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 validate_agent_id(req.agent_id)
             except ValueError as e:
                 raise HTTPException(400, str(e))
-        return gate.resume(agent_id=req.agent_id if req else None, all=bool(req and req.all))
+        try:
+            return gate.resume(agent_id=req.agent_id if req else None,
+                               all=bool(req and req.all), seat=req.seat if req else None)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.get("/capture/status")
     async def capture_status():
         return gate.status()
+
+    @app.get("/capture/windows")
+    async def capture_windows(agent_id: Optional[str] = None, seat: Optional[str] = None,
+                              since: Optional[float] = None):
+        """The pause windows that apply to a writer (its seat's, its tenant's
+        whole-tenant ones, fleet-wide ones; no seat = every window on the
+        tenant), open ones and any ending at or after `since` (epoch s).
+        Clients filter their own lines with these; the server enforces anyway."""
+        try:
+            validate_seat(seat)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ws = gate.windows_for(agent_id, seat)
+        if since is not None:
+            ws = [w for w in ws if w.get("end") is None or w["end"] >= since]
+        return {"server_now": time.time(), "guard_seconds": GUARD_SECONDS,
+                "windows": [{k: w.get(k) for k in ("id", "agent", "seat", "start", "end", "reason")}
+                            for w in ws]}
 
     # ── Dream brief (v4.9.3) ──
     @app.get("/dream/latest")
@@ -2662,20 +2763,41 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     async def upload_transcript(request: Request,
                                 agent_id: Optional[str] = None,
                                 host: Optional[str] = None,
-                                session_id: Optional[str] = None):
+                                session_id: Optional[str] = None,
+                                seat: Optional[str] = None,
+                                client_now: Optional[str] = None):
         """Archive one client session transcript (raw JSONL body, optionally
         Content-Encoding: gzip). Idempotent: same bytes = unchanged, a longer
-        file whose prefix matches = replaced, anything else = 409."""
+        file whose prefix matches = replaced, anything else = 409.
+
+        Capture-pause windows (item 18b'): lines whose event time falls in a
+        window for (agent_id, seat) are archived as stubs, whatever the
+        client; no seat = every window on the tenant. client_now (epoch or
+        ISO) off by more than 60 s = line times are not trusted: no new line
+        is archived while a window touches the time since the last upload.
+        An upload with no client_now (a pre-18c' shipper) is judged on its
+        line times as written, padded by GUARD on both sides."""
         tenant = _transcript_tenant(request, agent_id)
         if agent_id and agent_id in config.agents and config.agents[agent_id].read_only:
             raise HTTPException(403, f"Agent '{agent_id}' is read-only")
         if host is not None and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", host):
             raise HTTPException(400, "host must match [A-Za-z0-9_.-] (1-64 chars)")
-        # Capture gate: a transcript upload is ambient capture. Nothing is
-        # written while paused; the shipper leaves its state untouched and
-        # re-sends after the pause.
-        if gate.is_paused(agent_id):
-            return {"status": "paused", "session_id": session_id, "agent_id": agent_id}
+        try:
+            validate_seat(seat)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Capture gate (item 18b'): no longer "refuse while paused" — the
+        # server withholds the window's lines itself (stubs) and archives the
+        # rest, so a bystander's lines land and a late upload cannot leak.
+        windows = gate.windows_for(agent_id, seat)
+        window_meta = {w["id"]: {"id": w["id"], "start": w["start"], "end": w.get("end"),
+                                 "reason": w.get("reason", "")} for w in windows}
+
+        def covers(lo: float, hi: Optional[float] = None) -> Optional[str]:
+            return window_overlapping(windows, lo, lo if hi is None else hi)
+
+        clock_ok = client_now is None or clock_trusted(
+            float(client_now) if re.fullmatch(r"-?\d+(\.\d+)?", client_now) else client_now)
 
         raw = await _read_transcript_body(request)
         if not raw.strip():
@@ -2695,7 +2817,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         archive: TranscriptArchive = tenant["transcripts"]
         try:
             status, manifest = await asyncio.to_thread(
-                archive.upload, session_id, raw, agent_id, host)
+                partial(archive.upload, covers=covers, clock_ok=clock_ok,
+                        window_meta=window_meta),
+                session_id, raw, agent_id, host)
         except TranscriptConflict as e:
             log.warning(f"Transcript conflict {session_id}: {e.reason}")
             raise HTTPException(409, e.detail())
@@ -2708,7 +2832,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # that failed (embedder down, exception, crash before set_pointer) is
         # retried by the next upload, even an unchanged one. A subagent
         # transcript never writes one (its parent's pointer is the door).
-        if (manifest.get("parent_session_id") is None
+        if (status != "held" and manifest.get("parent_session_id") is None
                 and not manifest.get("pointer_memory_id")):
             wb = WritebackRequest(
                 session_id=f"transcript-{session_id}",
@@ -2718,7 +2842,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                            f"mnemo_transcript get, or GET /transcripts/{session_id}"],
                 source="tool", category="session_log",
                 additional_tags=["transcript-archive", f"session:{session_id}"],
-                timestamp=manifest.get("first_ts"),
+                timestamp=manifest.get("first_ts"), seat=seat,
             )
             try:
                 saved = await writeback(wb, request)
@@ -2737,6 +2861,12 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 manifest = await asyncio.to_thread(
                     archive.set_pointer, session_id, None, str(detail)[:300])
 
+        if status == "held":
+            # Nothing new could be archived yet (an unfinished line, a trailing
+            # untimed run a window may still reach, an untrusted clock). On the
+            # wire that is "unchanged": the archive is as it was, and today's
+            # shipper re-sends when the file grows. `held` says why.
+            return {"status": "unchanged", "held": True, "pointer": None, "manifest": manifest}
         return {"status": status, "pointer": pointer_status, "manifest": manifest}
 
     @app.post("/transcripts/reprocess")
