@@ -18,7 +18,8 @@ under ~/.agentb/memory/ is treated as one agent's lane.
 
 Output:
   - Saves the brief through the server's /writeback (agent "dreamer"), where it
-    is indexed like any memory
+    is indexed like any memory; a failed save is marked on the record and
+    re-sent at the start of the next run
   - Keeps its own record at ~/.agentb/dreams/records/<dream-id>.json (moves the
     "since last dream" window; outside every memory folder, so it is never indexed)
   - Also writes human-readable markdown to ~/.agentb/dreams/YYYY-MM-DD.md
@@ -337,6 +338,7 @@ log = logging.getLogger("mnemo-dream")
 # The second harvest gate lives in agentb.window (one home, shared with
 # mnemo-wiki-compile.py); the old names stay bound here for callers + tests.
 from agentb.window import LATE_ARRIVAL_GRACE, predates_window as _predates_window  # noqa: E402
+from agentb.fsutil import atomic_write_text  # noqa: E402
 
 
 def harvest_agentb(since: datetime) -> list[dict]:
@@ -1167,6 +1169,45 @@ def synthesize(memories: list[dict], dry_run: bool = False) -> str:
 # Write dream
 # ---------------------------------------------------------------------------
 
+def _post_writeback(entry: dict) -> bool:
+    """Save a dream record through /writeback. The record's own timestamp goes
+    with it, so a retry never moves the "since last dream" window, and a re-send
+    of a save that did land maps to the same memory id on the server."""
+    bridge_url = os.getenv("MNEMO_URL", "http://localhost:50001")
+    payload = {k: entry[k] for k in ("session_id", "agent_id", "summary", "key_facts",
+                                     "projects_referenced", "decisions_made", "timestamp")}
+    try:
+        # Batch writer: bypass the live embedder circuit breaker so a
+        # large nightly dream can't trip or get blocked by it.
+        r = httpx.post(f"{bridge_url}/writeback", json={**payload, "batch": True},
+                       headers=MNEMO_AUTH_HEADERS, timeout=15.0)
+        if r.status_code == 200:
+            log.info(f"Dream synced to bridge (L2): memory_id={r.json().get('memory_id', '?')}")
+            return True
+        log.error(f"Bridge writeback returned {r.status_code}: dream {entry['id']} is not "
+                  "searchable yet; the next run retries it (brief + record are on disk)")
+    except Exception as e:
+        log.error(f"Bridge writeback failed: {e}: dream {entry['id']} is not searchable yet; "
+                  "the next run retries it (brief + record are on disk)")
+    return False
+
+
+def retry_failed_writebacks() -> None:
+    """Re-POST each dream record marked `writeback: failed`, once per run. A
+    success clears the mark; a failure keeps it for the next run."""
+    for f in sorted(_dream_records_dir().glob("*.json")):
+        try:
+            entry = json.loads(f.read_text(encoding="utf-8"))
+            if not isinstance(entry, dict) or entry.get("writeback") != "failed":
+                continue
+            log.info(f"Retrying the writeback of dream {f.stem}")
+            if _post_writeback(entry):
+                del entry["writeback"]
+                atomic_write_text(f, json.dumps(entry, indent=2, default=str))
+        except (OSError, ValueError, KeyError) as e:
+            log.error(f"Writeback retry of {f.name} skipped: {e!r}")
+
+
 def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
     """Write the dream to both AgentB memory and a readable markdown file."""
     # v4.1: the brief is LLM output synthesized from session content — run it
@@ -1270,34 +1311,11 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
 
     log.info(f"Dream written: {json_path} + {md_path} + {boot_path}")
 
-    # Also POST through /writeback so the dream hits L2 index
-    bridge_url = os.getenv("MNEMO_URL", "http://localhost:50001")
-    try:
-        wb_response = httpx.post(
-            f"{bridge_url}/writeback",
-            json={
-                "session_id": f"dream-{date_str}",
-                "agent_id": "dreamer",
-                "summary": dream_text,
-                "key_facts": memory_entry["key_facts"],
-                "projects_referenced": memory_entry["projects_referenced"],
-                "decisions_made": memory_entry["decisions_made"],
-                # Batch writer: bypass the live embedder circuit breaker so a
-                # large nightly dream can't trip or get blocked by it.
-                "batch": True,
-            },
-            headers=MNEMO_AUTH_HEADERS,
-            timeout=15.0,
-        )
-        if wb_response.status_code == 200:
-            wb_data = wb_response.json()
-            log.info(f"Dream synced to bridge (L2): memory_id={wb_data.get('memory_id', '?')}")
-        else:
-            log.error(f"Bridge writeback returned {wb_response.status_code}: "
-                      "this dream will not be searchable (brief + record are on disk)")
-    except Exception as e:
-        log.error(f"Bridge writeback failed: {e}: "
-                  "this dream will not be searchable (brief + record are on disk)")
+    # Also POST through /writeback so the dream hits L2 index. A failure marks
+    # the record; the next run re-POSTs it (retry_failed_writebacks).
+    if not _post_writeback(memory_entry):
+        memory_entry["writeback"] = "failed"
+        atomic_write_text(json_path, json.dumps(memory_entry, indent=2, default=str))
 
     return dream_id
 
@@ -2409,6 +2427,8 @@ def main():
     if not args.dry_run or MNEMO_DREAM_STRATEGIES:  # a dry run calls the API only in Stage 0.7
         _require_claude()  # config errors exit here, outside the retry: waiting will not fix them
 
+    if not args.dry_run:
+        retry_failed_writebacks()  # last run's failed /writeback, before this run's window is read
     run_with_one_retry(lambda: _dream_once(args), retry=not args.dry_run)
 
 

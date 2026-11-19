@@ -382,3 +382,87 @@ def test_dry_run_with_apply_is_refused(monkeypatch):
     with pytest.raises(SystemExit) as e:
         dream.main()
     assert e.value.code == 2
+
+
+# ── 13b: a failed /writeback is retried on the next run ──
+# Before: a dream whose /writeback failed was never searchable, and the only
+# alarm was a log line. Now the record is marked and the next run re-POSTs it.
+
+class _Down:
+    status_code = 503
+    text = ""
+
+
+def _wb_down(url, **kw):
+    return _Down()
+
+
+def _record(records: Path) -> dict:
+    (f,) = records.glob("*.json")
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+def test_a_failed_writeback_marks_the_record(dirs, monkeypatch):
+    records, _ = dirs
+    monkeypatch.setattr(dream.httpx, "post", _wb_down)
+    dream.write_dream("brief body", [{"agent_id": "cc"}], datetime(2026, 11, 17, tzinfo=timezone.utc))
+    assert _record(records)["writeback"] == "failed"
+
+
+def test_a_failed_retry_keeps_the_mark_and_a_clean_record_is_not_sent(dirs, monkeypatch):
+    records, _ = dirs
+    dream.write_dream("an earlier brief", [{"agent_id": "cc"}], datetime(2026, 11, 16, tzinfo=timezone.utc))
+    (clean,) = records.glob("*.json")  # a complete record whose save landed: no mark
+    monkeypatch.setattr(dream.httpx, "post", _wb_down)
+    dream.write_dream("brief body", [{"agent_id": "cc"}], datetime(2026, 11, 17, tzinfo=timezone.utc))
+    sent = []
+    monkeypatch.setattr(dream.httpx, "post", lambda url, **kw: sent.append(kw["json"]) or _Down())
+    dream.retry_failed_writebacks()
+    assert [p["summary"] for p in sent] == ["brief body"]
+    marked = [json.loads(f.read_text())["id"] for f in records.glob("*.json")
+              if json.loads(f.read_text()).get("writeback") == "failed"]
+    assert len(marked) == 1 and marked[0] != clean.stem
+
+
+def test_the_next_run_saves_a_marked_dream_and_the_window_holds(live, monkeypatch):
+    client, memory, records, _, vec = live
+    monkeypatch.setenv("MNEMO_RULEKEEPER_ADVISORY", str(records.parent / "no-advisory.md"))
+    to_server = dream.httpx.post
+    monkeypatch.setattr(dream.httpx, "post", _wb_down)
+    dream.write_dream("tonight's brief", [{"agent_id": "cc"}], datetime(2026, 11, 17, tzinfo=timezone.utc))
+    window = dream.get_last_dream_time()
+    before = set(memory.glob("*.json"))
+    monkeypatch.setattr(dream.httpx, "post", to_server)
+    dream.retry_failed_writebacks()
+    assert "writeback" not in _record(records)
+    (saved,) = set(memory.glob("*.json")) - before
+    save = json.loads(saved.read_text(encoding="utf-8"))
+    assert save["summary"] == "tonight's brief" and vec.has(saved.stem)
+    assert save["timestamp"] == _record(records)["timestamp"]
+    assert dream.get_last_dream_time() == window
+
+
+def test_a_resend_of_a_save_that_landed_makes_no_second_copy(live, monkeypatch):
+    """A /writeback that landed but timed out on the way back is marked failed;
+    its re-send maps to the same memory id on the server."""
+    client, memory, records, _, vec = live
+    monkeypatch.setenv("MNEMO_RULEKEEPER_ADVISORY", str(records.parent / "no-advisory.md"))
+    dream.write_dream("tonight's brief", [{"agent_id": "cc"}], datetime(2026, 11, 17, tzinfo=timezone.utc))
+    after_first = sorted(memory.glob("*.json"))
+    (f,) = records.glob("*.json")
+    f.write_text(json.dumps({**_record(records), "writeback": "failed"}), encoding="utf-8")
+    dream.retry_failed_writebacks()
+    assert sorted(memory.glob("*.json")) == after_first
+    assert "writeback" not in _record(records)
+
+
+def test_main_retries_before_the_run_and_never_on_a_dry_run(monkeypatch):
+    for argv, expected in ((["mnemo-dream.py"], ["retry", "run"]),
+                           (["mnemo-dream.py", "--dry-run"], ["run"])):
+        events = []
+        monkeypatch.setattr(dream.sys, "argv", argv)
+        monkeypatch.setattr(dream, "_require_claude", lambda: None)
+        monkeypatch.setattr(dream, "retry_failed_writebacks", lambda: events.append("retry"))
+        monkeypatch.setattr(dream, "run_with_one_retry", lambda run, **kw: events.append("run"))
+        dream.main()
+        assert events == expected, argv

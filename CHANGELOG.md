@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — a dream whose save failed is saved on the next run (2026-11-18)
+
+**Problem.** Since "the dreamer saves each dream once in its tenant" (below), a dream whose `/writeback` fails is not searchable at all, and the only sign was an error line in the dreamer's log.
+
+**Fix.**
+- When the `/writeback` fails, the dreamer marks its record in `dreams/records/` with `"writeback": "failed"`. At the start of the next run (not a `--dry-run`), it sends each marked record once more; a save clears the mark, a failure keeps it for the run after. Each failure is still logged at error, and now says the next run retries it.
+- The dreamer now sends the record's own `timestamp` with the save, the first time and on a retry. The save carries the dream's time, so a late save never moves the "since last dream" window, and a re-send of a save that did land (the answer was lost on the way back) gets the same memory id on the server instead of a second copy.
+- Tests: 5 in `tests/test_dream_records.py`, two of them against a real server app: a failed save marks the record; a failed retry keeps the mark and an unmarked record is not sent; the next run saves the marked dream into the index and the window does not move; a re-send of a save that landed adds no file; `main()` retries before the run and never on a dry run. All 5 fail on the code before this fix; removing the timestamp from the save fails both server tests, never clearing the mark fails them too, and sending unmarked records fails the not-sent test. The record is rewritten atomically when the mark is set or cleared. `test_main_wires_the_retry` in `tests/test_dream_retry.py` now stubs the retry so it never reads the real records folder.
 ## Unreleased — /preflight still shows the reasoner its two nearest live memories when a demoted one is nearer (2026-11-18)
 
 **Problem.** Since "recall never serves a demoted memory" (2026-11-16, below), `/preflight` drops a demoted hit from the memories it shows the reasoner. It fetched exactly 2 hits, so each dropped one left the reasoner with 1 memory, or none.
