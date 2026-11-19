@@ -1605,6 +1605,8 @@ def _stick_report(report) -> None:
     if report.history_to_host or report.history_to_stick:
         console.print(f"  [bold]fact history[/]: {report.history_to_host} → host, "
                       f"{report.history_to_stick} → stick")
+    for line in report.index_cleanup:
+        console.print(f"  [bold]index[/]: {line}")
     for w in report.warnings:
         console.print(f"  [yellow]⚠ {w}[/]")
     for c in report.conflicts:

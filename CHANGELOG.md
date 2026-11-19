@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — the stick's sync report names the vec cleanup for memories it deleted here (2026-11-18)
+
+**Problem.** A Cortex Stick sync that deletes a memory file on this host (deleted on the other host, carried here) leaves that memory's vector in the tenant's index. Recall drops it and `/vec/backfill?prune_orphans=true` can remove it (both below), but the sync said nothing about it.
+
+**Fix.**
+- `SyncReport.index_cleanup`: one line per tenant whose memories this sync deleted on this host, e.g. `cc: 2 memories removed here by the stick; their vectors stay in the index until POST /vec/backfill?agent_id=cc&prune_orphans=true`. The default tenant's line takes no `agent_id`. A dry run says `would be removed`. Only `memories/<t>/memory/*.json` deletes count (trajectory and pad files have no vec row).
+- `mnemo stick sync` prints it as an `index:` line.
+- **Report only** (CC ruling, round one): the stick never opens the VecStore (the server owns its one connection) and never runs the prune.
+- Tests: 6 in `tests/test_stick_index_cleanup.py`: the line after a carried delete (two tenants, default without agent_id, and nothing on the host that deleted it first); a dry run says "would be"; the stick never opens the VecStore (a tripwire that a mutant opening it trips); no host deletes, no line; only memory-channel deletes count; the CLI prints it. Against the previous `cli.py`: the CLI test fails; against the previous `stick.py` the file cannot import `_index_cleanup`.
+
 ## Unreleased — POST /vec/backfill?prune_orphans=true removes the index rows whose record is gone, archived first (2026-11-18)
 
 **Problem.** Recall drops a vec row whose record file is gone, and `/vec/status` counts them (both below), but nothing removed them: every orphan kept costing a recall slot and a warning. Its `vec_sources.text` is the last copy of that memory's text, so removing it is destructive.

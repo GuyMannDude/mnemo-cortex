@@ -8,7 +8,8 @@ of that memory, so every row goes to <data_dir>/vec-orphans/<agent>-<utc>.jsonl
 always (a reindex question, never a prune); more than 25 % of the index
 refuses unless force=true, and force overrides only that one. A data dir that
 moved is not orphaned (recall's own record_file rule). Deletes go through
-VecStore.delete, the one path that clears all three tables.
+VecStore.delete_many, the one delete path (delete calls it): all three
+tables, one transaction.
 
 Also here (CC note_2 on 14 A): the analyst's dedup gate and the rulekeeper's
 scan use the same rule as the writeback dedup gate: a row whose record is

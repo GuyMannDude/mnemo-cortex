@@ -571,6 +571,10 @@ class SyncReport:
     facts_to_stick: int = 0
     history_to_host: int = 0      # 4.21.2: origin fact_history rows carried
     history_to_stick: int = 0
+    # Item 14 D: one line per tenant whose memories the stick deleted on this
+    # host. Report only: the stick never opens the VecStore (the server owns
+    # its one connection) and never runs the prune.
+    index_cleanup: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -579,6 +583,26 @@ class SyncReport:
                     or self.conflicts or self.brain in ("pushed", "merged")
                     or self.facts_to_host or self.facts_to_stick
                     or self.history_to_host or self.history_to_stick)
+
+
+def _index_cleanup(report: SyncReport, *, dry_run: bool = False) -> list[str]:
+    """Item 14 D: memories this sync deleted on the host leave their vectors
+    in that tenant's index (recall already drops them, item 14 A). Say how
+    many per tenant and name the cleanup; the default tenant takes no agent_id."""
+    removed: dict[str, int] = {}
+    for item in report.deleted_on_host:
+        parts = item.split("/")
+        if len(parts) == 4 and parts[0] == "memories" and parts[2] == "memory":
+            removed[parts[1]] = removed.get(parts[1], 0) + 1
+    lines = []
+    for tenant, n in sorted(removed.items()):
+        query = ("prune_orphans=true" if tenant == "default"
+                 else f"agent_id={tenant}&prune_orphans=true")
+        what = f"{n} {'memory' if n == 1 else 'memories'}"
+        lines.append(f"{tenant}: {what} {'would be ' if dry_run else ''}removed here by the "
+                     f"stick; their vectors stay in the index until "
+                     f"POST /vec/backfill?{query}")
+    return lines
 
 
 def _scan(root: Path, pattern: str, transform=None) -> dict[str, str]:
@@ -1232,6 +1256,7 @@ def sync(
         if dry_run:
             if brain_repo:
                 _brain(plan, dry=True)
+            plan.index_cleanup = _index_cleanup(plan, dry_run=True)
             return plan
 
         # ── 3. brain (outside the manifest's failure domain) ──
@@ -1257,6 +1282,7 @@ def sync(
                 ch, base_all.get(ch.name, {}), manifest_files, report,
                 codec=codec, force=force,
             )
+        report.index_cleanup = _index_cleanup(report)
 
         # facts ride inside the manifest commit like any truth file; the
         # row-wise ladder merge needs no base inventory (see stick_facts.py)
