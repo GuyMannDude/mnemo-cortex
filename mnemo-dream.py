@@ -30,6 +30,8 @@ Usage:
                                           # One-time: list (or move) the dreamer's own
                                           # copies that older versions left in the
                                           # dreamer memory folder next to the indexed save
+                                          # (--apply takes each out of the vec index via
+                                          # the server's demote, then moves it)
   python3 mnemo-dream.py --hours 48       # Override time window (default: since last dream)
   python3 mnemo-dream.py --verbose        # Show all harvested memories before synthesis
 """
@@ -528,37 +530,96 @@ def find_direct_copies(memory_dir: Path | None = None) -> tuple[list[Path], list
     return copies, notes
 
 
+def _indexed_ids(ids: list[str]) -> set[str]:
+    """Which of these ids are in the dreamer tenant's vec index. Reads the
+    index's plain vec_sources table READ-ONLY (VecStore.delete clears it with
+    the vectors). No index file = nothing indexed. Raises sqlite3.Error if the
+    file is there but cannot be read."""
+    db = DREAMER_MEMORY_DIR.parent / "vec_index.sqlite"
+    if not ids or not db.exists():
+        return set()
+    con = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        found = set()
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            found.update(r[0] for r in con.execute(
+                f"SELECT memory_id FROM vec_sources WHERE memory_id IN ({','.join('?' * len(chunk))})",
+                chunk))
+        return found
+    finally:
+        con.close()
+
+
 def move_direct_copies(apply: bool) -> int:
     """List (apply=False) or move (apply=True) the direct copies into
-    dreams/records/, where this version keeps them. Never overwrites, never
-    deletes; get_last_dream_time reads both places, so the window holds."""
+    dreams/records/, where this version keeps them.
+
+    A copy may already be in the vec index (a backfill or reindex ran over the
+    folder before this version). Moving that file would leave its vector
+    behind, served by recall with no file to drop it by. So --apply first
+    demotes each copy through the server's POST /memories/demote (stamps it,
+    deletes its vector), re-reads the index, and moves only a copy that is out
+    of it. A copy whose demote fails stays where it is; the server unreachable
+    stops the run. Never overwrites, never deletes a file; get_last_dream_time
+    reads both places, so the window holds."""
     copies, notes = find_direct_copies()
     dest = _dream_records_dir()
+    bridge_url = os.getenv("MNEMO_URL", "http://localhost:50001")
     print(f"dreamer memory folder: {DREAMER_MEMORY_DIR}")
-    print(f"direct copies with an indexed twin: {len(copies)}"
-          + (f" -> moving to {dest}" if apply else f" (dry run; --apply moves them to {dest})"))
     for n in notes:
         print(f"  note: {n}")
+    try:
+        indexed = _indexed_ids([f.stem for f in copies])
+    except sqlite3.Error as e:
+        print(f"cannot read the dreamer vec index ({e}); nothing moved")
+        return 1
+    print(f"direct copies with an indexed twin: {len(copies)}, of which in the vec index: {len(indexed)}")
     if not apply:
+        print(f"dry run. --apply demotes each copy through {bridge_url}/memories/demote "
+              f"(takes the {len(indexed)} indexed ones out of the index), then moves it to {dest}; "
+              "a copy whose demote fails, or that is still in the index after it, stays where it is")
         for f in copies:
-            print(f"  would move {f.name}")
+            print(f"  would demote + move {f.name}" + ("  (in the index)" if f.stem in indexed else ""))
         return 0
     dest.mkdir(parents=True, exist_ok=True)
-    moved = failed = 0
+    moved = taken_out = 0
     for f in copies:
         target = dest / f.name
         if target.exists():
             print(f"  SKIP {f.name}: {target} already exists")
-            failed += 1
+            continue
+        try:
+            r = httpx.post(f"{bridge_url}/memories/demote", headers=MNEMO_AUTH_HEADERS, timeout=15.0,
+                           json={"memory_id": f.stem, "agent_id": "dreamer", "by": "dreamer",
+                                 "reason": "dreamer's own copy of a dream, moved to dreams/records/"})
+        except httpx.TransportError as e:
+            print(f"  STOP: server unreachable at {bridge_url} ({e}); this and the rest stay")
+            break
+        if r.status_code != 200:
+            print(f"  LEFT {f.name}: demote returned {r.status_code} {r.text[:200]}")
+            continue
+        try:
+            still = f.stem in _indexed_ids([f.stem])
+        except sqlite3.Error as e:
+            print(f"  LEFT {f.name}: cannot re-read the index ({e})")
+            continue
+        if still:
+            # 'already superseded' skips the server's vector delete; POST /vec/backfill
+            # removes a demoted record's vector while its file is still here to walk.
+            print(f"  LEFT {f.name}: still in the index after demote ({r.text[:200]}); "
+                  "run POST /vec/backfill for agent dreamer, then rerun")
             continue
         try:
             f.rename(target)
-            moved += 1
         except OSError as e:
-            print(f"  FAILED {f.name}: {e}")
-            failed += 1
-    print(f"moved {moved}, not moved {failed}")
-    return 1 if failed else 0
+            print(f"  FAILED {f.name}: {e} (demoted, out of the index, not moved)")
+            continue
+        moved += 1
+        taken_out += f.stem in indexed
+    left = len(copies) - moved
+    print(f"moved {moved}, taken out of the index {taken_out}, left {left}")
+    return 1 if left else 0
 
 
 # ---------------------------------------------------------------------------
@@ -2323,12 +2384,16 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print all harvested memories")
     parser.add_argument("--move-direct-copies", action="store_true",
                         help="One-time: list the dreamer's own copies older versions left in the "
-                             "dreamer memory folder beside the indexed save; with --apply, move them "
-                             "to dreams/records/. Dreams nothing.")
-    parser.add_argument("--apply", action="store_true", help="With --move-direct-copies: really move")
+                             "dreamer memory folder beside the indexed save; with --apply, take each "
+                             "out of the vec index (server demote) and move it to dreams/records/. "
+                             "Dreams nothing.")
+    parser.add_argument("--apply", action="store_true",
+                        help="With --move-direct-copies: really demote and move")
     args = parser.parse_args()
     if args.apply and not args.move_direct_copies:
         parser.error("--apply only goes with --move-direct-copies")
+    if args.apply and args.dry_run:
+        parser.error("--dry-run and --apply contradict each other; drop --apply for a dry run")
     if args.move_direct_copies:
         sys.exit(move_direct_copies(apply=args.apply))
 

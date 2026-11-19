@@ -32,6 +32,28 @@ class _Resp:
         return {"memory_id": "server-id"}
 
 
+@pytest.fixture(autouse=True)
+def _never_the_real_folders(monkeypatch, tmp_path):
+    """Every test, even one that calls main(), sees only tmp folders: a fail-before
+    run on code without a guard must not reach the real dreamer folder (it did
+    once: 103 real files moved, restored from a snapshot)."""
+    monkeypatch.setattr(dream, "DREAM_DIR", tmp_path / "dreams")
+    monkeypatch.setattr(dream, "DREAMER_MEMORY_DIR", tmp_path / "agents" / "dreamer" / "memory")
+    monkeypatch.setattr(dream, "AGENTS_ROOT", tmp_path / "agents")
+
+    def _no_network(url, **kw):
+        raise AssertionError(f"test reached the network: {url}")
+    monkeypatch.setattr(dream.httpx, "post", _no_network)   # dirs / live install their own
+
+
+def _must_not_run(monkeypatch):
+    """For tests of a refused command line: reaching any action is a failure."""
+    def boom(*a, **kw):
+        raise AssertionError("a refused command line reached an action")
+    monkeypatch.setattr(dream, "move_direct_copies", boom)
+    monkeypatch.setattr(dream, "run_with_one_retry", boom)
+
+
 @pytest.fixture
 def dirs(monkeypatch, tmp_path):
     memory = tmp_path / "agents" / "dreamer" / "memory"
@@ -157,7 +179,7 @@ def test_dry_run_moves_nothing(dirs, capsys):
     _put(memory, "srv1", _save("srv1", "t"))
     assert dream.move_direct_copies(apply=False) == 0
     assert copy.exists() and not records.exists()
-    assert "would move " + copy.name in capsys.readouterr().out
+    assert "would demote + move " + copy.name in capsys.readouterr().out
 
 
 def test_apply_moves_the_copy_and_the_window_holds(dirs):
@@ -183,7 +205,180 @@ def test_apply_never_overwrites_a_record(dirs, capsys):
 
 
 def test_apply_without_move_flag_is_refused(monkeypatch):
+    _must_not_run(monkeypatch)
     monkeypatch.setattr(dream.sys, "argv", ["mnemo-dream.py", "--apply"])
+    with pytest.raises(SystemExit) as e:
+        dream.main()
+    assert e.value.code == 2
+
+
+# ── 13c: a copy already in the vec index leaves it before it moves ──
+# A backfill or reindex over the dreamer folder (before this version) indexed
+# some copies. Moving such a file would leave its vector behind: recall cannot
+# read the missing file to drop it, and no walker ever visits the row again.
+
+from unittest.mock import patch  # noqa: E402
+
+import httpx  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from agentb.config import (  # noqa: E402
+    AgentBConfig, AgentConfig, CacheConfig, ClassificationConfig,
+    DEFAULT_PERSONAS, ProviderConfig, ResilientProviderConfig, ServerConfig,
+)
+from agentb.vec import EMBED_DIM  # noqa: E402
+
+_VEC = [0.0] * EMBED_DIM
+_VEC[0] = 1.0
+_STATUS = {"primary": "fake", "active": "fake", "failed_over": False,
+           "circuit_open": False, "primary_retry_in": None, "fallback_count": 0}
+
+
+class _Embed:
+    active_label = "fake/embed"
+    status = _STATUS
+
+    @property
+    def primary(self):          # /vec/backfill embeds with the primary directly
+        return self
+
+    async def embed(self, text, *, use_breaker=True, task_type="document"):
+        return list(_VEC)
+
+    async def health_check(self):
+        return True
+
+
+class _Reason:
+    active_label = "fake/reason"
+    status = _STATUS
+
+    async def generate(self, *a, **kw):
+        return "x"
+
+    async def health_check(self):
+        return True
+
+
+@pytest.fixture
+def live(monkeypatch, tmp_path):
+    """A real server with a dreamer tenant; the dreamer's httpx.post goes to it.
+    Yields (client, memory_dir, records_dir, copy_path, vec_store)."""
+    data = tmp_path / "agents" / "dreamer"
+    cfg = AgentBConfig(
+        reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama")),
+        embedding=ResilientProviderConfig(primary=ProviderConfig(provider="ollama")),
+        cache=CacheConfig(), classification=ClassificationConfig(enabled=False),
+        server=ServerConfig(host="127.0.0.1", port=50097),
+        data_dir=str(tmp_path / "default"), personas=dict(DEFAULT_PERSONAS),
+        agents={"dreamer": AgentConfig(data_dir=str(data))},
+    )
+    with patch("agentb.server.create_resilient_embedding", return_value=_Embed()), \
+         patch("agentb.server.create_resilient_reasoning", return_value=_Reason()):
+        from agentb.server import create_app
+        with TestClient(create_app(cfg)) as client:
+            memory = data / "memory"
+            monkeypatch.setattr(dream, "DREAM_DIR", tmp_path / "dreams")
+            monkeypatch.setattr(dream, "DREAMER_MEMORY_DIR", memory)
+            monkeypatch.setenv("MNEMO_URL", "http://mnemo.test")
+            monkeypatch.setattr(dream.httpx, "post", lambda url, timeout=None, **kw:
+                                client.post(url.replace("http://mnemo.test", ""), **kw))
+            r = client.post("/writeback", json={"session_id": "dream-2026-11-17", "agent_id": "dreamer",
+                                                "summary": "the brief", "batch": True})
+            assert r.status_code == 200, r.text
+            copy = _put(memory, "a" * 16, _direct("a" * 16, "2026-11-17T10:15:00+00:00"))
+            vec = client.app.state.tenants.get("dreamer")["vec"]
+            yield client, memory, tmp_path / "dreams" / "records", copy, vec
+
+
+def _index_the_copy(client, vec, copy):
+    """What an earlier backfill over the dreamer folder did."""
+    r = client.post("/vec/backfill", params={"agent_id": "dreamer"})
+    assert r.status_code == 200, r.text
+    assert vec.has(copy.stem)
+
+
+def test_apply_takes_an_indexed_copy_out_of_the_index_before_moving_it(live, capsys):
+    client, memory, records, copy, vec = live
+    _index_the_copy(client, vec, copy)
+    assert dream.move_direct_copies(apply=True) == 0
+    assert not copy.exists() and (records / copy.name).is_file()
+    assert not vec.has(copy.stem)
+    assert "moved 1, taken out of the index 1, left 0" in capsys.readouterr().out
+
+
+def test_dry_run_counts_indexed_copies_and_changes_nothing(live, capsys):
+    client, memory, records, copy, vec = live
+    _index_the_copy(client, vec, copy)
+    assert dream.move_direct_copies(apply=False) == 0
+    out = capsys.readouterr().out
+    assert "of which in the vec index: 1" in out and "(in the index)" in out
+    assert copy.exists() and vec.has(copy.stem)
+    assert "superseded_by" not in json.loads(copy.read_text())
+
+
+def test_an_unindexed_copy_is_demoted_and_moved_too(live, capsys):
+    client, memory, records, copy, vec = live
+    assert dream.move_direct_copies(apply=True) == 0
+    assert (records / copy.name).is_file()
+    assert json.loads((records / copy.name).read_text())["superseded_by"].startswith("demoted:dreamer:")
+    assert "moved 1, taken out of the index 0, left 0" in capsys.readouterr().out
+
+
+def test_a_rerun_moves_a_copy_an_earlier_run_demoted_but_did_not_move(live):
+    client, memory, records, copy, vec = live
+    _index_the_copy(client, vec, copy)
+    r = client.post("/memories/demote", json={"memory_id": copy.stem, "agent_id": "dreamer",
+                                              "reason": "first run", "by": "dreamer"})
+    assert r.json()["demoted"] is True and not vec.has(copy.stem)
+    assert dream.move_direct_copies(apply=True) == 0
+    assert (records / copy.name).is_file()
+
+
+def test_a_copy_still_in_the_index_after_demote_stays(live, capsys):
+    client, memory, records, copy, vec = live
+    _index_the_copy(client, vec, copy)
+    rec = json.loads(copy.read_text())
+    rec["superseded_by"] = "demoted:someone:1"      # demote then answers 'already superseded'
+    copy.write_text(json.dumps(rec))
+    assert dream.move_direct_copies(apply=True) == 1
+    assert copy.exists() and vec.has(copy.stem)
+    out = capsys.readouterr().out
+    assert "still in the index after demote" in out and "left 1" in out
+
+
+def test_a_failed_demote_leaves_the_copy(dirs, monkeypatch, capsys):
+    records, memory = dirs
+    copy = _put(memory, "a" * 16, _direct("a" * 16, "2026-11-17T10:15:00+00:00"))
+    _put(memory, "srv1", _save("srv1", "t"))
+
+    class _Forbidden:
+        status_code = 403
+        text = "Token is scoped to agent 'cc'"
+    monkeypatch.setattr(dream.httpx, "post", lambda url, **kw: _Forbidden())
+    assert dream.move_direct_copies(apply=True) == 1
+    assert copy.exists() and not (records / copy.name).exists()
+    assert "LEFT" in capsys.readouterr().out
+
+
+def test_server_unreachable_moves_nothing(dirs, monkeypatch, capsys):
+    records, memory = dirs
+    copies = [_put(memory, c * 16, _direct(c * 16, "2026-11-17T10:15:00+00:00")) for c in "ab"]
+    _put(memory, "srv1", _save("srv1", "t"))
+
+    def _down(url, **kw):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(dream.httpx, "post", _down)
+    assert dream.move_direct_copies(apply=True) == 1
+    assert all(c.exists() for c in copies)
+    out = capsys.readouterr().out
+    assert "server unreachable" in out and "moved 0, taken out of the index 0, left 2" in out
+
+
+def test_dry_run_with_apply_is_refused(monkeypatch):
+    _must_not_run(monkeypatch)
+    monkeypatch.setattr(dream.sys, "argv",
+                        ["mnemo-dream.py", "--move-direct-copies", "--dry-run", "--apply"])
     with pytest.raises(SystemExit) as e:
         dream.main()
     assert e.value.code == 2
