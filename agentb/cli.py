@@ -1436,7 +1436,8 @@ def _ledger_print(agent_id: str, rep: dict) -> None:
                   f"({rep['entries']} entries) · sealed {rep['sealed']} · "
                   f"altered {len(rep['altered'])} · missing {len(rep['missing'])} · "
                   f"unsealed {len(rep['unsealed'])}"
-                  + (f" · [yellow]disputed {len(rep['disputed'])}[/]" if rep.get("disputed") else ""))
+                  + (f" · [yellow]disputed {len(rep['disputed'])}[/]" if rep.get("disputed") else "")
+                  + (f" · [yellow]resealed {len(rep['resealed'])}[/]" if rep.get("resealed") else ""))
     if rep.get("broken_at") is not None:
         console.print(f"    [red]broken at seq {rep['broken_at']}: {rep['reason']}[/]")
     for label in ("altered", "missing", "disputed"):
@@ -1444,6 +1445,12 @@ def _ledger_print(agent_id: str, rep: dict) -> None:
             console.print(f"    [red]{label}[/] {mid}")
         if len(rep.get(label, [])) > 8:
             console.print(f"    [dim]… and {len(rep[label]) - 8} more {label}[/]")
+    resealed = rep.get("resealed", [])
+    for r in resealed[:8]:
+        console.print(f"    [yellow]resealed[/] {r['memory_id']} "
+                      f"({r['distinct']} different testimonies, seqs {r['seqs']})")
+    if len(resealed) > 8:
+        console.print(f"    [dim]… and {len(resealed) - 8} more resealed[/]")
 
 
 @ledger.command("verify")

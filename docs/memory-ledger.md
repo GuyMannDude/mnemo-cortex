@@ -97,6 +97,17 @@ Per-record states:
 | `unsealed` | on disk with no ledger entry — pre-ledger stores, Cortex Stick carries, or a tool that wrote past the server |
 | `disputed` | broken chain only: on disk and matching an entry past the break, which the chain cannot vouch for |
 
+`resealed` lists every id the trusted chain sealed more than once with
+**different testimony** (any sealed field: the words, and also `timestamp`,
+`session_id`, `agent_id`): `{memory_id, seqs, distinct}`. A fixed-id writer does
+this in the open (an archived session summarised again under the same id, or
+a re-send whose `decisions_made` / `projects_referenced` changed: those are
+sealed but not part of the id). The record reads `sealed` against its latest
+seal; `resealed` says the earlier testimony existed. **Report-only**: it never
+changes `ok`. The same testimony sealed twice is not a reseal; the same
+text sealed again with a new timestamp is (an Analyst note re-written on a
+later day stamps a new `timestamp` and `session_id`).
+
 Chain states: `intact` / `broken` (with the sequence number and the reason)
 / `empty`.
 

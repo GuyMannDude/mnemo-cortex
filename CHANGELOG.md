@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — ledger verify names an id sealed twice with different testimony (2026-11-18)
+
+**Problem.** A fixed-id writer can seal one id twice with different testimony: an archived session summarised again under `sha256('archived:'+session)`, a writeback re-send whose sealed `decisions_made` / `projects_referenced` changed (the id covers session, timestamp and text only), an Analyst note whose key facts changed (the id covers the summary only). Each seal is honest, so `verify` read the record `sealed` against the latest one and said nothing about the testimony it replaced.
+
+**Fix.**
+- `VerifyReport.resealed`: `[{memory_id, seqs, distinct}]` for every id whose **trusted** ledger entries carry more than one distinct `content_sha256`. Entries past a break do not count (evidence, not proof). Testimony = every sealed field, so the same text sealed again with a new `timestamp` or `session_id` IS listed (an Analyst note re-written on a later day, when its dedup check could not run); the same testimony sealed twice is not. **Report-only**: `ok` is unchanged.
+- `GET /ledger/verify` and `POST /ledger/seal` responses gain the key (additive). `mnemo-cortex ledger verify` prints `resealed N` on the tenant line and lists up to 8, like altered/missing/disputed.
+- `docs/memory-ledger.md` and `robot.info` describe it.
+- Tests: 6 in `tests/test_ledger_reseal.py`: different words named with their seqs and ok stays true; same testimony not named; two ids listed in id order; a reseal past a break not named; a real writeback re-send with new decisions (same id) named over HTTP; the CLI prints it. Against the previous `ledger.py` the four report tests fail; against the previous `cli.py` the CLI test fails. Mutants (list an id sealed once, count untrusted entries, count seals instead of distinct words) each turn a test red.
+
 ## Unreleased — the lens scan uses the shared vec connection on the event loop only (2026-11-18)
 
 **Problem.** A tenant's `VecStore` is one sqlite3 connection shared with the event loop, and sqlite3 keeps transaction state per connection, not per thread. The Analyst/Muse candidate scan ran `session_log_source_count`, `pending_lens_sources` and `mark_lens_processed` (`with conn:` = INSERT then commit, or rollback on error) inside `asyncio.to_thread`. That commit could commit half of a loop-side `delete_many`; that rollback could undo a loop-side upsert.

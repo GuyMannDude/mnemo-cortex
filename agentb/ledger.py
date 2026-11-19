@@ -98,6 +98,11 @@ class VerifyReport:
     missing: list[str] = field(default_factory=list)
     unsealed: list[str] = field(default_factory=list)
     disputed: list[str] = field(default_factory=list)  # only ever non-empty on a broken chain
+    # Item 17 (c): ids the trusted chain sealed more than once with DIFFERENT
+    # testimony (any SEALED_FIELDS value, timestamp included). Report-only: a fixed-id writer (an archived session re-summarised,
+    # a re-send whose sealed fields outside the id changed) did it in the open,
+    # through seal(), so ok does not change. [{memory_id, seqs, distinct}]
+    resealed: list[dict] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -115,6 +120,7 @@ class VerifyReport:
             "missing": sorted(self.missing),
             "unsealed": sorted(self.unsealed),
             "disputed": sorted(self.disputed),
+            "resealed": sorted(self.resealed, key=lambda r: r["memory_id"]),
         }
 
 
@@ -349,6 +355,16 @@ class Ledger:
         # position (the break is the FIRST failure). Everything after is
         # untrusted; last-wins within a side.
         cut = len(seen) if n_trusted is None else max(0, n_trusted)
+        sealings: dict[str, list[tuple[int, str]]] = {}
+        for entry in seen[:cut]:
+            if entry.get("memory_id") and entry.get("content_sha256"):
+                sealings.setdefault(entry["memory_id"], []).append(
+                    (entry.get("seq"), entry["content_sha256"]))
+        for rid, seals in sealings.items():
+            distinct = len({h for _, h in seals})
+            if distinct > 1:
+                report.resealed.append(
+                    {"memory_id": rid, "seqs": [q for q, _ in seals], "distinct": distinct})
         for i, entry in enumerate(seen):
             if not (entry.get("memory_id") and entry.get("content_sha256")):
                 continue
