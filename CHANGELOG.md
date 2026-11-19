@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — /preflight still shows the reasoner its two nearest live memories when a demoted one is nearer (2026-11-18)
+
+**Problem.** Since "recall never serves a demoted memory" (2026-11-16, below), `/preflight` drops a demoted hit from the memories it shows the reasoner. It fetched exactly 2 hits, so each dropped one left the reasoner with 1 memory, or none.
+
+**Fix.**
+- `/preflight` fetches 4 hits and keeps the first 2 live ones, so up to 2 demoted hits cost nothing.
+- `/context` is unchanged: it already fetches 3 × `max_results` (more with a category filter) and widens once when it comes back short.
+- Tests: one in `tests/test_recall_drops_superseded.py`, with an embedder that makes the demoted memory the nearest and fixes the order behind it: the reasoner sees the two nearest live memories, not the demoted one, and only two. It fails on the code before this fix, and fails with the two-memory cap removed. `_client` there takes an optional embedder.
 ## Unreleased — a demoted memory no longer blocks an analyst or muse note, or shows up in the rulekeeper's pairs (2026-11-18)
 
 **Problem.** Two more readers of the vector index trusted it the way the write-time check did before the entry below. The analyst and muse note gate (`agentb/analyst.py`) compared a new note only with the single nearest memory. If that was a demoted memory whose vector was back in the index, the note was counted as already known and never saved. The nightly rulekeeper advisory (`agentb/rulekeeper.py`) already skipped demoted memories as the new side of a pair, but it could still report one as the existing side, and a demoted hit used up one of its `top_k` slots.

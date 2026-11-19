@@ -1826,10 +1826,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             query_embedding = await embedder.embed(prompt, task_type="query")
             # Same default hiding as /context: session_log rows (raw
             # auto-capture, archived-session summaries) never feed a verdict.
-            hits = vec_store.search(query_embedding, top_k=2,
+            # Over-fetch: a demoted hit dropped below must not cost the
+            # reasoner one of its two live memories.
+            hits = vec_store.search(query_embedding, top_k=4,
                                     exclude_categories=DEFAULT_HIDDEN_CATEGORIES)
             live = []
             for h in hits:
+                if len(live) == 2:
+                    break
                 if _is_superseded(h.source_file):
                     _drop_superseded(h.memory_id)
                 else:
