@@ -70,7 +70,7 @@ from agentb.ranking import composite_score, pool_similarities, explore_score, or
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
-    PendingIndex, drain_pending,
+    PendingIndex, drain_pending, is_superseded, record_file,
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
@@ -1033,13 +1033,27 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             log.warning(f"Demoted memory {memory_id} is still in the vec index; dropped from "
                         f"recall. POST /vec/backfill removes it.")
 
-    def _is_superseded(source_file: Optional[str]) -> bool:
-        if not source_file:
-            return False
-        try:
-            return bool(json.loads(Path(source_file).read_text(encoding="utf-8")).get("superseded_by"))
-        except Exception:
-            return False
+    # 14 A: a vec row whose record is gone (deleted by hand or by a stick sync,
+    # or a memory folder that is not there right now) is not served either.
+    # Per id for the first few, then one summary line per request with the
+    # count: an unmounted folder must not log one line per row of the index.
+    warned_orphans: set[str] = set()
+    ORPHAN_WARN_IDS = 5
+
+    def _report_orphans(memory_ids: list[str]) -> None:
+        new = [m for m in dict.fromkeys(memory_ids) if m not in warned_orphans]
+        quiet = 0
+        for memory_id in new:
+            if len(warned_orphans) < ORPHAN_WARN_IDS:
+                log.warning(f"Vec row {memory_id} has no record on disk; dropped from "
+                            f"recall. Its vector stays in the index.")
+            else:
+                quiet += 1
+            warned_orphans.add(memory_id)
+        if quiet:
+            log.warning(f"{quiet} more vec rows with no record on disk dropped from recall "
+                        f"({len(warned_orphans)} since start; not logged one by one). "
+                        f"Is the memory folder there?")
 
     async def _drain_tenant(key: str, tenant: dict) -> None:
         if key in draining:
@@ -1287,6 +1301,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         tenant = tenants.get(req.agent_id)
         memory_dir = tenant["memory_dir"]
         vec_store: VecStore = tenant["vec"]
+        orphans: list[str] = []     # 14 A: rows with no record, reported once below
 
         # v3 filter setup. exclude_categories defaults to DEFAULT_HIDDEN_CATEGORIES
         # (session_log). Caller can opt back in by passing an explicit list — even
@@ -1395,6 +1410,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             vec_filter_active = bool(req.category) or bool(effective_exclude)
 
             def _chunk_from_vec_hit(hit) -> Optional[ContextChunk]:
+                record = record_file(hit.source_file, memory_dir)
+                if hit.source_file and record is None:
+                    orphans.append(hit.memory_id)
+                    return None
                 # vec0 distance is L2 by default; convert to similarity-ish (0..1)
                 relevance = 1.0 / (1.0 + hit.distance)
                 # v4.0.1: load category/source from the memory's JSON so the
@@ -1404,9 +1423,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 category = provenance_source = None
                 age_days = stale = None
                 revises: list = []
-                if hit.source_file and os.path.exists(hit.source_file):
+                if record is not None:
                     try:
-                        mj = json.loads(Path(hit.source_file).read_text(encoding="utf-8"))
+                        mj = json.loads(record.read_text(encoding="utf-8"))
                         if mj.get("superseded_by"):
                             _drop_superseded(hit.memory_id)
                             return None
@@ -1780,6 +1799,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         except Exception as e:
             log.warning(f"recall_stats bump failed (non-fatal): {e}")
 
+        _report_orphans(orphans)
         latency = (time.time() - start) * 1000
         return ContextResponse(
             chunks=[ContextChunkResponse(**c.to_dict()) for c in selected],
@@ -1830,14 +1850,18 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # reasoner one of its two live memories.
             hits = vec_store.search(query_embedding, top_k=4,
                                     exclude_categories=DEFAULT_HIDDEN_CATEGORIES)
-            live = []
+            live, orphans = [], []
             for h in hits:
                 if len(live) == 2:
                     break
-                if _is_superseded(h.source_file):
+                record = record_file(h.source_file, tenant["memory_dir"])
+                if h.source_file and record is None:
+                    orphans.append(h.memory_id)
+                elif is_superseded(record):
                     _drop_superseded(h.memory_id)
                 else:
                     live.append(h)
+            _report_orphans(orphans)
             hits = live
             if hits:
                 context_text = "\n\n".join(f"[VEC] {h.text}" for h in hits)
@@ -1982,6 +2006,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 cosine_threshold=config.dedup.cosine_threshold,
                 overlap_threshold=config.dedup.overlap_threshold,
                 min_tokens=config.dedup.min_tokens,
+                memory_dir=memory_dir,
             )
         non_interactive = bool(
             req.batch or req.category == "session_log"

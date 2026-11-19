@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 import unicodedata
 from pathlib import Path
 
 from agentb.cache import cosine_similarity
-from agentb.vec import VecStore
+from agentb.vec import VecStore, is_superseded, record_file
 
 STOP = set("""a an the of to in on for at by with as is are was be been it its
 this that these those and or so then than there here from into onto over under
@@ -53,21 +52,9 @@ def load_allowlist(path: Path) -> set[frozenset[str]]:
     return pairs
 
 
-def _is_demoted(source_file: str | None) -> bool:
-    """True when the hit's record carries superseded_by. A demoted memory's
-    vector should be out of the index; if one is back (an older backfill, a
-    hand repair) it must not hold a new save or be quoted as its twin."""
-    if not source_file:
-        return False
-    try:
-        return bool(json.loads(Path(source_file).read_text(encoding="utf-8")).get("superseded_by"))
-    except Exception:
-        return False
-
-
 def _search(db_path: Path, embedding: list[float], text: str, candidate_id: str,
             allow_path: Path, top_k: int, cosine_threshold: float,
-            overlap_threshold: float) -> list[dict]:
+            overlap_threshold: float, *, memory_dir: Path | None) -> list[dict]:
     # An isolated connection keeps SQLite work off the request loop without
     # sharing a connection across threads.
     store = VecStore(db_path)
@@ -77,12 +64,15 @@ def _search(db_path: Path, embedding: list[float], text: str, candidate_id: str,
         now = time.time()
         matches = []
         live = 0
-        # Over-fetch so demoted hits dropped below do not cost live candidates;
-        # still look at no more than top_k live ones.
+        # Over-fetch so hits dropped below do not cost live candidates; still
+        # look at no more than top_k live ones. A demoted memory whose vector
+        # is back, or a row whose record is gone (item 14 A), must not hold a
+        # new save or be quoted as its twin.
         for hit in store.search(embedding, top_k=top_k * 2):
             if live >= top_k:
                 break
-            if _is_demoted(hit.source_file):
+            record = record_file(hit.source_file, memory_dir)
+            if (hit.source_file and record is None) or is_superseded(record):
                 continue
             live += 1
             if (frozenset((candidate_id, hit.memory_id)) in allow
@@ -113,9 +103,12 @@ def _search(db_path: Path, embedding: list[float], text: str, candidate_id: str,
 async def find_near_duplicates(*, vec_store: VecStore, embedding: list[float],
                                text: str, candidate_id: str, allow_path: Path,
                                top_k: int, cosine_threshold: float,
-                               overlap_threshold: float, min_tokens: int) -> list[dict]:
+                               overlap_threshold: float, min_tokens: int,
+                               memory_dir: Path | None) -> list[dict]:
+    # memory_dir is required on purpose: without it a data dir that moved
+    # reads every hit as an orphan, and the gate is silently off (14 A).
     if len(tokens(text)) < min_tokens:
         return []
     return await asyncio.to_thread(
         _search, vec_store.db_path, embedding, text, candidate_id, allow_path,
-        top_k, cosine_threshold, overlap_threshold)
+        top_k, cosine_threshold, overlap_threshold, memory_dir=memory_dir)

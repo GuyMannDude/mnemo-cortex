@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import functools
+import os
 import re
 import sqlite3
 import time
@@ -1009,13 +1010,33 @@ def detect_mode(memory_dir: Path) -> str:
     return "clean"
 
 
-def _superseded_now(path: Path) -> bool:
-    """Re-read a record's demotion mark. Called after an embed await and
-    before the upsert, with no await in between: a demote that landed while
-    the embed ran deleted a vector that did not exist yet, so the upsert
-    would put the demoted memory back in recall."""
+def record_file(source_file: Optional[str],
+                memory_dir: Optional[Path] = None) -> Optional[Path]:
+    """Where a vec row's record is on disk (item 14 A). source_file is stored
+    absolute, so a data dir that moved (new disk, restored copy) points every
+    row nowhere: fall back to <memory_dir>/<its basename>. None = no
+    source_file, or no record at either place."""
+    if not source_file:
+        return None
+    if os.path.isfile(source_file):
+        return Path(source_file)
+    if memory_dir is not None:
+        moved = memory_dir / Path(source_file).name
+        if os.path.isfile(moved):
+            return moved
+    return None
+
+
+def is_superseded(path: "Path | str | None") -> bool:
+    """True when the record at `path` carries superseded_by. No path, or a
+    record that cannot be read or parsed, reads as live. The one reader for
+    recall, preflight, dedup, analyst, rulekeeper and backfill; backfill
+    calls it after an embed await and before the upsert, with no await in
+    between, so a demote that landed while the embed ran is not undone."""
+    if not path:
+        return False
     try:
-        return bool(json.loads(path.read_text(encoding="utf-8")).get("superseded_by"))
+        return bool(json.loads(Path(path).read_text(encoding="utf-8")).get("superseded_by"))
     except Exception:
         return False
 
@@ -1153,7 +1174,7 @@ async def backfill(
             else:
                 vec = await embed(text)
                 stored_text = text
-            if _superseded_now(path):
+            if is_superseded(path):
                 superseded.append(memory_id)
                 continue
             store.upsert(
@@ -1267,7 +1288,7 @@ async def drain_pending(
             continue
         try:
             vec, stored_text = await embed_with_adaptive_truncation(embed, text)
-            if _superseded_now(path):
+            if is_superseded(path):
                 done.add(memory_id)
                 dropped += 1
                 continue

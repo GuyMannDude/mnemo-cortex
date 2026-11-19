@@ -269,7 +269,8 @@ def test_a_live_twin_ranked_behind_a_demoted_one_is_still_found(tmp_path):
         store.upsert(mid, TEXT, list(vec), source_file=str(rec), created_at=1.0)
     store.close()
     found = _search(tmp_path / "vec.sqlite", list(VEC), TEXT, "new", tmp_path / "no-allow.txt",
-                    top_k=1, cosine_threshold=0.80, overlap_threshold=0.55)
+                    top_k=1, cosine_threshold=0.80, overlap_threshold=0.55,
+                    memory_dir=tmp_path)
     assert [m["id"] for m in found] == ["live"]
 
 
@@ -295,5 +296,6 @@ def test_the_check_still_looks_at_no_more_than_top_k_live_hits(tmp_path):
         store.upsert(mid, TEXT, list(VEC), source_file=str(rec), created_at=1.0)
     store.close()
     found = _search(tmp_path / "vec.sqlite", list(VEC), TEXT, "new", tmp_path / "no-allow.txt",
-                    top_k=1, cosine_threshold=0.80, overlap_threshold=0.55)
+                    top_k=1, cosine_threshold=0.80, overlap_threshold=0.55,
+                    memory_dir=tmp_path)
     assert len(found) == 1

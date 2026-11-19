@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentb.cache import cosine_similarity
-from agentb.dedup import _is_demoted
+from agentb.vec import is_superseded
 from agentb.fsutil import atomic_write_text
 from agentb.ledger import get_ledger
 from agentb.redact import redact_text
@@ -349,7 +349,7 @@ async def _lens_pass(
             # Over-fetch and compare the nearest LIVE memory: a demoted one whose
             # vector is back in the index must not swallow a new note.
             nearest = next((h for h in vec_store.search(embedding, top_k=4)
-                            if not _is_demoted(h.source_file)), None)
+                            if not is_superseded(h.source_file)), None)
             if nearest:
                 known = vec_store.get_embedding(nearest.memory_id)
                 if known and cosine_similarity(embedding, known) >= config.dedup_similarity:
