@@ -70,7 +70,7 @@ from agentb.ranking import composite_score, pool_similarities, explore_score, or
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
-    PendingIndex, drain_pending, is_superseded, record_file, superseded_by,
+    PendingIndex, drain_pending, is_superseded, record_file, superseded_by, count_orphans,
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
@@ -2804,11 +2804,19 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         vec_store: VecStore = tenant["vec"]
         memory_dir = tenant["memory_dir"]
         on_disk = sum(1 for _ in memory_dir.glob("*.json"))
+        # Item 14 B: rows recall drops because their record is gone, and rows
+        # with no source_file (recall serves those as they are). Both reads
+        # run here, on the loop (the store has one shared connection), before
+        # the await, so a save landing meanwhile cannot skew one against the other.
+        indexed, rows = vec_store.count(), vec_store.source_files()
+        orphans, unknown = await asyncio.to_thread(count_orphans, rows, memory_dir)
         return {
             "agent_id": agent_id or "default",
             "mode": tenant["vec_mode"],
-            "indexed": vec_store.count(),
+            "indexed": indexed,
             "memory_entries_on_disk": on_disk,
+            "orphans": len(orphans),
+            "source_unknown": len(unknown),
             "db_path": vec_store.db_path.as_posix(),
         }
 

@@ -933,6 +933,12 @@ class VecStore:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM vec_embeddings").fetchone()
         return int(row["n"])
 
+    def source_files(self) -> list[tuple[str, Optional[str]]]:
+        """(memory_id, source_file) for every row: what /vec/status checks
+        against the memory folder (item 14 B)."""
+        return [(r["memory_id"], r["source_file"]) for r in
+                self._conn.execute("SELECT memory_id, source_file FROM vec_sources")]
+
     def get_embedding(self, memory_id: str) -> Optional[list[float]]:
         """Read back a stored vector (v4.1 — analyst dedup needs true cosine
         against existing memories, not a kNN distance heuristic)."""
@@ -1025,6 +1031,48 @@ def record_file(source_file: Optional[str],
         if os.path.isfile(moved):
             return moved
     return None
+
+
+def orphan_candidates(rows: Iterable[tuple[str, Optional[str]]],
+                      names_on_disk: Iterable[str],
+                      pathmod=os.path,
+                      ) -> tuple[list[tuple[str, str]], list[str]]:
+    """Item 14 B. rows = (memory_id, source_file) from the index; names_on_disk
+    = the regular files in the tenant's memory folder. Returns (the rows whose
+    source_file's file name is not in the folder, the ids with no
+    source_file). Names only, never the filesystem, so a test can pin each
+    platform's rule by passing ntpath or posixpath: on Windows, where the
+    Mnemo host runs, the compare folds case and reads both separators; on
+    Linux and macOS it is exact and splits on / only. That is the name rule
+    record_file uses (Path(source_file).name), so a row this finds in the
+    folder is a row recall finds there too."""
+    present = {pathmod.normcase(n) for n in names_on_disk}
+    missing: list[tuple[str, str]] = []
+    unknown: list[str] = []
+    for memory_id, source_file in rows:
+        if not source_file:
+            unknown.append(memory_id)
+        elif pathmod.normcase(pathmod.basename(source_file)) not in present:
+            missing.append((memory_id, source_file))
+    return missing, unknown
+
+
+def count_orphans(rows: Iterable[tuple[str, Optional[str]]],
+                  memory_dir: Path) -> tuple[list[str], list[str]]:
+    """(orphan ids, ids with no source_file). An orphan is a row recall drops:
+    record_file finds nothing for it. The folder listing (regular files only:
+    a directory or a broken link with a memory's name is not its record) is
+    the fast first pass; each row it misses is checked with record_file
+    itself, so a record kept outside the folder, or a case-insensitive disk
+    the listing compare did not fold, still counts as there. With the folder
+    missing, a row is an orphan unless its stored path still holds its
+    record, which is what recall sees too."""
+    names: list[str] = []
+    if memory_dir.is_dir():
+        with os.scandir(memory_dir) as it:
+            names = [e.name for e in it if e.is_file()]
+    missing, unknown = orphan_candidates(rows, names)
+    return [mid for mid, sf in missing if record_file(sf, memory_dir) is None], unknown
 
 
 def superseded_by(path: "Path | str | None") -> Optional[str]:

@@ -78,7 +78,7 @@
         {"path": "/trajectory/save", "method": "POST", "purpose": "Store a procedural recipe (task_type, steps, rating, provenance) in the trajectory store."},
         {"path": "/trajectory/recall", "method": "POST", "purpose": "Semantic recall over stored trajectories with min_rating / task_type filters; bumps reinforcement stats."},
         {"path": "/dream/latest", "method": "GET", "purpose": "Newest nightly dream brief (date, age_hours, markdown content) served from the Cortex host."},
-        {"path": "/vec/status", "method": "GET", "purpose": "Vec index health per tenant — indexed count vs memory entries on disk."},
+        {"path": "/vec/status", "method": "GET", "purpose": "Vec index health per tenant — indexed count vs memory entries on disk, orphans = rows whose record is gone (not served), source_unknown = rows with no source_file."},
         {"path": "/vec/backfill", "method": "POST", "purpose": "Embed-and-index live memories missing from the vec index (adaptive truncation, breaker-bypassed). Demoted/superseded memories are never re-indexed, and any found in the index are removed. dry_run=true writes nothing and returns unindexed (live, not indexed) and superseded_indexed counts."},
         {"path": "/facts/{entity}/{attribute}", "method": "GET", "purpose": "Look up a single structured fact by (entity, attribute). Sub-millisecond exact lookup."},
         {"path": "/facts", "method": "GET", "purpose": "Filtered fact list — by entity, attribute, value_contains, confidence."},
