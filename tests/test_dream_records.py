@@ -466,3 +466,28 @@ def test_main_retries_before_the_run_and_never_on_a_dry_run(monkeypatch):
         monkeypatch.setattr(dream, "run_with_one_retry", lambda run, **kw: events.append("run"))
         dream.main()
         assert events == expected, argv
+
+
+def test_a_resend_of_a_demoted_dream_is_saved_and_stays_demoted(live, monkeypatch):
+    """Item 16: the server answers a re-send of a demoted id with 200 status
+    'superseded'. The dreamer counts that as landed (the mark clears, no
+    re-send forever) and the demote holds."""
+    client, memory, records, _, vec = live
+    monkeypatch.setenv("MNEMO_RULEKEEPER_ADVISORY", str(records.parent / "no-advisory.md"))
+    before = set(memory.glob("*.json"))
+    dream.write_dream("tonight's brief", [{"agent_id": "cc"}], datetime(2026, 11, 17, tzinfo=timezone.utc))
+    (saved,) = set(memory.glob("*.json")) - before
+    r = client.post("/memories/demote", json={"memory_id": saved.stem, "agent_id": "dreamer",
+                                              "by": "guy", "reason": "wrong"})
+    assert r.status_code == 200 and r.json()["demoted"], r.text
+    (f,) = records.glob("*.json")
+    f.write_text(json.dumps({**_record(records), "writeback": "failed"}), encoding="utf-8")
+    answers = []
+    to_server = dream.httpx.post
+    monkeypatch.setattr(dream.httpx, "post",
+                        lambda url, **kw: answers.append(to_server(url, **kw)) or answers[-1])
+    dream.retry_failed_writebacks()
+    assert [a.json()["status"] for a in answers] == ["superseded"]
+    assert "writeback" not in _record(records)
+    assert json.loads(saved.read_text(encoding="utf-8"))["superseded_by"].startswith("demoted:guy:")
+    assert not vec.has(saved.stem)

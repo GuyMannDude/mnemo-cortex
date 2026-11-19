@@ -1027,18 +1027,27 @@ def record_file(source_file: Optional[str],
     return None
 
 
+def superseded_by(path: "Path | str | None") -> Optional[str]:
+    """The record's superseded_by value, or None. No path, or a record that
+    cannot be read or parsed, reads as live (None). /writeback reads it to
+    answer a re-send of a demoted id with what demoted it (item 16)."""
+    if not path:
+        return None
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8")).get("superseded_by")
+    except Exception:
+        return None
+    return str(value) if value else None
+
+
 def is_superseded(path: "Path | str | None") -> bool:
     """True when the record at `path` carries superseded_by. No path, or a
     record that cannot be read or parsed, reads as live. The one reader for
-    recall, preflight, dedup, analyst, rulekeeper and backfill; backfill
-    calls it after an embed await and before the upsert, with no await in
-    between, so a demote that landed while the embed ran is not undone."""
-    if not path:
-        return False
-    try:
-        return bool(json.loads(Path(path).read_text(encoding="utf-8")).get("superseded_by"))
-    except Exception:
-        return False
+    recall, preflight, dedup, analyst, rulekeeper, backfill and writeback;
+    backfill calls it after an embed await and before the upsert, with no
+    await in between, so a demote that landed while the embed ran is not
+    undone."""
+    return superseded_by(path) is not None
 
 
 def memory_text(entry: dict, memory_id: str) -> str:

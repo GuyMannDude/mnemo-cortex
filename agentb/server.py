@@ -70,7 +70,7 @@ from agentb.ranking import composite_score, pool_similarities, explore_score, or
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
-    PendingIndex, drain_pending, is_superseded, record_file,
+    PendingIndex, drain_pending, is_superseded, record_file, superseded_by,
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
@@ -353,6 +353,8 @@ class WritebackResponse(BaseModel):
     # v4.1 — how many secrets were redacted before storage (0 = clean)
     redactions: int = 0
     near_duplicates: list[dict] = Field(default_factory=list)
+    # item 16: set when status is "superseded" (what demoted this id)
+    superseded_by: Optional[str] = None
 
 
 # ── v4.5 Trajectory Learning ──
@@ -2084,6 +2086,27 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             memory_entry["classified_by"] = classified_by
         if needs_reclassification:
             memory_entry["needs_reclassification"] = True
+        # Item 16: an identical re-send maps to the same id (see above). If
+        # that id was demoted or superseded, the re-send used to overwrite the
+        # record with a fresh one, seal it again and put its vector back: a
+        # memory the user demoted came back live. Now nothing is written,
+        # sealed or indexed. 200, not an error: a retry of an old import or
+        # the dreamer's re-send counts it as landed and stops retrying.
+        # Checked here, after the embed and classify awaits, so a demote that
+        # landed while they ran is seen. A live record is overwritten as before.
+        prior = superseded_by(memory_dir / f"{memory_id}.json")
+        if prior:
+            log.info(f"Writeback: {req.session_id} → {memory_id} is superseded by "
+                     f"{prior}; nothing written (agent: {req.agent_id or 'default'})")
+            return WritebackResponse(
+                status="superseded", memory_id=memory_id, agent_id=req.agent_id,
+                l1_bundles_updated=0,
+                message=(f"Memory {memory_id} was superseded ({prior}); "
+                         "this re-send was not stored."),
+                superseded_by=prior,
+                redactions=sum(red_counts.values()),
+            )
+
         # Off-loop + atomic: the dump/write used to run on the event loop
         # (blocking every concurrent request), and a plain write_text leaves
         # a torn-read window for on-loop readers (precache, analyst) now that
@@ -3346,6 +3369,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             f"Analyst '{tenant_key}': read {astats['scanned']} logs → "
                             f"{astats['notes_saved']} notes saved "
                             f"({astats['notes_deduped']} already known, "
+                            f"{astats['notes_superseded']} demoted, "
                             f"{astats['failed']} failed)"
                         )
                 except Exception as e:
@@ -3364,6 +3388,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             f"Muse '{tenant_key}': read {mstats['scanned']} logs → "
                             f"{mstats['notes_saved']} idea(s) saved "
                             f"({mstats['notes_deduped']} already known, "
+                            f"{mstats['notes_superseded']} demoted, "
                             f"{mstats['failed']} failed)"
                         )
                 except Exception as e:

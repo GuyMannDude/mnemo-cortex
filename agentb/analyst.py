@@ -217,7 +217,8 @@ async def analyze_tenant(
     config,
 ) -> dict:
     """One Analyst pass over a tenant (conservative fact lens). Returns stats:
-    {scanned, batches, notes_extracted, notes_deduped, notes_saved, failed}."""
+    {scanned, batches, notes_extracted, notes_deduped, notes_superseded,
+    notes_saved, failed}."""
     return await _lens_pass(
         agent_id, memory_dir, vec_store, reasoner, embedder,
         config=config, lens="analyst", system_prompt=ANALYST_SYSTEM_PROMPT,
@@ -266,7 +267,8 @@ async def _lens_pass(
 ) -> dict:
     """One extraction pass over a tenant's unprocessed session logs, through
     one lens (analyst = conservative facts, muse = idea seeds). Returns stats:
-    {scanned, batches, notes_extracted, notes_deduped, notes_saved, failed}
+    {scanned, batches, notes_extracted, notes_deduped, notes_superseded,
+    notes_saved, failed}
     (+ "notes" when dry_run).
 
     All LLM/embedding calls run with use_breaker=False — this is background
@@ -274,7 +276,8 @@ async def _lens_pass(
     """
     label = lens.capitalize()
     stats: dict = {"scanned": 0, "batches": 0, "notes_extracted": 0,
-                   "notes_deduped": 0, "notes_saved": 0, "failed": 0}
+                   "notes_deduped": 0, "notes_superseded": 0,
+                   "notes_saved": 0, "failed": 0}
     candidates = await _gather_candidates(memory_dir, config.max_memories_per_cycle,
                                           marker=marker, vec_store=vec_store)
     if not candidates:
@@ -363,6 +366,15 @@ async def _lens_pass(
         memory_id = hashlib.sha256(
             f"{lens}:{agent_id}:{summary}".encode()
         ).hexdigest()[:16]
+        # Item 16: the same id was demoted. Writing it again would overwrite
+        # the record without superseded_by and put its vector back. The dedup
+        # gate cannot catch it: the demote took that vector out of the index.
+        # Read after the embed await, with no await before the write, so a
+        # demote that landed while the embed ran is seen.
+        if is_superseded(memory_dir / f"{memory_id}.json"):
+            stats["notes_superseded"] += 1
+            continue
+
         entry = {
             "id": memory_id,
             "session_id": f"{lens}-{agent_id}-{date_str}",
