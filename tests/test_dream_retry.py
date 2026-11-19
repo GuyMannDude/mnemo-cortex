@@ -100,6 +100,7 @@ def test_main_wires_the_retry(monkeypatch):
             sys.exit(1)
     monkeypatch.setattr(dream, "_dream_once", once)
     monkeypatch.setattr(dream, "_require_claude", lambda: None)
+    monkeypatch.setattr(dream, "retry_failed_writebacks", lambda: None)  # never the real records folder
     monkeypatch.setattr(dream, "DREAM_RETRY_MINUTES", 7.0)
     monkeypatch.setattr(sys, "argv", ["mnemo-dream.py"])
     sleep = mock.Mock()
