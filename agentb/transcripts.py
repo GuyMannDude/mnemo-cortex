@@ -416,7 +416,8 @@ _LOCKS_GUARD = threading.Lock()
 # line once withheld stays withheld.
 STUB_TYPE = "mnemo-withheld"
 FILTER_KEYS = ("filter_consumed_bytes", "withheld_ranges", "withheld_lines",
-               "withheld_turns", "windows", "trailing_untimed_held", "held_for_clock")
+               "withheld_turns", "windows", "trailing_untimed_held", "held_for_clock",
+               "lines_clock_trusted")
 
 
 def _line_time(line: bytes) -> Optional[float]:
@@ -736,7 +737,8 @@ class TranscriptArchive:
                raw_bytes: int, agent_id: Optional[str], host: Optional[str],
                existing: Optional[dict], counts_upload: bool,
                filt: Optional[FilterResult] = None,
-               window_meta: Optional[dict] = None) -> dict:
+               window_meta: Optional[dict] = None,
+               lines_clock_trusted: bool = False) -> dict:
         """Write gz (atomic + fsync) -> index -> manifest (the commit marker).
         Caller holds the session lock."""
         for stale in (self._gz(session_id).with_name(f"{session_id}.jsonl.gz.tmp"),
@@ -797,6 +799,7 @@ class TranscriptArchive:
                 "windows": [known.get(w, {"id": w}) for w in filt.window_ids],
                 "trailing_untimed_held": filt.trailing_untimed_held,
                 "held_for_clock": filt.held_for_clock,
+                "lines_clock_trusted": lines_clock_trusted,
                 # the filter takes the unfinished line off before parsing
                 "unfinished_tail_bytes": filt.held_tail_bytes,
             })
@@ -838,6 +841,7 @@ class TranscriptArchive:
 
     def upload(self, session_id: str, raw: bytes, agent_id: Optional[str],
                host: Optional[str], *, covers=None, clock_ok: bool = True,
+               clock_trusted: bool = False,
                window_meta: Optional[dict] = None) -> tuple[str, dict]:
         """Archive one transcript. Returns (status, manifest) where status is
         archived | replaced | unchanged | repaired | held. Raises
@@ -853,7 +857,12 @@ class TranscriptArchive:
         covers(lo, hi=None) -> capture-pause window id or None (item 18b').
         clock_ok=False: the client's clock is off, so its line times mean
         nothing; fresh lines are held while any window touches the time since
-        the last upload."""
+        the last upload.
+        clock_trusted: this upload sent a client clock the server trusts. The
+        manifest's `lines_clock_trusted` is sticky: true only while EVERY
+        archived line was filtered under a trusted clock (an archive with no
+        marker, made before item 18b' F2, counts as untrusted). The server's
+        transcript pointer is exempt from the window gate only when it is true."""
         validate_transcript_id(session_id)
         sha = hashlib.sha256(raw).hexdigest()
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -916,10 +925,13 @@ class TranscriptArchive:
             if parsed.line_count == 0 or parsed.bad_lines == parsed.line_count:
                 raise ValueError("upload contains no complete JSON transcript lines")
 
+            prior_trusted = existing is None or existing.get("lines_clock_trusted") is True
             manifest = self._store(session_id, parsed, raw_sha=sha, raw_bytes=len(raw),
                                    agent_id=agent_id, host=host, existing=existing,
                                    counts_upload=status != "repaired",
-                                   filt=filt, window_meta=window_meta)
+                                   filt=filt, window_meta=window_meta,
+                                   lines_clock_trusted=prior_trusted and (
+                                       clock_trusted or filt.consumed <= frozen))
             log.info(f"Transcript {status}: {session_id} ({len(raw)} bytes, "
                      f"{parsed.line_count} lines, {len(parsed.turns)} turns, "
                      f"tenant {agent_id or 'default'})")

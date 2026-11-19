@@ -552,3 +552,80 @@ def test_old_shipper_with_a_skewed_clock_gets_no_pointer_exemption(client, tmp_p
     assert body["pointer"] == "paused"
     assert not body["manifest"]["pointer_memory_id"]
     assert [h for h in _on_disk(tmp_path, b"SKEW-SECRET") if "/sessions/" not in h] == []
+
+
+# ── CC review #6944 (F2): the exemption needs EVERY archived line trusted ──
+# A line archived by an old shipper (no client_now) is frozen; a later upload
+# with a trusted clock must not exempt a pointer that can carry it. The
+# control is test_session_spanning_a_closed_window_gets_its_pointer_first_upload.
+
+def _outside_archive(tmp_path, needle: bytes) -> list:
+    return [h for h in _on_disk(tmp_path, needle) if "/sessions/" not in h]
+
+
+def test_untrusted_line_then_trusted_growth_keeps_the_pointer_gated(client, tmp_path):
+    pause(client)
+    now = time.time()
+    first = [line(now - 600, text="SKEW-SECRET")]          # old shipper, clock 10 min slow
+    assert upload(client, first, seat=PAUSER)["pointer"] == "paused"
+    t = time.time()
+    body = upload(client, first + [line(t, kind="assistant", text="ok")],
+                  seat=PAUSER, client_now=iso(t))
+    assert body["status"] == "replaced"
+    assert body["manifest"]["lines_clock_trusted"] is False
+    assert body["pointer"] == "paused"
+    assert _on_disk(tmp_path, b"SKEW-SECRET")               # presence: the archive has it
+    assert _outside_archive(tmp_path, b"SKEW-SECRET") == []
+
+
+def test_untrusted_line_then_trusted_identical_resend_keeps_the_pointer_gated(client, tmp_path):
+    pause(client)
+    first = [line(time.time() - 600, text="SKEW-SECRET")]
+    upload(client, first, seat=PAUSER)
+    body = upload(client, first, seat=PAUSER, client_now=iso(time.time()))
+    assert body["status"] == "unchanged"
+    assert body["pointer"] == "paused"
+    assert _outside_archive(tmp_path, b"SKEW-SECRET") == []
+
+
+def test_manifest_with_no_trust_marker_is_untrusted(client, tmp_path):
+    pause(client)
+    resume(client)
+    w = shift_windows(tmp_path, 3600)
+    t_in = (w["start"] + w["end"]) / 2
+    lines = [line(w["start"] - 600), line(t_in), line(time.time())]
+    body = upload(client, lines, seat=PAUSER, client_now=iso(time.time()))
+    assert body["manifest"]["lines_clock_trusted"] is True    # all-trusted: exempt
+    assert body["manifest"]["pointer_memory_id"]
+    # an archive made before this build: no marker, pointer not yet written
+    mpath = Path(tmp_path) / "agents" / "cc" / "sessions" / "archive" / f"{SID}.manifest.json"
+    m = json.loads(mpath.read_text())
+    del m["lines_clock_trusted"]
+    m["pointer_memory_id"] = None
+    mpath.write_text(json.dumps(m))
+    body = upload(client, lines, seat=PAUSER, client_now=iso(time.time()))
+    assert body["status"] == "unchanged"
+    assert body["pointer"] == "paused"
+    # and it stays untrusted when the file grows under a trusted clock
+    t = time.time()
+    body = upload(client, lines + [line(t, kind="assistant")], seat=PAUSER, client_now=iso(t))
+    assert body["status"] == "replaced"
+    assert body["manifest"]["lines_clock_trusted"] is False
+    assert body["pointer"] == "paused"
+
+
+def test_ai_title_never_reaches_the_pointer_through_the_title_fallback(client, tmp_path):
+    # CC's probe (#6944): the only prompt is in the window, so the pointer
+    # falls back to the title; a title written after it copies the window.
+    pause(client)
+    resume(client)
+    w = shift_windows(tmp_path, 3600)
+    t_in = (w["start"] + w["end"]) / 2
+    title = json.dumps({"type": "ai-title", "sessionId": SID, "aiTitle": "TITLE-SECRET"})
+    body = upload(client, [line(w["start"] - 600, kind="assistant", text="ready"),
+                           line(t_in, text="PROMPT-SECRET"), title,
+                           line(w["end"] + 600, kind="assistant", text="done")],
+                  seat=PAUSER, client_now=iso(time.time()))
+    assert body["manifest"]["pointer_memory_id"]
+    assert _on_disk(tmp_path, b"(no user prompt found)")
+    assert _on_disk(tmp_path, b"TITLE-SECRET") == [] and _on_disk(tmp_path, b"PROMPT-SECRET") == []

@@ -2837,6 +2837,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         try:
             status, manifest = await asyncio.to_thread(
                 partial(archive.upload, covers=covers, clock_ok=clock_ok,
+                        clock_trusted=client_now is not None and clock_ok,
                         window_meta=window_meta),
                 session_id, raw, agent_id, host)
         except TranscriptConflict as e:
@@ -2864,14 +2865,17 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 timestamp=manifest.get("first_ts"), seat=seat,
             )
             try:
-                # Exempt from the window gate (F1) when the upload sent a
-                # trusted clock: its text then comes from an archive filtered
-                # on trusted line times, and judged on first_ts it would be
-                # discarded for good by any window in the session's life. With
-                # no client_now (a pre-18c' shipper) line times may be skewed,
-                # the filter can miss, so the pointer stays gated.
+                # Exempt from the window gate (F1) only when EVERY archived
+                # line of the session was filtered under a trusted clock (F2:
+                # the sticky manifest marker, set by the archive, never by the
+                # wire): its text then comes from an archive filtered on
+                # trusted line times, and judged on first_ts it would be
+                # discarded for good by any window in the session's life. A
+                # line archived from a pre-18c' shipper (no client_now) may
+                # carry a skewed time the filter missed: that session's
+                # pointer stays gated.
                 saved = await _writeback(
-                    wb, request, window_exempt=client_now is not None and clock_ok)
+                    wb, request, window_exempt=manifest.get("lines_clock_trusted") is True)
                 pointer_status = saved.status
                 if saved.memory_id:
                     manifest = await asyncio.to_thread(
