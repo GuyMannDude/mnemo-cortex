@@ -71,6 +71,7 @@ from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
     PendingIndex, drain_pending, is_superseded, record_file, superseded_by, count_orphans,
+    OrphanPruneRefused, prune_orphans as vec_prune_orphans,
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
 from agentb.trajectory import TrajectoryStore, embedding_text as traj_embedding_text
@@ -1048,14 +1049,15 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         for memory_id in new:
             if len(warned_orphans) < ORPHAN_WARN_IDS:
                 log.warning(f"Vec row {memory_id} has no record on disk; dropped from "
-                            f"recall. Its vector stays in the index.")
+                            f"recall. POST /vec/backfill?prune_orphans=true removes it.")
             else:
                 quiet += 1
             warned_orphans.add(memory_id)
         if quiet:
             log.warning(f"{quiet} more vec rows with no record on disk dropped from recall "
                         f"({len(warned_orphans)} since start; not logged one by one). "
-                        f"Is the memory folder there?")
+                        f"Is the memory folder there? If it is, "
+                        f"POST /vec/backfill?prune_orphans=true removes them.")
 
     async def _drain_tenant(key: str, tenant: dict) -> None:
         if key in draining:
@@ -2822,10 +2824,25 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     @app.post("/vec/backfill")
     async def vec_backfill_endpoint(agent_id: Optional[str] = None, skip_existing: bool = True,
-                                    dry_run: bool = False):
+                                    dry_run: bool = False, prune_orphans: bool = False,
+                                    force: bool = False):
         tenant = tenants.get(agent_id)
         vec_store: VecStore = tenant["vec"]
         memory_dir = tenant["memory_dir"]
+        # Item 14 C: prune_orphans removes the rows whose record is gone,
+        # archived first to <data_dir>/vec-orphans/. Off unless asked: a
+        # destructive pass stays an explicit ask. Runs before the walk, so a
+        # refusal (409) leaves the index exactly as it was.
+        pruned: dict = {}
+        if prune_orphans:
+            rows = vec_store.source_files()
+            orphan_ids, _ = await asyncio.to_thread(count_orphans, rows, memory_dir)
+            try:
+                pruned = vec_prune_orphans(
+                    vec_store, memory_dir, orphan_ids, tenant["data_dir"] / "vec-orphans",
+                    agent_id or "default", force=force, dry_run=dry_run)
+            except OrphanPruneRefused as exc:
+                raise HTTPException(409, str(exc))
         # Bypass the resilient wrapper's circuit breaker — backfill is a long
         # batch over heterogeneous content that historically trips the breaker
         # after a few oversize entries, which would then poison live /context
@@ -2838,7 +2855,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             skip_existing=skip_existing,
             dry_run=dry_run,
         )
-        return {"agent_id": agent_id or "default", **stats}
+        return {"agent_id": agent_id or "default", **stats, **pruned}
 
     # ── Ledger (v4.20): tamper-evident chain over the testimony ──
     class LedgerSealRequest(BaseModel):

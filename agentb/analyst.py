@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentb.cache import cosine_similarity
-from agentb.vec import is_superseded
+from agentb.vec import is_superseded, record_file
 from agentb.fsutil import atomic_write_text
 from agentb.ledger import get_ledger
 from agentb.redact import redact_text
@@ -169,7 +169,9 @@ async def _gather_candidates(
             candidates = []
             rows = vec_store.pending_lens_sources(marker, max(limit * 4, limit))
             for memory_id, source_file in rows:
-                path = Path(source_file) if source_file else memory_dir / f"{memory_id}.json"
+                # 14 C (note_2): a moved data dir finds the record by name.
+                path = (record_file(source_file, memory_dir)
+                        or (Path(source_file) if source_file else memory_dir / f"{memory_id}.json"))
                 try:
                     entry = json.loads(path.read_text(encoding="utf-8"))
                 except Exception as e:
@@ -350,9 +352,12 @@ async def _lens_pass(
         # against the nearest existing memory), don't save it again.
         try:
             # Over-fetch and compare the nearest LIVE memory: a demoted one whose
-            # vector is back in the index must not swallow a new note.
-            nearest = next((h for h in vec_store.search(embedding, top_k=4)
-                            if not is_superseded(h.source_file)), None)
+            # vector is back in the index, or a row whose record is gone, must
+            # not swallow a new note (the dedup gate's rule, items 14 A / C).
+            def live(hit) -> bool:
+                record = record_file(hit.source_file, memory_dir)
+                return not ((hit.source_file and record is None) or is_superseded(record))
+            nearest = next((h for h in vec_store.search(embedding, top_k=4) if live(h)), None)
             if nearest:
                 known = vec_store.get_embedding(nearest.memory_id)
                 if known and cosine_similarity(embedding, known) >= config.dedup_similarity:

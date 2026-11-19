@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from agentb.cache import cosine_similarity
 from agentb.dedup import load_allowlist, overlap, tokens
-from agentb.vec import VecStore, is_superseded
+from agentb.vec import VecStore, is_superseded, record_file
 
 
 def scan_tenant(memory_dir: Path, vec_store: VecStore, *, window_days: int = 7,
@@ -38,11 +38,14 @@ def scan_tenant(memory_dir: Path, vec_store: VecStore, *, window_days: int = 7,
         query_tokens = tokens(text)
         if not embedding or len(query_tokens) < min_tokens:
             continue
-        # Over-fetch: the record itself and demoted hits (a vector back in the
-        # index) are skipped, and no more than top_k live ones are looked at.
+        # Over-fetch: the record itself, demoted hits (a vector back in the
+        # index) and rows whose record is gone (14 C) are skipped, and no more
+        # than top_k live ones are looked at. A moved data dir finds by name.
         live = 0
         for hit in vec_store.search(embedding, top_k=(top_k + 1) * 2):
-            if hit.memory_id == memory_id or is_superseded(hit.source_file):
+            record = record_file(hit.source_file, memory_dir)
+            if (hit.memory_id == memory_id or (hit.source_file and record is None)
+                    or is_superseded(record)):
                 continue
             live += 1
             if live > top_k:

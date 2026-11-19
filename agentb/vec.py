@@ -27,6 +27,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, Optional
 
@@ -586,10 +587,21 @@ class VecStore:
             )
 
     def delete(self, memory_id: str) -> None:
+        self.delete_many([memory_id])
+
+    def delete_many(self, memory_ids: Iterable[str], chunk: int = 500) -> None:
+        """The one delete path: every table, one transaction. vec_lex keys
+        memory_id UNINDEXED, so each DELETE there scans the table; a chunked
+        IN (...) pays that once per chunk, not once per id (item 14 C: 5,000
+        single deletes blocked the loop ~18 s on a Linux laptop, one transaction 0.6 s)."""
+        ids = list(dict.fromkeys(memory_ids))
         with self._conn:
-            self._conn.execute("DELETE FROM vec_sources WHERE memory_id = ?", (memory_id,))
-            self._conn.execute("DELETE FROM vec_lex WHERE memory_id = ?", (memory_id,))
-            self._conn.execute("DELETE FROM vec_embeddings WHERE memory_id = ?", (memory_id,))
+            for start in range(0, len(ids), chunk):
+                part = ids[start:start + chunk]
+                marks = ",".join("?" * len(part))
+                for table in ("vec_sources", "vec_lex", "vec_embeddings"):
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE memory_id IN ({marks})", part)
 
     def update_category(self, memory_id: str, category: Optional[str]) -> None:
         """Refresh a memory's category column without re-embedding.
@@ -939,6 +951,14 @@ class VecStore:
         return [(r["memory_id"], r["source_file"]) for r in
                 self._conn.execute("SELECT memory_id, source_file FROM vec_sources")]
 
+    def source_row(self, memory_id: str) -> Optional[dict]:
+        """One vec_sources row as a dict, or None: what the orphan prune
+        archives before it deletes (item 14 C)."""
+        row = self._conn.execute(
+            "SELECT memory_id, text, source_file, created_at, category "
+            "FROM vec_sources WHERE memory_id = ?", (memory_id,)).fetchone()
+        return dict(row) if row else None
+
     def get_embedding(self, memory_id: str) -> Optional[list[float]]:
         """Read back a stored vector (v4.1 — analyst dedup needs true cosine
         against existing memories, not a kNN distance heuristic)."""
@@ -1073,6 +1093,69 @@ def count_orphans(rows: Iterable[tuple[str, Optional[str]]],
             names = [e.name for e in it if e.is_file()]
     missing, unknown = orphan_candidates(rows, names)
     return [mid for mid, sf in missing if record_file(sf, memory_dir) is None], unknown
+
+
+ORPHAN_PRUNE_MAX_FRACTION = 0.25   # the stick's mass-delete guard number
+
+
+class OrphanPruneRefused(Exception):
+    """The prune did not run: nothing was archived and nothing deleted."""
+
+
+def prune_orphans(store: VecStore, memory_dir: Path, orphan_ids: Iterable[str],
+                  archive_dir: Path, agent: str, *, force: bool = False,
+                  dry_run: bool = False) -> dict:
+    """Item 14 C: remove the index rows whose record is gone, archive first.
+
+    orphan_ids comes from count_orphans, which runs off the loop; this runs ON
+    the loop with no await inside, so each id is re-checked here and a save
+    that re-indexed one meanwhile keeps its row. Refuses (OrphanPruneRefused,
+    nothing touched) when the memory folder is missing or holds no file (that
+    is a reindex question, never a prune; force does not override it), and
+    when the orphans are more than 25 % of the index unless force. Every row
+    is appended to <archive_dir>/<agent>-<utc stamp>.jsonl and fsynced BEFORE
+    any delete: its text is the last copy of that memory. Deletes go through
+    VecStore.delete_many, the one delete path (delete calls it): all three
+    tables, one transaction. dry_run runs
+    the same checks and refusals, then archives and deletes nothing."""
+    # A record is a *.json file, what every memory walk reads: a stray
+    # desktop.ini or *.json.tmp must not disarm this guard.
+    try:
+        with os.scandir(memory_dir) as it:
+            has_records = any(entry.name.lower().endswith(".json") and entry.is_file()
+                              for entry in it)
+    except OSError:
+        has_records = False
+    if not has_records:
+        raise OrphanPruneRefused(
+            f"memory folder {memory_dir.as_posix()} is missing or holds no record: every row would "
+            f"read as an orphan. That is a reindex question, never a prune; force does "
+            f"not override it.")
+    current = dict(store.source_files())
+    orphans = [m for m in dict.fromkeys(orphan_ids)
+               if current.get(m) and record_file(current[m], memory_dir) is None]
+    indexed = store.count()
+    if orphans and not force and len(orphans) > ORPHAN_PRUNE_MAX_FRACTION * indexed:
+        raise OrphanPruneRefused(
+            f"{len(orphans)} of {indexed} index rows have no record: more than "
+            f"{ORPHAN_PRUNE_MAX_FRACTION:.0%}. Check the memory folder first; "
+            f"force=true removes them anyway (archived first).")
+    stats = {"orphans_found": len(orphans), "orphans_removed": 0, "orphans_archive": None}
+    if dry_run or not orphans:
+        return stats
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    archive = archive_dir / f"{agent}-{stamp}.jsonl"
+    with archive.open("x", encoding="utf-8") as f:
+        for memory_id in orphans:
+            f.write(json.dumps(store.source_row(memory_id), ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    store.delete_many(orphans)
+    log.warning(f"Pruned {len(orphans)} vec rows with no record on disk; archived to "
+                f"{archive.as_posix()}")
+    stats.update(orphans_removed=len(orphans), orphans_archive=archive.as_posix())
+    return stats
 
 
 def superseded_by(path: "Path | str | None") -> Optional[str]:
