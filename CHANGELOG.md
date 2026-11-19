@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — /preflight still shows the reasoner its two nearest live memories when a demoted one is nearer (2026-11-18)
+
+**Problem.** Since "recall never serves a demoted memory" (2026-11-16, below), `/preflight` drops a demoted hit from the memories it shows the reasoner. It fetched exactly 2 hits, so each dropped one left the reasoner with 1 memory, or none.
+
+**Fix.**
+- `/preflight` fetches 4 hits and keeps the first 2 live ones, so up to 2 demoted hits cost nothing.
+- `/context` is unchanged: it already fetches 3 × `max_results` (more with a category filter) and widens once when it comes back short.
+- Tests: one in `tests/test_recall_drops_superseded.py`, with an embedder that makes the demoted memory the nearest and fixes the order behind it: the reasoner sees the two nearest live memories, not the demoted one, and only two. It fails on the code before this fix, and fails with the two-memory cap removed. `_client` there takes an optional embedder.
+
 ## Unreleased — moving the dreamer's old copies takes them out of the vec index first (2026-11-18)
 
 **Problem.** The `--move-direct-copies --apply` published just below moved every proven copy out of the dreamer memory folder, including copies that a backfill or reindex had already put in the vec index. On one live host 46 of 176 copies were indexed. Moving such a file leaves its vector behind for good: recall reads the record to drop a demoted hit, and with the file gone it serves the hit, so that dream is recalled twice. Backfill and reindex only walk files, so nothing ever visits that row again.
