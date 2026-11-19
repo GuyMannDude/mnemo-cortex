@@ -138,7 +138,7 @@ def test_write_dream_marks_the_brief_written_at_the_json(monkeypatch, tmp_path):
     (tmp_path / "dreamer").mkdir()
     with pytest.raises(OSError):
         dream.write_dream("brief", [{"agent_id": "cc"}], dream.datetime(2026, 11, 14, tzinfo=dream.timezone.utc))
-    assert list((tmp_path / "dreamer").glob("*.json"))
+    assert list((tmp_path / "dreams" / "records").glob("*.json"))
     assert dream._brief_written is True
 
 

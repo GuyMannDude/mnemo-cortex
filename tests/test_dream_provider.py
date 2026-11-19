@@ -277,7 +277,7 @@ def _write_brief(monkeypatch, tmp_path, dream):
     since = dream.datetime(2026, 10, 9, tzinfo=dream.timezone.utc)
     dream_id = dream.write_dream("brief body", [{"agent_id": "cc"}], since)
     md = next((tmp_path / "dreams").glob("*[0-9].md")).read_text(encoding="utf-8")
-    entry = json.loads((tmp_path / "dreamer" / f"{dream_id}.json").read_text(encoding="utf-8"))
+    entry = json.loads((tmp_path / "dreams" / "records" / f"{dream_id}.json").read_text(encoding="utf-8"))
     return md, entry
 
 

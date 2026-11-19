@@ -17,12 +17,19 @@ Agents are discovered automatically from the filesystem — every directory
 under ~/.agentb/memory/ is treated as one agent's lane.
 
 Output:
-  - Writes dream brief to ~/.agentb/memory/dreamer/<dream-id>.json
+  - Saves the brief through the server's /writeback (agent "dreamer"), where it
+    is indexed like any memory
+  - Keeps its own record at ~/.agentb/dreams/records/<dream-id>.json (moves the
+    "since last dream" window; outside every memory folder, so it is never indexed)
   - Also writes human-readable markdown to ~/.agentb/dreams/YYYY-MM-DD.md
 
 Usage:
   python3 mnemo-dream.py                  # Normal nightly run
   python3 mnemo-dream.py --dry-run        # Show what would be synthesized, don't write
+  python3 mnemo-dream.py --move-direct-copies [--apply]
+                                          # One-time: list (or move) the dreamer's own
+                                          # copies that older versions left in the
+                                          # dreamer memory folder next to the indexed save
   python3 mnemo-dream.py --hours 48       # Override time window (default: since last dream)
   python3 mnemo-dream.py --verbose        # Show all harvested memories before synthesis
 """
@@ -65,6 +72,13 @@ MNEMO_DB_PATH = Path(os.getenv("MNEMO_DB_PATH", "~/.mnemo-v2/mnemo.sqlite3")).ex
 DREAM_DIR = AGENTB_DATA_DIR / "dreams"
 AGENTS_ROOT = AGENTB_DATA_DIR / "agents"
 DREAMER_MEMORY_DIR = AGENTS_ROOT / "dreamer" / "memory"
+
+
+def _dream_records_dir() -> Path:
+    """The dreamer's own per-dream records. Not a memory folder: nothing that
+    walks agents/<agent>/memory (backfill, reindex, search, the stick) sees it,
+    and the brief readers only glob dreams/*.md."""
+    return DREAM_DIR / "records"
 
 
 def _boot_budget(name: str) -> int:
@@ -458,12 +472,11 @@ def harvest_mnemo_sqlite(since: datetime) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_last_dream_time() -> datetime | None:
-    """Find when the last dream was written."""
-    if not DREAMER_MEMORY_DIR.exists():
-        return None
-
+    """Find when the last dream was written: the newest `timestamp` among the
+    dreamer's own records and the dreamer memory folder (its indexed saves, and
+    the direct copies versions before this one wrote there)."""
     latest = None
-    for f in DREAMER_MEMORY_DIR.glob("*.json"):
+    for f in [*_dream_records_dir().glob("*.json"), *DREAMER_MEMORY_DIR.glob("*.json")]:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             ts = data.get("timestamp")
@@ -475,6 +488,77 @@ def get_last_dream_time() -> datetime | None:
             pass
 
     return latest
+
+
+def find_direct_copies(memory_dir: Path | None = None) -> tuple[list[Path], list[str]]:
+    """Find the dreamer's own copies that versions before this one wrote into
+    the dreamer memory folder, next to the /writeback save of the same dream.
+
+    A file counts as a direct copy only when ALL hold: no `schema_version`
+    (the dreamer never wrote one; the server has stamped every save since
+    v2.10.0), agent_id "dreamer", file name == its id, and a twin in the same
+    folder that DOES carry `schema_version`, with the same session_id and the
+    same summary or the same key_facts. Anything else is left alone and
+    reported. Returns (copies, notes)."""
+    memory_dir = DREAMER_MEMORY_DIR if memory_dir is None else memory_dir
+    records, notes = [], []
+    for f in sorted(memory_dir.glob("*.json")):
+        try:
+            records.append((f, json.loads(f.read_text(encoding="utf-8"))))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            notes.append(f"{f.name}: unreadable ({e.__class__.__name__}), left in place")
+    saves = [d for _, d in records if isinstance(d, dict) and "schema_version" in d]
+    copies = []
+    for f, d in records:
+        if not isinstance(d, dict) or "schema_version" in d:
+            continue
+        if d.get("agent_id") != "dreamer" or d.get("id") != f.stem:
+            notes.append(f"{f.name}: no schema_version but not a dreamer record named by its id, left in place")
+            continue
+        summary = (d.get("summary") or "").strip()
+        twin = any(
+            s.get("session_id") == d.get("session_id")
+            and ((summary and (s.get("summary") or "").strip() == summary)
+                 or (d.get("key_facts") and s.get("key_facts") == d.get("key_facts")))
+            for s in saves)
+        if twin:
+            copies.append(f)
+        else:
+            notes.append(f"{f.name}: no indexed twin (its writeback may have failed), left in place")
+    return copies, notes
+
+
+def move_direct_copies(apply: bool) -> int:
+    """List (apply=False) or move (apply=True) the direct copies into
+    dreams/records/, where this version keeps them. Never overwrites, never
+    deletes; get_last_dream_time reads both places, so the window holds."""
+    copies, notes = find_direct_copies()
+    dest = _dream_records_dir()
+    print(f"dreamer memory folder: {DREAMER_MEMORY_DIR}")
+    print(f"direct copies with an indexed twin: {len(copies)}"
+          + (f" -> moving to {dest}" if apply else f" (dry run; --apply moves them to {dest})"))
+    for n in notes:
+        print(f"  note: {n}")
+    if not apply:
+        for f in copies:
+            print(f"  would move {f.name}")
+        return 0
+    dest.mkdir(parents=True, exist_ok=True)
+    moved = failed = 0
+    for f in copies:
+        target = dest / f.name
+        if target.exists():
+            print(f"  SKIP {f.name}: {target} already exists")
+            failed += 1
+            continue
+        try:
+            f.rename(target)
+            moved += 1
+        except OSError as e:
+            print(f"  FAILED {f.name}: {e}")
+            failed += 1
+    print(f"moved {moved}, not moved {failed}")
+    return 1 if failed else 0
 
 
 # ---------------------------------------------------------------------------
@@ -1058,8 +1142,7 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
     dream_id = hashlib.sha256(f"dream:{date_str}:{now.isoformat()}".encode()).hexdigest()[:16]
 
     # Ensure directories
-    DREAMER_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-    DREAM_DIR.mkdir(parents=True, exist_ok=True)
+    _dream_records_dir().mkdir(parents=True, exist_ok=True)
 
     # Count by agent
     agent_counts = {}
@@ -1079,7 +1162,11 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
         dream_text, max(1, _boot_budget("dream") - envelope_chars)
     )
 
-    # Write AgentB-format JSON (so /writeback search finds it)
+    # The dreamer's own record of this dream. It lives under dreams/records/,
+    # NOT in the dreamer memory folder: there it sat beside the /writeback save
+    # below as an unindexed twin, and any walker of that folder (vec backfill,
+    # the full reindex in agentb/migrate.py) would index every dream twice (#6795).
+    # So the /writeback below is now the only copy recall can ever see.
     memory_entry = {
         "id": dream_id,
         "session_id": f"dream-{date_str}",
@@ -1096,7 +1183,7 @@ def write_dream(dream_text: str, memories: list[dict], since: datetime) -> str:
         "created_at": time.time(),
         **stamp,
     }
-    json_path = DREAMER_MEMORY_DIR / f"{dream_id}.json"
+    json_path = _dream_records_dir() / f"{dream_id}.json"
     json_path.write_text(json.dumps(memory_entry, indent=2, default=str), encoding="utf-8")
     # The JSON moves the "since last dream" window (get_last_dream_time), so
     # from here a retry would re-dream an empty window: count the brief as landed.
@@ -1145,9 +1232,11 @@ _Sources: {', '.join(f'{a} ({c} entries)' for a, c in sorted(agent_counts.items(
             wb_data = wb_response.json()
             log.info(f"Dream synced to bridge (L2): memory_id={wb_data.get('memory_id', '?')}")
         else:
-            log.warning(f"Bridge writeback returned {wb_response.status_code}")
+            log.error(f"Bridge writeback returned {wb_response.status_code}: "
+                      "this dream will not be searchable (brief + record are on disk)")
     except Exception as e:
-        log.warning(f"Bridge writeback failed (non-fatal): {e}")
+        log.error(f"Bridge writeback failed: {e}: "
+                  "this dream will not be searchable (brief + record are on disk)")
 
     return dream_id
 
@@ -2232,7 +2321,16 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Show what would be synthesized")
     parser.add_argument("--hours", type=int, default=0, help="Override: harvest last N hours")
     parser.add_argument("--verbose", action="store_true", help="Print all harvested memories")
+    parser.add_argument("--move-direct-copies", action="store_true",
+                        help="One-time: list the dreamer's own copies older versions left in the "
+                             "dreamer memory folder beside the indexed save; with --apply, move them "
+                             "to dreams/records/. Dreams nothing.")
+    parser.add_argument("--apply", action="store_true", help="With --move-direct-copies: really move")
     args = parser.parse_args()
+    if args.apply and not args.move_direct_copies:
+        parser.error("--apply only goes with --move-direct-copies")
+    if args.move_direct_copies:
+        sys.exit(move_direct_copies(apply=args.apply))
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

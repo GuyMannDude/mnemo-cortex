@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — the dreamer saves each dream once in its tenant (2026-11-18)
+
+**Problem.** `mnemo-dream.py` put every dream into the dreamer's memory folder (`agents/dreamer/memory/`) twice: its own `<dream_id>.json`, which was never indexed, and the `/writeback` save of the same brief under a second id, which is. Anything that walks that folder looking for memories missing from the index (`POST /vec/backfill`, the full reindex `mnemo-cortex migrate reindex`) would index every dream a second time. On one live host, 127 of the dreamer's 127 unindexed records were such copies. The dreamer's own copy was only there so `get_last_dream_time` could find when the last dream ran.
+
+**Fix.**
+- The dreamer keeps its own record at `<data_dir>/dreams/records/<dream_id>.json`. Nothing that indexes memories looks there: they walk `agents/<agent>/memory/`, and the brief readers (`GET /dream/latest`, the bridge's offline fallback) read only `dreams/*.md`.
+- `get_last_dream_time` reads `dreams/records/` and the dreamer memory folder. The "since last dream" window holds across the upgrade, and still moves when a `/writeback` fails.
+- `python3 mnemo-dream.py --move-direct-copies` lists the copies older versions left in the memory folder; add `--apply` to move them into `dreams/records/`. It runs no dream. A file is moved only when it has no `schema_version` (the server stamps every save; the dreamer never did), says `agent_id` "dreamer", is named by its own id, and has a twin in the same folder that does carry `schema_version`, with the same `session_id` and the same summary or the same key facts. Anything else is listed and left in place. It never overwrites or deletes; a name already taken in `dreams/records/` is skipped and the run exits 1. Run it once on the host that runs the dreamer before the next backfill there. If that host syncs a Cortex Stick that carries the dreamer tenant, the move takes about half the files out of `memories/dreamer/memory` at once, so the stick's mass-delete guard (over 25 %) stops the next sync once; check the plan, then sync with `--force`. With `--force` the stick and the other host drop those files; the dreamer host keeps them in `dreams/records/`.
+- Changed: a dream whose `/writeback` fails is no longer reachable by recall at all. Before, its unindexed copy in the memory folder could be picked up by a later backfill (the same path that duplicated every other dream). The brief and the record are still written and the window still moves. The failure is now logged at error, not warning, and says the dream will not be searchable.
+- Tests: `tests/test_dream_records.py` (14): where the record lands, that the dreamer itself writes nothing into the memory folder and the vec walker finds no copy there, the window read from both places, the twin rules, dry run, move, skip on a taken name, and `--apply` refused without `--move-direct-copies`. 11 of them fail on the code before this fix. One line each in `tests/test_dream_provider.py` and `tests/test_dream_retry.py` now looks for the record in `dreams/records/` (3 tests).
+
 ## Unreleased — recall never serves a demoted memory, whatever put its vector back (2026-11-16)
 
 **Problem.**
