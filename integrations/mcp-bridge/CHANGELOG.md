@@ -12,6 +12,56 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.42.0 — 2026-11-19 — only a stored save says Saved (item 18a)
+
+**Why.** On 2026-11-18 a `mnemo_save` made during a capture pause answered
+"Saved to Mnemo Cortex. memory_id: ok". The server had discarded it
+(`status=paused`, empty id). 2.38.1 had fixed that render in
+`session_checkpoint` and `session_end` only; `mnemo_save` and
+`mnemo_save_trajectory` each rendered their own reply with `id || "ok"`, so
+any status other than the ones a tool knew read as a save. `mnemo_save` also
+said Saved for `status=superseded` (server 4.28.x item 17: "this re-send was
+not stored").
+
+**Fixes.**
+- New `writeback-render.js`: one verdict for every writer tool. Only the
+  route's stored status says Saved: `archived` from `/writeback`, `saved` from
+  `/trajectory/save`. `paused` says NOT SAVED and names the agent and the
+  gate rule; `superseded` says NOT STORED and names the id and what
+  superseded it; a status the bridge does not know, a missing status or an
+  empty body says NOT SAVED with the raw status. The helper marks all of
+  these as errors; `held` is unchanged (NOT SAVED, not an error: it is a
+  review step).
+- `mnemo_save`, `mnemo_save_trajectory`, `session_checkpoint` and
+  `session_end` render through it. The first two return `isError` on any
+  unstored save. `session_checkpoint` and `session_end` are mixed save +
+  commit replies and keep their own rule (a checkpoint is an error only when
+  nothing landed; session_end never sets it). A superseded checkpoint used to
+  say OK and its demoted id joined the own-checkpoint force-retry list; now it
+  says NOT STORED and the id is kept only when the save was stored.
+- Auto-capture: a flush that is not stored writes one stderr line
+  (`N entries discarded by capture pause` or `N entries NOT stored
+  (status=…)`). The entries still leave the buffer: the reply is a 200.
+- `mnemo_capture_pause` says what a pause does. Scope is the agent_id, the
+  TENANT: every session and sync writing under it pauses. A `mnemo_save`
+  with source user/inferred and a real summary still lands;
+  `source=tool`, `category=session_log` and routine-shaped saves (summary or
+  key_facts) are discarded. Raw transcripts are refused while paused and the hourly shipper
+  sends them afterwards. Gone: "Manual mnemo_save still works", "other
+  agents keep capturing", and "discards their checkpoints and transcript
+  uploads". The Claude Desktop manifest line no longer says "this session".
+- The wire is unchanged: the server still answers 200 + `status`.
+
+**Tests.** `writeback-render.test.js`: each status on each route,
+fail-closed on unknown / missing / empty, the checkpoint and session_end
+lines, the flush line, and a census of `server.js` (no `|| "ok"` id
+fallback; each named writer calls the helper inside its own body; the one
+`checkpointIds.push` sits under `if (save.stored)`; no stale pause text).
+Against the 2.41.0 `server.js` the census fails 5 of 5. End to end, the bridge over MCP stdio
+against a stub server: `mnemo_save` paused / superseded / unknown, a paused
+trajectory and a superseded checkpoint all come back NOT SAVED / NOT STORED
+with `isError`; a paused auto-capture flush prints its stderr line.
+
 ## 2.41.0 — 2026-11-14 — product text says what the bridge does, without our team's names
 
 **Why.** A cold test with only the public guides found bridge text that was

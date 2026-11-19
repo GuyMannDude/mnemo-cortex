@@ -35,6 +35,7 @@ import { searchScope } from "./search-scope.js";
 import { fetchUnrepliedBusSummary } from "./bus-startup.js";
 import { spoolFile, persistSpool, orphanSpools } from "./capture-spool.js";
 import { createCaptureBuffer } from "./capture-buffer.js";
+import { writebackVerdict, mnemoSaveLine, flushNotice, PAUSE_GATE_RULE } from "./writeback-render.js";
 
 // ── Configuration ──────────────────────────────────────────────
 // MNEMO_URL: where your Mnemo Cortex API lives
@@ -540,7 +541,7 @@ async function sendCaptureBatch(entries) {
     .filter((e) => TOOL_CAPTURE[e.tool] === "full")
     .map((e) => e.summary.slice(0, 100));
   const sid = sessionId || `${SESSION_PREFIX}-auto-${Date.now()}`;
-  await mnemoRequest("POST", "/writeback", {
+  const data = await mnemoRequest("POST", "/writeback", {
     session_id: sid,
     summary: `[AUTO-CAPTURE] ${entries.length} tool calls:\n${narrative}`,
     key_facts: keyFacts.length > 0 ? keyFacts : ["auto_capture_flush"],
@@ -552,6 +553,10 @@ async function sendCaptureBatch(entries) {
     source: "tool",
     category: "session_log",
   });
+  // A 200 is delivered, so the buffer drops these entries either way; a
+  // flush that was not stored must still say so (item 18a).
+  const notice = flushNotice(data, entries.length, AGENT_ID);
+  if (notice) process.stderr.write(`${notice}\n`);
 }
 
 // The state machine lives in capture-buffer.js (tested against a stubbed
@@ -1000,10 +1005,24 @@ server.registerTool(
         };
       }
 
+      // Only the stored status says Saved (item 18a): paused, superseded and
+      // any status this bridge does not know say NOT SAVED / NOT STORED.
+      const verdict = writebackVerdict(data, { agent: AGENT_ID });
+      if (!verdict.stored) {
+        return {
+          content: [{ type: "text", text: [
+            verdict.line,
+            `  session:   ${sid}`,
+            `  agent:     ${AGENT_ID}`,
+          ].join("\n") }],
+          isError: verdict.isError,
+        };
+      }
+
       // Surface what the server actually stored so the agent can learn.
       const lines = [
         "Saved to Mnemo Cortex.",
-        `  memory_id: ${data.memory_id || "ok"}`,
+        `  memory_id: ${verdict.id || "(none returned)"}`,
         `  session:   ${sid}`,
         `  agent:     ${AGENT_ID}`,
       ];
@@ -1091,9 +1110,16 @@ server.registerTool(
       if (duration_seconds !== undefined) body.duration_seconds = duration_seconds;
 
       const data = await mnemoRequest("POST", "/trajectory/save", body);
+      const verdict = writebackVerdict(data, { route: "trajectory", agent: AGENT_ID });
+      if (!verdict.stored) {
+        return {
+          content: [{ type: "text", text: `Trajectory ${verdict.line}\n  task_type:     ${task_type}\n  agent:         ${AGENT_ID}` }],
+          isError: verdict.isError,
+        };
+      }
       const lines = [
         "Trajectory saved to Mnemo Cortex.",
-        `  trajectory_id: ${data.trajectory_id || "ok"}`,
+        `  trajectory_id: ${verdict.id || "(none returned)"}`,
         `  task_type:     ${task_type}`,
         `  rating:        ${rating}/5`,
         `  agent:         ${AGENT_ID}`,
@@ -2036,20 +2062,17 @@ server.registerTool(
         additional_tags: ["session_checkpoint", ...(tags || [])],
         ...(force ? { force: true } : {}),
       });
-      if (data.status === "held") {
-        const ids = (data.near_duplicates || []).map((m) => m.id).join(", ");
-        results.push(
-          `Mnemo save: HELD as near-duplicate of ${ids || "existing memories"} — NOT saved. ` +
-          `Repeat with force=true if this checkpoint is meant to stand beside them.`
-        );
-      } else if (data.status === "paused") {
-        // Server-wide capture pause: the writeback was DISCARDED, not queued.
-        results.push(`Mnemo save: DISCARDED — ${data.message || "capture is paused server-wide"} — NOT saved.`);
-      } else {
-        memoryId = data.memory_id || null;
+      // One render for every writer (item 18a): only the stored status
+      // says OK; paused / superseded / unknown say NOT SAVED / NOT STORED.
+      const save = mnemoSaveLine(data, {
+        agent: AGENT_ID, sid,
+        heldHint: "Repeat with force=true if this checkpoint is meant to stand beside them.",
+      });
+      if (save.stored) {
+        memoryId = save.id || null;
         if (memoryId) checkpointIds.push(memoryId);
-        results.push(`Mnemo save: OK (memory_id=${memoryId || "ok"}, session ${sid})`);
       }
+      results.push(save.text);
     } catch (err) {
       results.push(`Mnemo save: FAILED (${err.message})`);
     }
@@ -2154,18 +2177,10 @@ server.registerTool(
         category: "current_state",
         additional_tags: ["session_end"],
       });
-      if (data.status === "held") {
-        const ids = (data.near_duplicates || []).map((m) => m.id).join(", ");
-        results.push(
-          `Mnemo save: HELD as near-duplicate of ${ids || "existing memories"} — NOT saved. ` +
-          `Re-save via mnemo_save with force=true (or supersedes=[id]) before closing.`
-        );
-      } else if (data.status === "paused") {
-        // Server-wide capture pause: the writeback was DISCARDED, not queued.
-        results.push(`Mnemo save: DISCARDED — ${data.message || "capture is paused server-wide"} — NOT saved.`);
-      } else {
-        results.push(`Mnemo save: OK (memory_id=${data.memory_id || "ok"})`);
-      }
+      results.push(mnemoSaveLine(data, {
+        agent: AGENT_ID,
+        heldHint: "Re-save via mnemo_save with force=true (or supersedes=[id]) before closing.",
+      }).text);
     } catch (err) {
       results.push(`Mnemo save: FAILED (${err.message})`);
     }
@@ -3025,16 +3040,17 @@ server.registerTool(
 
 // ── Tools: capture pause gate (v4.1) ───────────────────────────
 // "I'm about to handle a secret — stop recording." Pauses ambient capture
-// for THIS agent (auto-sync, captureCall flushes, /ingest); fleet-wide on
-// request. Dead-man switch:
-// auto-resumes at expiry even if everyone forgets. Manual mnemo_save still
-// works while paused — saving the *why* of a sensitive op is the intended
-// workflow.
+// for THIS agent_id — the TENANT, so every seat and sync writing as it —
+// (auto-sync, captureCall flushes, /ingest); fleet-wide on request.
+// Dead-man switch: auto-resumes at expiry even if everyone forgets. A
+// mnemo_save with source user/inferred and a real summary still lands;
+// source=tool, category=session_log and routine-shaped saves are discarded
+// (server /writeback gate). The tool text says exactly that (item 18a).
 
 server.registerTool(
   "mnemo_capture_pause",
   {
-    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Scoped to THIS agent by default — other agents keep capturing. Set fleet_wide=true only when every agent's capture must stop (it discards their checkpoints and transcript uploads too). Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. Deliberate mnemo_save calls still work while paused. Activity during the pause window is DISCARDED, not buffered.",
+    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Scope is this agent_id — the TENANT: every session and sync that writes under the same agent_id pauses too; other agent_ids keep capturing. Set fleet_wide=true only when every agent_id's capture must stop. Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. While paused, auto-capture flushes and ingested exchanges are DISCARDED, not buffered, and so is any mnemo_save with source=tool, category=session_log or a routine-shaped summary or key_facts; a mnemo_save with source user/inferred and a real summary still lands. Raw transcript uploads are refused while paused and the hourly shipper sends them after the pause (redacted).",
     inputSchema: {
       minutes: z
         .number()
@@ -3067,14 +3083,14 @@ server.registerTool(
       // A pre-4.28 server ignores agent_id and pauses everyone; it also never
       // returns `fleet_wide`. Report what the server DID, not what we asked.
       const scope = data.fleet_wide === false
-        ? `scope: ${AGENT_ID} only — other agents keep capturing`
+        ? `scope: tenant ${AGENT_ID} — every session and sync writing as ${AGENT_ID} pauses too; other tenants keep capturing`
         : data.fleet_wide === true
-          ? "⚠️ FLEET-WIDE — every agent's ambient capture, checkpoints and transcript uploads are discarded until it lifts"
+          ? "⚠️ FLEET-WIDE — every agent's ambient capture is discarded until it lifts (the save and transcript rules below apply to every agent)"
           : "⚠️ FLEET-WIDE — this Cortex is older than 4.28 and cannot scope a pause; every agent's capture is discarded until it lifts";
       return {
         content: [{
           type: "text",
-          text: `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}\n${scope}\nAuto-resumes at expiry. Resume early with mnemo_capture_resume. Manual mnemo_save still works.`,
+          text: `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}\n${scope}\nAuto-resumes at expiry. Resume early with mnemo_capture_resume.\nmnemo_save: source user/inferred with a real summary still lands; ${PAUSE_GATE_RULE}. Raw transcripts are delayed, not discarded: the hourly shipper sends them after the pause.`,
         }],
       };
     } catch (err) {
