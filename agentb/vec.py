@@ -34,6 +34,8 @@ from typing import Awaitable, Callable, Iterable, Optional
 import httpx
 import sqlite_vec
 
+from agentb.fsutil import atomic_write_text, record_lock
+
 log = logging.getLogger("agentb.vec")
 
 EMBED_DIM = 768  # nomic-embed-text
@@ -1169,6 +1171,19 @@ def superseded_by(path: "Path | str | None") -> Optional[str]:
     except Exception:
         return None
     return str(value) if value else None
+
+
+def write_unless_superseded(path: Path, entry: dict) -> Optional[str]:
+    """Item 17 (b): the fixed-id writers' check and write as ONE step, under
+    the record's lock. Returns the record's superseded_by (nothing written)
+    or None (written). Unreadable reads as live and is overwritten, as the
+    item 16 check did. Blocking: call it from a worker."""
+    with record_lock(path):
+        prior = superseded_by(path)
+        if prior:
+            return prior
+        atomic_write_text(Path(path), json.dumps(entry, indent=2, default=str))
+        return None
 
 
 def is_superseded(path: "Path | str | None") -> bool:

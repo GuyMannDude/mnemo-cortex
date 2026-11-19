@@ -612,8 +612,9 @@ def test_endpoint_corrupt_raw_is_500(client, tmp_path):
 
 
 def test_endpoint_failed_pointer_is_retried_on_unchanged_upload(client, tmp_path):
-    import agentb.server as srv
-    real = srv._atomic_write_text
+    # Item 17: the writeback's record write is vec.write_unless_superseded.
+    import agentb.vec as vec_mod
+    real = vec_mod.atomic_write_text
     calls = {"n": 0}
 
     def flaky(path, text):
@@ -622,7 +623,7 @@ def test_endpoint_failed_pointer_is_retried_on_unchanged_upload(client, tmp_path
             raise OSError("disk hiccup")
         return real(path, text)
 
-    with patch.object(srv, "_atomic_write_text", flaky):
+    with patch.object(vec_mod, "atomic_write_text", flaky):
         r1 = client.post("/transcripts", params={"agent_id": "cc"}, content=specimen())
     assert r1.json()["pointer"] == "failed"
     assert r1.json()["manifest"]["pointer_error"]

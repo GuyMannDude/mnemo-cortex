@@ -27,7 +27,7 @@ import logging
 import re
 from pathlib import Path
 
-from agentb.fsutil import atomic_write_text
+from agentb.fsutil import update_record
 from agentb.provenance import suggest_category
 
 log = logging.getLogger("agentb.classify")
@@ -245,26 +245,28 @@ async def reclassify_memory_dir(
         # at the top of this loop and this write — writing the stale copy back
         # would clobber anything a concurrent writer changed in between (the
         # Analyst/Muse processed markers, a manual edit). Patch only the
-        # fields this pass owns.
+        # fields this pass owns. Item 17 (b): re-read, patch and atomic write
+        # under the record's lock, off the loop: a demote written from a
+        # worker can no longer land between the re-read and the write.
+        def _patch(fresh, new_cat=new_cat, method=method):
+            if fresh is None:
+                return None
+            fresh["category"] = new_cat
+            fresh["classified_by"] = method
+            if method == "regex":
+                fresh["needs_reclassification"] = True
+            else:
+                fresh.pop("needs_reclassification", None)
+            return fresh
         try:
-            entry = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as e:
-            stats["failed"] += 1
-            log.warning(f"Re-read before reclassify write failed for {path}: {e}")
-            continue
-        entry["category"] = new_cat
-        entry["classified_by"] = method
-        if method == "regex":
-            entry["needs_reclassification"] = True
-        else:
-            entry.pop("needs_reclassification", None)
-        try:
-            # Atomic: rewrites an existing memory in place — see analyst.py;
-            # same torn-read / crash-truncation window since v4.9.14.
-            atomic_write_text(path, json.dumps(entry, indent=2, default=str))
+            _, entry = await asyncio.to_thread(update_record, path, _patch)
         except Exception as e:
             stats["failed"] += 1
             log.error(f"Failed to write reclassified memory {path}: {e}")
+            continue
+        if entry is None:
+            stats["failed"] += 1
+            log.warning(f"Re-read before reclassify write failed for {path}: the file is gone")
             continue
         # #468: the JSON category is now mirrored in vec_sources.category as a
         # search pre-filter. Notify the caller so it can refresh the column —

@@ -50,8 +50,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentb.cache import cosine_similarity
-from agentb.vec import is_superseded, record_file
-from agentb.fsutil import atomic_write_text
+from agentb.vec import is_superseded, record_file, write_unless_superseded
+from agentb.fsutil import update_record
 from agentb.ledger import get_ledger
 from agentb.redact import redact_text
 
@@ -383,15 +383,6 @@ async def _lens_pass(
         memory_id = hashlib.sha256(
             f"{lens}:{agent_id}:{summary}".encode()
         ).hexdigest()[:16]
-        # Item 16: the same id was demoted. Writing it again would overwrite
-        # the record without superseded_by and put its vector back. The dedup
-        # gate cannot catch it: the demote took that vector out of the index.
-        # Read after the embed await, with no await before the write, so a
-        # demote that landed while the embed ran is seen.
-        if is_superseded(memory_dir / f"{memory_id}.json"):
-            stats["notes_superseded"] += 1
-            continue
-
         entry = {
             "id": memory_id,
             "session_id": f"{lens}-{agent_id}-{date_str}",
@@ -409,13 +400,24 @@ async def _lens_pass(
             "derived_from": source_ids,
             "schema_version": 3,
         }
+        note_path = memory_dir / f"{memory_id}.json"
         try:
-            # Atomic: l3_scan walks this dir from a worker thread since
-            # v4.9.14, so a plain write_text is a torn-read window (and a
-            # crash mid-write would truncate the file).
-            atomic_write_text(memory_dir / f"{memory_id}.json",
-                              json.dumps(entry, indent=2, default=str))
+            # Item 16: the same id was demoted. Writing it again would
+            # overwrite the record without superseded_by and put its vector
+            # back; the dedup gate cannot catch it (the demote took that
+            # vector out). Item 17 (b): the check and the atomic write are one
+            # step under the record's lock, off the loop.
+            prior = await asyncio.to_thread(write_unless_superseded, note_path, entry)
+            if prior:
+                stats["notes_superseded"] += 1
+                continue
             await asyncio.to_thread(get_ledger(memory_dir).seal, entry)
+            # Item 17 (b): re-check right before the upsert, no await between.
+            if is_superseded(note_path):
+                log.info(f"{label} note {memory_id} for '{agent_id}' was superseded "
+                         "after its write; not indexed")
+                stats["notes_saved"] += 1
+                continue
             vec_store.upsert(
                 memory_id, full_text, embedding,
                 source_file=(memory_dir / f"{memory_id}.json").as_posix(),
@@ -452,17 +454,22 @@ async def _lens_pass(
             # copy (which would also resurrect a file deleted mid-flight);
             # the unmarked log simply retries next cycle — the dedup gate
             # absorbs any notes that already saved.
+            # Item 17 (b): re-read, patch and atomic write under the record's
+            # lock, off the loop, so no other writer lands in between.
+            def _mark(fresh):
+                if fresh is None:
+                    return None
+                fresh[marker] = True
+                return fresh
             try:
-                fresh = json.loads(path.read_text(encoding="utf-8"))
+                _, fresh = await asyncio.to_thread(update_record, path, _mark)
             except Exception as e:
                 log.warning(f"Re-read before {marker} mark failed for {path} "
                             f"— left unmarked for retry: {e}")
                 continue
-            fresh[marker] = True
-            # Atomic: this rewrites an EXISTING memory in place — a plain
-            # write_text here could destroy it on a crash mid-write, and
-            # tear reads from the off-loop l3_scan walker.
-            atomic_write_text(path, json.dumps(fresh, indent=2, default=str))
+            if fresh is None:
+                log.warning(f"{path} is gone — left unmarked for {marker}")
+                continue
             vec_store.mark_lens_processed(str(fresh.get("id") or path.stem), marker)
         except Exception as e:
             log.warning(f"Failed to mark {path} {marker}: {e}")

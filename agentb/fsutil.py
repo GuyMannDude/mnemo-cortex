@@ -1,6 +1,9 @@
 """Shared filesystem helpers."""
+import json
 import os
+import threading
 from pathlib import Path
+from typing import Callable, Optional
 
 
 def _fsync_path(p: Path) -> None:
@@ -61,3 +64,63 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     _fsync_path(tmp)
     os.replace(tmp, path)
     _fsync_dir(path.parent)
+
+
+# ── Item 17 (b): one lock per memory record, inside this process ──
+# Every writer of a memory/<id>.json record (writeback, Analyst/Muse notes,
+# archived sessions, demote, supersede marks, lens markers, reclassify, the
+# proposal applier) reads, changes and writes it under the record's lock, so
+# no writer can land between another's read and write. A FIXED set of 64
+# locks (no growth, nothing to clean up); a record picks one by its canonical
+# key, so two spellings of one file share a lock. Two records sharing a
+# stripe cost a wait, never a wrong answer. Another PROCESS (the stick, the
+# migrate CLI) is not covered: snag-mnemo-cross-process-record-writers.
+_RECORD_STRIPES = tuple(threading.Lock() for _ in range(64))
+_REAL_DIRS: dict[str, str] = {}
+
+
+def _record_key(path: Path) -> str:
+    """The record's folder resolved once (symlinks, '..'; case folded on
+    Windows only: macOS keeps case, so two casings there are two keys) plus
+    its file name."""
+    parent = str(path.parent)
+    real = _REAL_DIRS.get(parent)
+    if real is None:
+        real = _REAL_DIRS.setdefault(parent, os.path.normcase(os.path.realpath(parent)))
+    return os.path.join(real, os.path.normcase(path.name))
+
+
+def record_lock(path: Path) -> threading.Lock:
+    """The lock guarding the memory record at `path`. Not reentrant."""
+    return _RECORD_STRIPES[hash(_record_key(Path(path))) % len(_RECORD_STRIPES)]
+
+
+def update_record(path: Path, mutate: Callable[[Optional[dict]], Optional[dict]],
+                  ) -> tuple[Optional[dict], Optional[dict]]:
+    """Read, change and write one memory record under its lock.
+
+    mutate(old) gets the parsed record (None when the file does not exist)
+    and returns the dict to write, or None to write nothing. An unreadable
+    record raises, before mutate runs. Returns (old, new).
+
+    mutate MUST BE PURE: no I/O, no await, no database, no second
+    update_record (the lock is not reentrant). The proposal applier holds
+    the facts transaction while it takes a record lock, so nothing may hold
+    a record lock and then ask for the facts database. It may raise; the
+    lock is released and nothing is written.
+
+    Blocking: call it from a worker (asyncio.to_thread), never on the loop."""
+    path = Path(path)
+    with record_lock(path):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            old = None
+        else:
+            old = json.loads(text)
+            if not isinstance(old, dict):
+                raise ValueError(f"memory record {path} is not a JSON object")
+        new = mutate(None if old is None else json.loads(text))
+        if new is not None:
+            atomic_write_text(path, json.dumps(new, indent=2, default=str))
+        return old, new

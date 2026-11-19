@@ -322,8 +322,9 @@ def test_accept_memory_category_amends_atomically(client):
     assert r.status_code == 200, r.text
     pid = r.json()["proposal_id"]
 
-    with patch("agentb.server._atomic_write_text", wraps=__import__(
-            "agentb.server", fromlist=["_atomic_write_text"])._atomic_write_text) as aw:
+    # Item 17: the applier writes through fsutil.update_record (record lock).
+    with patch("agentb.fsutil.atomic_write_text", wraps=__import__(
+            "agentb.fsutil", fromlist=["atomic_write_text"]).atomic_write_text) as aw:
         r = c.post(f"/proposals/{pid}/resolve", json={"action": "accept", "by": "cc",
                                                       "reason": "Guy: yes, a decision"})
     assert r.status_code == 200, r.text

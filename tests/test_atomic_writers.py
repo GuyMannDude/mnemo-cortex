@@ -103,14 +103,18 @@ def test_analyst_writers_are_atomic(tmp_path, monkeypatch):
     vec = VecStore(tmp_path / "vec.sqlite")
 
     written: list[Path] = []
-    import agentb.analyst as analyst_mod
-    real_atomic = analyst_mod.atomic_write_text
+    # Item 17: the note goes through vec.write_unless_superseded and the mark
+    # through fsutil.update_record (both under the record's lock).
+    import agentb.fsutil as fsutil_mod
+    import agentb.vec as vec_mod
+    real_atomic = fsutil_mod.atomic_write_text
 
     def spying_atomic(path, text):
         written.append(Path(path))
         return real_atomic(path, text)
 
-    monkeypatch.setattr(analyst_mod, "atomic_write_text", spying_atomic)
+    monkeypatch.setattr(fsutil_mod, "atomic_write_text", spying_atomic)
+    monkeypatch.setattr(vec_mod, "atomic_write_text", spying_atomic)
 
     stats = asyncio.run(analyze_tenant(
         "cc", memory_dir, vec, ScriptedReasoner(NOTE_REPLY), ScriptedEmbedder(),
@@ -141,14 +145,15 @@ def test_classify_reclassify_write_is_atomic(tmp_path, monkeypatch):
     (memory_dir / "m1.json").write_text(json.dumps(entry))
 
     written: list[Path] = []
-    import agentb.classify as classify_mod
-    real_atomic = classify_mod.atomic_write_text
+    # Item 17: reclassify writes through fsutil.update_record (record lock).
+    import agentb.fsutil as fsutil_mod
+    real_atomic = fsutil_mod.atomic_write_text
 
     def spying_atomic(path, text):
         written.append(Path(path))
         return real_atomic(path, text)
 
-    monkeypatch.setattr(classify_mod, "atomic_write_text", spying_atomic)
+    monkeypatch.setattr(fsutil_mod, "atomic_write_text", spying_atomic)
 
     stats = asyncio.run(reclassify_memory_dir(
         memory_dir, ScriptedReasoner("topology"), use_breaker=False,

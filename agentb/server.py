@@ -50,7 +50,7 @@ from agentb.config import (
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding, probe_embedding_dim
 from agentb.cache import l3_scan, ContextChunk
-from agentb.fsutil import atomic_write_text as _atomic_write_text
+from agentb.fsutil import update_record
 from agentb.ledger import get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.transcripts import (
@@ -70,7 +70,8 @@ from agentb.ranking import composite_score, pool_similarities, explore_score, or
 from agentb.analyst import analyze_tenant, muse_tenant
 from agentb.vec import (
     VecStore, VecHit, detect_mode as vec_detect_mode, backfill as vec_backfill,
-    PendingIndex, drain_pending, is_superseded, record_file, superseded_by, count_orphans,
+    PendingIndex, drain_pending, is_superseded, record_file, count_orphans,
+    write_unless_superseded,
     OrphanPruneRefused, prune_orphans as vec_prune_orphans,
     VecDimMismatch, EMBED_DIM, LEX_EXACT_MAX_DF, lexical_terms, media_classes, unit_vector,
 )
@@ -2094,9 +2095,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # memory the user demoted came back live. Now nothing is written,
         # sealed or indexed. 200, not an error: a retry of an old import or
         # the dreamer's re-send counts it as landed and stops retrying.
-        # Checked here, after the embed and classify awaits, so a demote that
-        # landed while they ran is seen. A live record is overwritten as before.
-        prior = superseded_by(memory_dir / f"{memory_id}.json")
+        # A live record is overwritten as before.
+        # Item 17 (b): the check and the write are ONE step under the
+        # record's lock (off-loop + atomic), so a demote cannot land between
+        # them. The dump/write used to run on the event loop; a plain
+        # write_text left a torn-read window for on-loop readers.
+        prior = await asyncio.to_thread(
+            write_unless_superseded, memory_dir / f"{memory_id}.json", memory_entry)
         if prior:
             log.info(f"Writeback: {req.session_id} → {memory_id} is superseded by "
                      f"{prior}; nothing written (agent: {req.agent_id or 'default'})")
@@ -2109,13 +2114,6 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 redactions=sum(red_counts.values()),
             )
 
-        # Off-loop + atomic: the dump/write used to run on the event loop
-        # (blocking every concurrent request), and a plain write_text leaves
-        # a torn-read window for on-loop readers (precache, analyst) now that
-        # the write can interleave with them.
-        await asyncio.to_thread(
-            _atomic_write_text, memory_dir / f"{memory_id}.json",
-            json.dumps(memory_entry, indent=2, default=str))
         # v4.20: seal the testimony in the tenant's ledger (append + fsync,
         # off-loop). The record is on disk first: a crash between the two
         # leaves an unsealed record, which verify() names — never a sealed
@@ -2129,13 +2127,17 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             if not old_path.exists():
                 continue
 
-            def _mark_superseded(path=old_path, new_id=memory_id):
-                old = json.loads(path.read_text(encoding="utf-8"))
+            # Item 17 (R2): a record already superseded or demoted keeps its
+            # first stamp (demote refuses a superseded record the same way).
+            # Its vector is out already; the delete below is idempotent.
+            def _mark_superseded(old, new_id=memory_id, at=time.time()):
+                if old is None or old.get("superseded_by"):
+                    return None
                 old["superseded_by"] = new_id
-                old["superseded_at"] = time.time()
-                _atomic_write_text(path, json.dumps(old, indent=2, default=str))
+                old["superseded_at"] = at
+                return old
 
-            await asyncio.to_thread(_mark_superseded)
+            await asyncio.to_thread(update_record, old_path, _mark_superseded)
             vec_store.delete(old_id)
         log.info(f"Writeback: {req.session_id} → {memory_id} (agent: {req.agent_id or 'default'}, source={source_used}, category={category_used})")
 
@@ -2148,24 +2150,31 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # under the 60s auto-sync) and resurrected deleted memories. L2
             # remains read-only for pre-v4.1 entries until a backfill retires it.
 
-            try:
-                vec_store.upsert(
-                    memory_id,
-                    full_text,
-                    embedding,
-                    source_file=(memory_dir / f"{memory_id}.json").as_posix(),
-                    created_at=created_at,
-                    category=category_used,  # #468: mirror category into the search pre-filter column
-                )
-            except VecDimMismatch as e:
-                # Dim mismatch is a configuration/contract bug, not a runtime
-                # blip. Surface to the caller — silent vector loss is the
-                # exact failure mode the dim guard was added to prevent.
-                log.error(f"vec_index dim mismatch on writeback {memory_id}: {e}")
-                raise HTTPException(500, f"vec index dim mismatch: {e}")
-            # The embedder answers again: catch up on saves it missed.
-            if tenant["pending"].path.exists():
-                _schedule_drain(req.agent_id or "default", tenant)
+            # Item 17 (b): re-check right before the upsert, with no await
+            # between: a demote that stamped this record since the write
+            # deletes its vector after its stamp lands, so skipping here (or
+            # upserting before the stamp) ends with no vector either way.
+            if is_superseded(memory_dir / f"{memory_id}.json"):
+                log.info(f"Writeback: {memory_id} was superseded after its write; not indexed")
+            else:
+                try:
+                    vec_store.upsert(
+                        memory_id,
+                        full_text,
+                        embedding,
+                        source_file=(memory_dir / f"{memory_id}.json").as_posix(),
+                        created_at=created_at,
+                        category=category_used,  # #468: mirror category into the search pre-filter column
+                    )
+                except VecDimMismatch as e:
+                    # Dim mismatch is a configuration/contract bug, not a runtime
+                    # blip. Surface to the caller — silent vector loss is the
+                    # exact failure mode the dim guard was added to prevent.
+                    log.error(f"vec_index dim mismatch on writeback {memory_id}: {e}")
+                    raise HTTPException(500, f"vec index dim mismatch: {e}")
+                # The embedder answers again: catch up on saves it missed.
+                if tenant["pending"].path.exists():
+                    _schedule_drain(req.agent_id or "default", tenant)
 
             # E3 follow-up: the per-project L1 bundles this used to write
             # (one embed per referenced project) fed a tier /context no
@@ -3048,6 +3057,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     def _tenant_for(name: str) -> dict:
         return tenants.get(None if name == "default" else name)
 
+    _ABSENT = object()
+    _APPLIER_FIELDS = ("category", "classified_by", "category_original", "needs_reclassification")
+
     def _memory_category_applier(tenant_name: str, memory_dir: Path):
         """The accept of a memory_category proposal, as an append-only
         amendment of the memory FILE. category_original is written the first
@@ -3064,18 +3076,39 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             path = memory_dir / f"{memory_id}.json"
             if not path.is_file():
                 raise ValueError(f"no memory {memory_id} for tenant {tenant}")
-            original = path.read_text(encoding="utf-8")
-            mem = json.loads(original)
-            old = mem.get("category")
-            if "category_original" not in mem:
-                mem["category_original"] = old
-            mem["category"] = new_cat
-            mem["classified_by"] = f"proposal:#{pid}"
-            mem.pop("needs_reclassification", None)
-            _atomic_write_text(path, json.dumps(mem, indent=2, default=str))
+            before: dict = {}
+
+            # Item 17 (b): under the record's lock. Pure: this runs inside the
+            # facts transaction, and nothing holding a record lock may ask for
+            # the facts DB.
+            def _apply(mem):
+                if mem is None:
+                    raise ValueError(f"no memory {memory_id} for tenant {tenant}")
+                before.update({k: mem.get(k, _ABSENT) for k in _APPLIER_FIELDS})
+                if "category_original" not in mem:
+                    mem["category_original"] = mem.get("category")
+                mem["category"] = new_cat
+                mem["classified_by"] = f"proposal:#{pid}"
+                mem.pop("needs_reclassification", None)
+                return mem
+
+            prev, _ = update_record(path, _apply)
+            old = prev.get("category")
 
             def undo():
-                _atomic_write_text(path, original)
+                # Item 17 (R3): restore only the four fields apply() set
+                # (absent ones removed again); a demote or any other write
+                # that landed since stays. Was: the whole old file back.
+                def _restore(mem):
+                    if mem is None:
+                        return None
+                    for k, v in before.items():
+                        if v is _ABSENT:
+                            mem.pop(k, None)
+                        else:
+                            mem[k] = v
+                    return mem
+                update_record(path, _restore)
                 log.error(f"Proposal #{pid}: its close failed after the memory file "
                           f"moved; {memory_id} restored to category {old!r}")
             return old, undo
@@ -3220,15 +3253,26 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         path = memory_dir / f"{req.memory_id}.json"
         if not path.exists():
             raise HTTPException(404, f"no memory {req.memory_id} for agent {req.agent_id or 'default'}")
-        mem = json.loads(path.read_text(encoding="utf-8"))
-        if mem.get("superseded_by"):
-            return {"demoted": False, "memory_id": req.memory_id,
-                    "reason": f"already superseded by {mem['superseded_by']}"}
         stamp = f"demoted:{req.by or 'unknown'}:{int(time.time())}"
-        mem["superseded_by"] = stamp
-        mem["superseded_at"] = time.time()
-        mem["demote_reason"] = req.reason.strip()
-        await asyncio.to_thread(_atomic_write_text, path, json.dumps(mem, indent=2, default=str))
+        at, reason = time.time(), req.reason.strip()
+
+        # Item 17 (b): check and stamp as one step under the record's lock.
+        def _demote(mem):
+            if mem is None or mem.get("superseded_by"):
+                return None
+            mem["superseded_by"] = stamp
+            mem["superseded_at"] = at
+            mem["demote_reason"] = reason
+            return mem
+
+        old, new = await asyncio.to_thread(update_record, path, _demote)
+        if old is None:
+            raise HTTPException(404, f"no memory {req.memory_id} for agent {req.agent_id or 'default'}")
+        if new is None:
+            return {"demoted": False, "memory_id": req.memory_id,
+                    "reason": f"already superseded by {old['superseded_by']}"}
+        # After the stamp landed: a writer re-checks the stamp right before
+        # its upsert, so this delete is the last word on the vector.
         vec_store.delete(req.memory_id)
         log.info(f"Memory demoted: {req.memory_id} (agent: {req.agent_id or 'default'}, by={req.by}, reason={req.reason.strip()[:80]})")
         return {"demoted": True, "memory_id": req.memory_id, "superseded_by": stamp}
@@ -3333,11 +3377,24 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                             "additional_tags": ["archived-session"],
                             "schema_version": 3,
                         }
-                        (memory_dir / f"{mid}.json").write_text(
-                            json.dumps(entry, indent=2, default=str),
-                            encoding="utf-8")
+                        # Item 17 (a): a demoted or superseded archived id is
+                        # not rewritten, sealed or re-indexed (item 16's rule
+                        # for the other two fixed-id writers). Check + write
+                        # are one step under the record's lock; was a plain,
+                        # non-atomic write_text on the loop.
+                        rec_path = memory_dir / f"{mid}.json"
+                        prior = await asyncio.to_thread(write_unless_superseded, rec_path, entry)
+                        if prior:
+                            log.info(f"Archived session {arch['session_id']} for '{tenant_key}': "
+                                     f"{mid} is superseded by {prior}; not rewritten")
+                            continue
                         await asyncio.to_thread(get_ledger(memory_dir).seal, entry)
                         emb = await embedder.embed(summary, use_breaker=False, task_type="document")
+                        # Item 17 (b): re-check after the embed await, no await before the upsert.
+                        if is_superseded(rec_path):
+                            log.info(f"Archived session memory {mid} for '{tenant_key}' was "
+                                     "superseded after its write; not indexed")
+                            continue
                         tenant["vec"].upsert(
                             mid, summary, emb,
                             source_file=(memory_dir / f"{mid}.json").as_posix(),
