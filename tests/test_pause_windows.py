@@ -424,3 +424,131 @@ def test_no_window_partial_line_growth_answers_unchanged_not_an_error(client, tm
     raw = (base + '{"type":"user","message":"half').encode()
     r = client.post("/transcripts", params={"agent_id": "cc", "session_id": SID}, content=raw)
     assert r.status_code == 200 and r.json()["status"] in ("unchanged", "replaced")
+
+
+# ── CC review #6942 ──
+# F1: the transcript pointer is built by the server from the FILTERED archive,
+# so it holds no in-window text; it is exempt from the window gate. The
+# exemption is internal: nothing a client sends opens it.
+
+def _on_disk(tmp_path, needle: bytes) -> list:
+    """Every file under the data dir holding `needle` (gzip read through)."""
+    hits = []
+    for p in Path(tmp_path).rglob("*"):
+        if not p.is_file():
+            continue
+        data = p.read_bytes()
+        if p.suffix == ".gz":
+            data = gzip.decompress(data)
+        if needle in data:
+            hits.append(str(p))
+    return hits
+
+
+def test_session_spanning_a_closed_window_gets_its_pointer_first_upload(client, tmp_path):
+    pause(client)
+    resume(client)
+    w = shift_windows(tmp_path, 3600)
+    t_in = (w["start"] + w["end"]) / 2
+    now = time.time()
+    body = upload(client, [line(w["start"] - 600, text="before the window"),
+                           line(t_in, text="in the window"), line(now, text="now")],
+                  seat=PAUSER, client_now=iso(now))
+    assert body["status"] == "archived"
+    assert body["pointer"] not in ("paused", "failed"), body["pointer"]
+    assert body["manifest"]["pointer_memory_id"]
+
+
+def test_pointer_never_holds_a_first_prompt_from_the_window(client, tmp_path):
+    pause(client)
+    resume(client)
+    w = shift_windows(tmp_path, 3600)
+    t_in = (w["start"] + w["end"]) / 2
+    now = time.time()
+    # the session starts before the window (no prompt yet); its first prompt
+    # is in it, so the pointer must fall back to a later one
+    body = upload(client, [line(w["start"] - 600, kind="assistant", text="ready"),
+                           line(t_in, text="FIRST-PROMPT-SECRET"),
+                           line(w["end"] + 600, text="a later prompt")],
+                  seat=PAUSER, client_now=iso(now))
+    assert body["manifest"]["pointer_memory_id"]
+    assert "FIRST-PROMPT-SECRET" not in json.dumps(body)
+    assert _on_disk(tmp_path, b"a later prompt")          # presence: the pointer landed
+    assert _on_disk(tmp_path, b"FIRST-PROMPT-SECRET") == []
+
+
+def test_pointer_written_while_the_window_is_live_holds_no_window_text(client, tmp_path):
+    pause(client)                                          # open now
+    now = time.time()
+    body = upload(client, [line(now - 2, text="LIVE-SECRET-ONE"),
+                           line(now - 1, text="LIVE-SECRET-TWO")],
+                  seat=PAUSER, client_now=iso(now))
+    assert body["manifest"]["withheld_lines"] == 2
+    assert body["manifest"]["pointer_memory_id"]
+    assert _on_disk(tmp_path, b"Full transcript archived")
+    assert _on_disk(tmp_path, b"LIVE-SECRET") == []
+
+
+def test_client_cannot_dress_a_save_as_a_pointer_to_pass_the_gate(client, tmp_path):
+    pause(client)
+    resume(client)
+    w = shift_windows(tmp_path, 3600)
+    t_in = (w["start"] + w["end"]) / 2
+    now = time.time()
+    body = upload(client, [line(w["start"] - 600), line(t_in), line(now)],
+                  seat=PAUSER, client_now=iso(now))
+    first_ts = body["manifest"]["first_ts"]
+    pointer_shaped = {
+        "session_id": f"transcript-{SID}", "agent_id": "cc", "seat": PAUSER,
+        "summary": "Full transcript archived: rotate the key ...",
+        "source": "tool", "category": "session_log", "timestamp": first_ts,
+        "additional_tags": ["transcript-archive", f"session:{SID}"],
+        "client_now": iso(now),
+    }
+    for params in ({}, {"window_exempt": "true", "exempt": "1", "pointer": "1"}):
+        r = client.post("/writeback", params=params, json=pointer_shaped)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "paused"
+    # extra fields on the body are not a way in either
+    r = client.post("/writeback", json={**pointer_shaped, "window_exempt": True,
+                                        "_window_exempt": True, "pointer": True})
+    assert r.status_code == 200 and r.json()["status"] == "paused"
+
+
+# H1: an event time in epoch MILLISECONDS read as seconds is ~57,000 years
+# ahead: trusted, outside every window. A number that is not a plausible
+# epoch-seconds value is "no event time".
+
+def test_epoch_milliseconds_are_not_an_event_time(client, tmp_path):
+    from agentb.capture_gate import clock_trusted, to_epoch
+    pause(client)
+    resume(client)
+    w = shift_windows(tmp_path, 1200)          # closed 20 min ago: past the lookback
+    t_in = (w["start"] + w["end"]) / 2
+    now = time.time()
+    # read as seconds, a ms span was far-future and landed; read as "no event
+    # time" it would fall to the 10-minute lookback and land too. Refused.
+    r = client.post("/writeback", json={
+        "session_id": "s-ms", "agent_id": "cc", "seat": PAUSER, "client_now": now,
+        "summary": "[AUTO-CAPTURE] 2 tool calls: ms span",
+        "event_span": [t_in * 1000, t_in * 1000 + 5]})
+    assert r.status_code == 422, r.text
+    # control: the same span in seconds is judged, and withheld
+    assert wb(client, "[AUTO-CAPTURE] 2 tool calls: s span", seat=PAUSER,
+              event_span=[t_in, t_in + 5], client_now=now) == "paused"
+    assert to_epoch(now) == now and to_epoch(iso(now)) is not None
+    assert to_epoch(now * 1000) is None                    # ms
+    assert to_epoch(5) is None                             # 1970: no real event time
+    assert clock_trusted(now * 1000) is False
+
+
+def test_old_shipper_with_a_skewed_clock_gets_no_pointer_exemption(client, tmp_path):
+    # Reviewer I1: no client_now, clock 10 min slow. The filter trusts its line
+    # times, so the archive keeps the line (the documented old-shipper gap);
+    # the pointer, which recall serves, must not carry it.
+    pause(client)                                          # open now
+    now = time.time()
+    body = upload(client, [line(now - 600, text="SKEW-SECRET")], seat=PAUSER)
+    assert body["pointer"] == "paused"
+    assert not body["manifest"]["pointer_memory_id"]
+    assert [h for h in _on_disk(tmp_path, b"SKEW-SECRET") if "/sessions/" not in h] == []

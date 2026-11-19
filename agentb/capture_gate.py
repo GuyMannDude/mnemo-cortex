@@ -94,22 +94,32 @@ def validate_seat(seat: Optional[str]) -> Optional[str]:
     return seat
 
 
+# A plausible event time, epoch seconds: from 2020-01-01T00:00Z up to 1e11
+# (year 5138). Epoch MILLISECONDS (1.6e12 and up since 2020) read as seconds
+# would be a far-future time outside every window: trusted, and landing.
+EPOCH_MIN = 1_577_836_800.0
+EPOCH_MAX = 1e11
+
+
 def to_epoch(value: TimeLike) -> Optional[float]:
     """ISO-8601 string (a naive one is read as UTC) or epoch seconds -> epoch.
-    None for anything else: the caller treats it as 'no event time'."""
+    None for anything else, or for a time outside [EPOCH_MIN, EPOCH_MAX): the
+    caller treats it as 'no event time'."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
-    if not isinstance(value, str) or not value.strip():
+        t = float(value)
+    elif not isinstance(value, str) or not value.strip():
         return None
-    try:
-        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
+    else:
+        try:
+            dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        t = dt.timestamp()
+    return t if EPOCH_MIN <= t < EPOCH_MAX else None
 
 
 def clock_trusted(client_now: TimeLike, now: Optional[float] = None) -> bool:
@@ -193,6 +203,11 @@ class CaptureGate:
 
     def _read(self) -> dict:
         """Return {scope: entry} with expired entries dropped.
+
+        `_read_ok` is instance state shared by request threads. A race (one
+        thread's failed read seen as ok by another) can only close a live
+        window early, at now + GUARD, and the next windows_for reopens it from
+        the live pause: benign (CC review #6942).
 
         Accepts the pre-v4.28 single-entry file (top-level `resume_at`) as a
         fleet-wide pause, so a pause set before an upgrade still honours its

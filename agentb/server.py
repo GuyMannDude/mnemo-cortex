@@ -355,6 +355,17 @@ class WritebackRequest(BaseModel):
         None, description="The client's clock when it posted. Further than "
         "60 s from the server's, the write is treated as having no event time.")
 
+    @field_validator("event_span")
+    @classmethod
+    def _span_is_epoch_seconds(cls, v):
+        # New in 18b': no old client sends it, so a value we cannot read (e.g.
+        # epoch MILLISECONDS) is a client bug, refused loudly. Read as "no
+        # event time" it would fall to the 10-minute lookback and land late.
+        if v is not None and any(to_epoch(x) is None for x in v):
+            raise ValueError("event_span values must be ISO-8601 or epoch SECONDS "
+                             "(2020-01-01 up to 1e11)")
+        return v
+
 
 class WritebackResponse(BaseModel):
     status: str
@@ -1926,6 +1937,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     # ── Writeback ──
     @app.post("/writeback", response_model=WritebackResponse)
     async def writeback(req: WritebackRequest, request: Request):
+        return await _writeback(req, request)
+
+    async def _writeback(req: WritebackRequest, request: Request, *,
+                         window_exempt: bool = False) -> WritebackResponse:
+        """The save core. `window_exempt` is for the server's own transcript
+        pointer only (item 18b' F1): it is built from the FILTERED archive, so
+        it holds no in-window text. A private argument, never a request field
+        or query parameter: no client can claim it."""
         _enforce_scope(request, req.agent_id)
         if bad := _bad_memory_ids(req.supersedes):
             raise HTTPException(400, f"invalid memory id in supersedes: {bad[0]!r}")
@@ -1946,8 +1965,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # when it is posted inside one. Event times count only with a client
         # clock we trust (change B); otherwise the write could hold anything
         # from the last WRITEBACK_LAG_S, and is judged on that.
-        if req.category == "session_log" or req.source == "tool" \
-                or is_routine_log(req.summary, req.key_facts):
+        if not window_exempt and (req.category == "session_log" or req.source == "tool"
+                                  or is_routine_log(req.summary, req.key_facts)):
             try:
                 validate_seat(req.seat)
             except ValueError as e:
@@ -2845,7 +2864,14 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                 timestamp=manifest.get("first_ts"), seat=seat,
             )
             try:
-                saved = await writeback(wb, request)
+                # Exempt from the window gate (F1) when the upload sent a
+                # trusted clock: its text then comes from an archive filtered
+                # on trusted line times, and judged on first_ts it would be
+                # discarded for good by any window in the session's life. With
+                # no client_now (a pre-18c' shipper) line times may be skewed,
+                # the filter can miss, so the pointer stays gated.
+                saved = await _writeback(
+                    wb, request, window_exempt=client_now is not None and clock_ok)
                 pointer_status = saved.status
                 if saved.memory_id:
                     manifest = await asyncio.to_thread(
