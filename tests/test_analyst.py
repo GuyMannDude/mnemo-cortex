@@ -197,6 +197,45 @@ def test_analyze_dedups_against_existing_memory(tmp_path):
     store.close()
 
 
+def _demoted_in_index(store, tmp_path, vec):
+    """A demoted memory whose vector is back in the index (older backfill, hand repair)."""
+    rec = tmp_path / "demoted.json"
+    rec.write_text(json.dumps({"id": "demoted", "superseded_by": "demoted:by-cc"}))
+    store.upsert("demoted", "Chose Hetzner over a shared self-host box.", list(vec),
+                 source_file=rec.as_posix(), created_at=time.time())
+
+
+def test_a_demoted_memory_does_not_swallow_a_new_note(tmp_path):
+    memory_dir = tmp_path / "memory"
+    _seed_log(memory_dir, "log1", "we chose Hetzner again, same reasoning")
+    store = VecStore(tmp_path / "vec.sqlite")
+    _demoted_in_index(store, tmp_path, VEC_A)
+    stats = asyncio.run(analyze_tenant(
+        "cc", memory_dir, store, ScriptedReasoner(reply=NOTE_REPLY),
+        ScriptedEmbedder(VEC_A), config=AnalysisConfig(),
+    ))
+    assert stats["notes_deduped"] == 0
+    assert stats["notes_saved"] == 1
+    store.close()
+
+
+def test_a_live_twin_behind_a_demoted_one_still_dedups(tmp_path):
+    memory_dir = tmp_path / "memory"
+    _seed_log(memory_dir, "log1", "we chose Hetzner again, same reasoning")
+    store = VecStore(tmp_path / "vec.sqlite")
+    _demoted_in_index(store, tmp_path, VEC_A)
+    near = [0.0] * 768
+    near[0], near[1] = 0.99, 0.141  # cosine ~0.99 to VEC_A: ranks behind the demoted copy
+    store.upsert("live", "Chose Hetzner over a shared self-host box.", near, created_at=time.time())
+    stats = asyncio.run(analyze_tenant(
+        "cc", memory_dir, store, ScriptedReasoner(reply=NOTE_REPLY),
+        ScriptedEmbedder(VEC_A), config=AnalysisConfig(),
+    ))
+    assert stats["notes_deduped"] == 1
+    assert stats["notes_saved"] == 0
+    store.close()
+
+
 def test_note_persist_failure_leaves_sources_unmarked_for_retry(tmp_path):
     """A note whose embed fails must not cost the batch its retry — otherwise
     the insight is silently lost while the source is marked read (the exact

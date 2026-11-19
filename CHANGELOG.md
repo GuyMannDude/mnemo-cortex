@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — a demoted memory no longer blocks an analyst or muse note, or shows up in the rulekeeper's pairs (2026-11-18)
+
+**Problem.** Two more readers of the vector index trusted it the way the write-time check did before the entry below. The analyst and muse note gate (`agentb/analyst.py`) compared a new note only with the single nearest memory. If that was a demoted memory whose vector was back in the index, the note was counted as already known and never saved. The nightly rulekeeper advisory (`agentb/rulekeeper.py`) already skipped demoted memories as the new side of a pair, but it could still report one as the existing side, and a demoted hit used up one of its `top_k` slots.
+
+**Fix.**
+- The note gate fetches the 4 nearest hits and compares the note with the nearest live one. A demoted memory no longer counts as already known.
+- The rulekeeper skips demoted hits, fetches `2 × (top_k + 1)` hits, and still looks at no more than `top_k` live ones besides the record itself.
+- Both use the same disk check as the write-time check (`superseded_by` on the hit's record; a record that cannot be read counts as live).
+- Tests: two in `tests/test_analyst.py` (a demoted memory does not swallow a new note; a live twin ranked behind a demoted one still dedups it) and two in `tests/test_writeback_dedup.py` (the rulekeeper reports the live twin, not the demoted hit, with `top_k=1`; it still looks at no more than `top_k` live hits). The first analyst test and the first rulekeeper test fail on the code before this fix. Removing the over-fetch fails the second analyst test and the first rulekeeper test, and removing the rulekeeper's cap fails the last.
+
 ## Unreleased — a demoted memory never holds a save as its near-duplicate (2026-11-18)
 
 **Problem.** The write-time near-duplicate check (`agentb/dedup.py`) trusted the vector index the way `/context` did before "recall never serves a demoted memory" (2026-11-16, below). A demoted memory whose vector was back in the index (an older backfill, a hand repair) could hold a new interactive save as its near-duplicate, quote the demoted text back as the reason, and land in the new record's `near_dup_of` when the save was forced. A demoted hit also took one of the `top_k` candidate slots, so a live twin ranked just behind it was missed.

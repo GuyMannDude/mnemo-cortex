@@ -4,7 +4,7 @@ import json
 import time
 from pathlib import Path
 from agentb.cache import cosine_similarity
-from agentb.dedup import load_allowlist, overlap, tokens
+from agentb.dedup import _is_demoted, load_allowlist, overlap, tokens
 from agentb.vec import VecStore
 
 
@@ -38,9 +38,15 @@ def scan_tenant(memory_dir: Path, vec_store: VecStore, *, window_days: int = 7,
         query_tokens = tokens(text)
         if not embedding or len(query_tokens) < min_tokens:
             continue
-        for hit in vec_store.search(embedding, top_k=top_k + 1):
-            if hit.memory_id == memory_id:
+        # Over-fetch: the record itself and demoted hits (a vector back in the
+        # index) are skipped, and no more than top_k live ones are looked at.
+        live = 0
+        for hit in vec_store.search(embedding, top_k=(top_k + 1) * 2):
+            if hit.memory_id == memory_id or _is_demoted(hit.source_file):
                 continue
+            live += 1
+            if live > top_k:
+                break
             pair_key = frozenset((memory_id, hit.memory_id))
             if (pair_key in seen or pair_key in allow
                     or frozenset(("*", hit.memory_id)) in allow):

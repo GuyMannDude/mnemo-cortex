@@ -12,7 +12,7 @@ from agentb.config import (
     DEFAULT_PERSONAS, ProviderConfig, ResilientProviderConfig, ServerConfig,
 )
 from agentb.rulekeeper import format_advisory, scan_tenant
-from agentb.vec import VecStore
+from agentb.vec import EMBED_DIM, VecStore
 
 VEC = [0.0] * 768
 VEC[0] = 1.0
@@ -155,6 +155,52 @@ def test_rulekeeper_reports_without_mutating(world):
     assert result["pairs"][0]["new_id"] in {first["memory_id"], forced["memory_id"]}
     assert before == after
     assert "nothing merged or demoted" in format_advisory("cody", result)
+
+
+def test_rulekeeper_skips_a_demoted_hit_and_still_finds_the_live_twin(tmp_path):
+    """A demoted memory back in the index is neither reported as a pair nor
+    allowed to take the only top_k slot from a live twin ranked behind it."""
+    import time
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    text = "the nozzle is clogged and printing badly on the big printer"
+    vec = [0.0] * EMBED_DIM
+    vec[0] = 1.0
+    near = [0.0] * EMBED_DIM
+    near[0], near[1] = 0.99, 0.141
+    store = VecStore(tmp_path / "vec_index.sqlite")
+    try:
+        for mid, v, extra in (("new", vec, {}),
+                              ("demoted", vec, {"superseded_by": "demoted:by-cc", "created_at": 0}),
+                              ("live", near, {"created_at": 0})):
+            rec = memory_dir / f"{mid}.json"
+            rec.write_text(json.dumps({"id": mid, "summary": text, "key_facts": [],
+                                       "created_at": time.time(), **extra}), encoding="utf-8")
+            store.upsert(mid, text, v, source_file=rec.as_posix(), created_at=time.time())
+        result = scan_tenant(memory_dir, store, top_k=1)
+    finally:
+        store.close()
+    assert [(p["new_id"], p["existing_id"]) for p in result["pairs"]] == [("new", "live")]
+
+
+def test_rulekeeper_still_looks_at_no_more_than_top_k_live_hits(tmp_path):
+    import time
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    text = "the nozzle is clogged and printing badly on the big printer"
+    vec = [0.0] * EMBED_DIM
+    vec[0] = 1.0
+    store = VecStore(tmp_path / "vec_index.sqlite")
+    try:
+        for mid, extra in (("new", {}), ("twin1", {"created_at": 0}), ("twin2", {"created_at": 0})):
+            rec = memory_dir / f"{mid}.json"
+            rec.write_text(json.dumps({"id": mid, "summary": text, "key_facts": [],
+                                       "created_at": time.time(), **extra}), encoding="utf-8")
+            store.upsert(mid, text, vec, source_file=rec.as_posix(), created_at=time.time())
+        result = scan_tenant(memory_dir, store, top_k=1)
+    finally:
+        store.close()
+    assert result["pair_count"] == 1
 
 
 def test_forced_near_duplicate_outranks_the_memory_it_revises(world):
