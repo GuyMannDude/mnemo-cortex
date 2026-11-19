@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — /preflight still shows the reasoner its two nearest live memories when a demoted one is nearer (2026-11-18)
+
+**Problem.** Since "recall never serves a demoted memory" (2026-11-16, below), `/preflight` drops a demoted hit from the memories it shows the reasoner. It fetched exactly 2 hits, so each dropped one left the reasoner with 1 memory, or none.
+
+**Fix.**
+- `/preflight` fetches 4 hits and keeps the first 2 live ones, so up to 2 demoted hits cost nothing.
+- `/context` is unchanged: it already fetches 3 × `max_results` (more with a category filter) and widens once when it comes back short.
+- Tests: one in `tests/test_recall_drops_superseded.py`, with an embedder that makes the demoted memory the nearest and fixes the order behind it: the reasoner sees the two nearest live memories, not the demoted one, and only two. It fails on the code before this fix, and fails with the two-memory cap removed. `_client` there takes an optional embedder.
+
 ## Unreleased — the dreamer saves each dream once in its tenant (2026-11-18)
 
 **Problem.** `mnemo-dream.py` put every dream into the dreamer's memory folder (`agents/dreamer/memory/`) twice: its own `<dream_id>.json`, which was never indexed, and the `/writeback` save of the same brief under a second id, which is. Anything that walks that folder looking for memories missing from the index (`POST /vec/backfill`, the full reindex `mnemo-cortex migrate reindex`) would index every dream a second time. On one live host, 127 of the dreamer's 127 unindexed records were such copies. The dreamer's own copy was only there so `get_last_dream_time` could find when the last dream ran.

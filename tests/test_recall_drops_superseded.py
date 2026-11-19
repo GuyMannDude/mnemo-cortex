@@ -58,7 +58,7 @@ class RecordingReasoning:
         return True
 
 
-def _client(tmp_path: Path, reasoner=None) -> TestClient:
+def _client(tmp_path: Path, reasoner=None, embedder=None) -> TestClient:
     from agentb.server import create_app
     cfg = AgentBConfig(
         reasoning=ResilientProviderConfig(primary=ProviderConfig(provider="ollama")),
@@ -68,7 +68,7 @@ def _client(tmp_path: Path, reasoner=None) -> TestClient:
         data_dir=str(tmp_path / "default"), personas=dict(DEFAULT_PERSONAS),
         agents={"cody": AgentConfig(data_dir=str(tmp_path / "cody"))},
     )
-    with patch("agentb.server.create_resilient_embedding", return_value=FakeEmbedding()), \
+    with patch("agentb.server.create_resilient_embedding", return_value=embedder or FakeEmbedding()), \
          patch("agentb.server.create_resilient_reasoning",
                return_value=reasoner or RecordingReasoning()):
         return TestClient(create_app(cfg))
@@ -146,6 +146,39 @@ def test_preflight_never_shows_a_demoted_memory_to_the_reasoner(tmp_path, caplog
     assert "the vault lives on the-north-box" in reasoner.prompts[0]
     assert "the-old-box" not in reasoner.prompts[0]
     assert _warnings(caplog, dead) == 1
+
+
+class NearestIsDeadEmbedding(FakeEmbedding):
+    """The query and the old-box memory get VEC exactly; every other memory sits
+    at cosine ~0.9 (north-card further, at 0.8), so the demoted one is the
+    nearest hit and the order behind it is fixed."""
+
+    async def embed(self, text, *, use_breaker=True, task_type="document"):
+        if task_type == "query" or "old-box" in text:
+            return list(VEC)
+        v = [0.0] * EMBED_DIM
+        v[0], v[1] = (0.8, 0.6) if "north-card" in text else (0.9, 0.4359)
+        return v
+
+
+def test_preflight_still_shows_two_live_memories_when_the_nearest_is_demoted(tmp_path):
+    reasoner = RecordingReasoning()
+    with _client(tmp_path, reasoner, NearestIsDeadEmbedding()) as client:
+        _save(client, "the vault lives on the-north-box")
+        _save(client, "the vault key hangs by the-north-door")
+        _save(client, "the vault alarm code is on the-north-card")
+        dead = _save(client, "the vault lives on the-old-box")
+        _damage(tmp_path, client, dead)
+        r = client.post("/preflight", json={"prompt": "where is the vault",
+                                            "draft_response": "the-north-box",
+                                            "agent_id": "cody"})
+        assert r.status_code == 200, r.text
+    assert len(reasoner.prompts) == 1
+    memory_block = reasoner.prompts[0].split("USER'S PROMPT:")[0]   # not the draft
+    assert "[VEC] the vault lives on the-north-box" in memory_block
+    assert "[VEC] the vault key hangs by the-north-door" in memory_block
+    assert "the-old-box" not in memory_block
+    assert memory_block.count("[VEC] ") == 2              # still the two nearest live
 
 
 def _write(mem: Path, mid: str, summary: str) -> None:
