@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — the lens scan uses the shared vec connection on the event loop only (2026-11-18)
+
+**Problem.** A tenant's `VecStore` is one sqlite3 connection shared with the event loop, and sqlite3 keeps transaction state per connection, not per thread. The Analyst/Muse candidate scan ran `session_log_source_count`, `pending_lens_sources` and `mark_lens_processed` (`with conn:` = INSERT then commit, or rollback on error) inside `asyncio.to_thread`. That commit could commit half of a loop-side `delete_many`; that rollback could undo a loop-side upsert.
+
+**Fix.**
+- `_gather_candidates`: the two index reads run on the loop before the worker starts; the worker does only the file reads and returns `(candidates, ids_to_mark)`; the loop marks them. The marks only happen for logs whose JSON already carries the lens marker but the index does not (pre-index stores), once each.
+- Census (item 17 d), every `asyncio.to_thread` / executor / thread / background task / sync route in `agentb/`: this was the only use of a shared `VecStore` connection off the loop. `dedup._search` opens its own `VecStore` per call. The facts store opens a new connection in every method, so none of its `to_thread` calls share one.
+- The stick's index-cleanup line says `1 memory ... its vector stays` in the singular (was `their vectors stay`).
+- Tests: `tests/conftest.py` gains a `vec_thread_tripwire` fixture that records the thread of every call on a store's connection. `tests/test_vec_loop_thread.py`: a full lens pass (one legacy-marked log that gets marked, one candidate that becomes a note) makes every call from the loop thread; a control proves the tripwire sees a `to_thread` call. Against the previous `analyst.py` the first fails, naming the 5 off-loop calls (2 reads, the mark's enter/execute/exit). Mutants: the mark back in the worker, the mark dropped, the scan on the loop: each turns a test red (the third via the existing loop-starvation test).
+
 ## Unreleased — the stick's sync report names the vec cleanup for memories it deleted here (2026-11-18)
 
 **Problem.** A Cortex Stick sync that deletes a memory file on this host (deleted on the other host, carried here) leaves that memory's vector in the tenant's index. Recall drops it and `/vec/backfill?prune_orphans=true` can remove it (both below), but the sync said nothing about it.

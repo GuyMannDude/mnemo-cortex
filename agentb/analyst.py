@@ -163,11 +163,20 @@ async def _gather_candidates(
     Inline it is a blocking read per file on the event loop, and for as long as
     it lasts the server answers nothing at all — /health included, which had
     the watchdog restarting a process that was alive and simply unable to
-    reply (2026-07-26). The executor threads are idle while this runs."""
-    def _scan() -> list[tuple[Path, dict]]:
-        if vec_store is not None and vec_store.session_log_source_count():
-            candidates = []
-            rows = vec_store.pending_lens_sources(marker, max(limit * 4, limit))
+    reply (2026-07-26). The executor threads are idle while this runs.
+
+    Item 17 (d): only the FILE reads run in the executor. The vec index calls
+    run here on the loop, because the tenant's VecStore is one connection
+    shared with the loop, and sqlite3 keeps transaction state per connection,
+    not per thread: a commit or rollback in a worker could commit half of a
+    loop-side delete_many or undo a loop-side upsert."""
+    rows = None
+    if vec_store is not None and vec_store.session_log_source_count():
+        rows = vec_store.pending_lens_sources(marker, max(limit * 4, limit))
+
+    def _scan() -> tuple[list[tuple[Path, dict]], list[str]]:
+        if rows is not None:
+            candidates, to_mark = [], []
             for memory_id, source_file in rows:
                 # 14 C (note_2): a moved data dir finds the record by name.
                 path = (record_file(source_file, memory_dir)
@@ -181,12 +190,12 @@ async def _gather_candidates(
                     )
                     continue
                 if entry.get(marker):
-                    vec_store.mark_lens_processed(memory_id, marker)
+                    to_mark.append(memory_id)   # marked on the loop, below
                     continue
                 candidates.append((path, entry))
                 if len(candidates) >= limit:
                     break
-            return candidates
+            return candidates, to_mark
         log.warning(
             "Lens %s is using the unbounded legacy disk fallback because the "
             "vector index contains zero session_log sources",
@@ -204,9 +213,12 @@ async def _gather_candidates(
                 continue
             candidates.append((path, entry))
         candidates.sort(key=lambda pe: pe[1].get("created_at") or 0)
-        return candidates[:limit]
+        return candidates[:limit], []
 
-    return await asyncio.to_thread(_scan)
+    candidates, to_mark = await asyncio.to_thread(_scan)
+    for memory_id in to_mark:
+        vec_store.mark_lens_processed(memory_id, marker)
+    return candidates
 
 
 async def analyze_tenant(

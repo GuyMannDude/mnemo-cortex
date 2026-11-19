@@ -599,8 +599,9 @@ def _index_cleanup(report: SyncReport, *, dry_run: bool = False) -> list[str]:
         query = ("prune_orphans=true" if tenant == "default"
                  else f"agent_id={tenant}&prune_orphans=true")
         what = f"{n} {'memory' if n == 1 else 'memories'}"
+        their = "its vector stays" if n == 1 else "their vectors stay"
         lines.append(f"{tenant}: {what} {'would be ' if dry_run else ''}removed here by the "
-                     f"stick; their vectors stay in the index until "
+                     f"stick; {their} in the index until "
                      f"POST /vec/backfill?{query}")
     return lines
 

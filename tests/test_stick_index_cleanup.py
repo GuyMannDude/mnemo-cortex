@@ -39,7 +39,7 @@ def test_a_sync_that_deletes_memories_here_names_the_cleanup(world):
     assert r.index_cleanup == [
         "cc: 2 memories removed here by the stick; their vectors stay in the index "
         "until POST /vec/backfill?agent_id=cc&prune_orphans=true",
-        "default: 1 memory removed here by the stick; their vectors stay in the index "
+        "default: 1 memory removed here by the stick; its vector stays in the index "
         "until POST /vec/backfill?prune_orphans=true",
     ]
 
@@ -72,7 +72,7 @@ def test_only_memory_channel_deletes_count():
         "pad/notes/m1.json",                    # pad is not a memory folder
     ])
     assert _index_cleanup(report) == [
-        "cc: 1 memory removed here by the stick; their vectors stay in the index "
+        "cc: 1 memory removed here by the stick; its vector stays in the index "
         "until POST /vec/backfill?agent_id=cc&prune_orphans=true"]
 
 
