@@ -629,3 +629,38 @@ def test_ai_title_never_reaches_the_pointer_through_the_title_fallback(client, t
     assert body["manifest"]["pointer_memory_id"]
     assert _on_disk(tmp_path, b"(no user prompt found)")
     assert _on_disk(tmp_path, b"TITLE-SECRET") == [] and _on_disk(tmp_path, b"PROMPT-SECRET") == []
+
+
+# Reviewer pass on 888aa97: pin the clock-off and repaired paths, and reprocess.
+
+def test_clock_sent_but_off_archives_lines_as_untrusted(client, tmp_path):
+    now = time.time()                                      # no window: nothing held
+    body = upload(client, [line(now - 5)], seat=PAUSER, client_now=iso(now - 600))
+    assert body["status"] == "archived"
+    assert body["manifest"]["lines_clock_trusted"] is False
+
+
+def test_repair_that_archives_a_held_line_without_a_trusted_clock_is_untrusted(tmp_path):
+    now = time.time()
+    arch = TranscriptArchive(tmp_path)
+    live = lambda lo, hi=None: "w1" if (lo if hi is None else hi) >= now - 100 else None
+    none = lambda lo, hi=None: None
+    lp = json.dumps({"type": "last-prompt", "sessionId": SID, "lastPrompt": "TRAIL"})
+    raw = (line(now - 1000) + "\n" + lp + "\n").encode()
+    st, m = arch.upload(SID, raw, "cc", None, covers=live, clock_trusted=True)
+    assert m["lines_clock_trusted"] is True and m["trailing_untimed_held"] == 1
+    arch._gz(SID).write_bytes(b"garbage")                  # corrupt: same bytes repair
+    st, m = arch.upload(SID, raw, "cc", None, covers=none, clock_trusted=False)
+    assert st == "repaired"
+    assert m["lines_clock_trusted"] is False               # the held line was archived untrusted
+
+
+def test_reprocess_keeps_the_trust_marker(tmp_path):
+    arch = TranscriptArchive(tmp_path)
+    arch.upload(SID, (line(time.time() - 10) + "\n").encode(), "cc", None, clock_trusted=True)
+    mp = arch._manifest_path(SID)
+    m = json.loads(mp.read_text())
+    m["redaction_version"] = 0
+    mp.write_text(json.dumps(m))
+    assert arch.reprocess(SID)["status"] == "reprocessed"
+    assert arch.manifest(SID)["lines_clock_trusted"] is True
