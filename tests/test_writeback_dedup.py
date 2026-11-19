@@ -192,3 +192,62 @@ def test_batch_write_past_the_gate_does_not_acquire_revision_power(world):
                                            "exclude_categories": []}).json()["chunks"]
     ids = [c["memory_id"] for c in chunks]
     assert ids.index(first["memory_id"]) < ids.index(batch["memory_id"])
+
+
+# ── a demoted memory never holds a save (follow-up to 9d) ──
+
+def test_a_demoted_memory_back_in_the_index_does_not_hold_a_save(world):
+    client, root = world
+    first = save(client, "first").json()
+    # Demote on disk, leave the vector in the index: what an older backfill left.
+    path = root / "cody" / "memory" / f"{first['memory_id']}.json"
+    rec = json.loads(path.read_text())
+    rec["superseded_by"] = "demoted:cc:1"
+    path.write_text(json.dumps(rec))
+    assert client.app.state.tenants.get("cody")["vec"].has(first["memory_id"])
+    second = save(client, "second").json()
+    assert second["status"] == "archived"
+    stored = json.loads((root / "cody" / "memory" / f"{second['memory_id']}.json").read_text())
+    assert first["memory_id"] not in (stored.get("near_dup_of") or [])
+
+
+def test_a_live_twin_ranked_behind_a_demoted_one_is_still_found(tmp_path):
+    from agentb.dedup import _search
+    store = VecStore(tmp_path / "vec.sqlite")
+    near = [0.0] * 768
+    near[0], near[1] = 0.99, 0.141          # cosine ~0.99 to VEC, ranks second
+    for mid, vec, demoted in (("dead", VEC, True), ("live", near, False)):
+        rec = tmp_path / f"{mid}.json"
+        rec.write_text(json.dumps({"id": mid, "summary": TEXT,
+                                   **({"superseded_by": "x"} if demoted else {})}))
+        store.upsert(mid, TEXT, list(vec), source_file=str(rec), created_at=1.0)
+    store.close()
+    found = _search(tmp_path / "vec.sqlite", list(VEC), TEXT, "new", tmp_path / "no-allow.txt",
+                    top_k=1, cosine_threshold=0.80, overlap_threshold=0.55)
+    assert [m["id"] for m in found] == ["live"]
+
+
+def test_a_forced_save_never_records_a_demoted_memory_as_its_near_dup(world):
+    client, root = world
+    first = save(client, "first").json()
+    path = root / "cody" / "memory" / f"{first['memory_id']}.json"
+    rec = json.loads(path.read_text())
+    rec["superseded_by"] = "demoted:cc:1"
+    path.write_text(json.dumps(rec))
+    forced = save(client, "second", force=True).json()
+    assert forced["status"] == "archived"
+    stored = json.loads((root / "cody" / "memory" / f"{forced['memory_id']}.json").read_text())
+    assert first["memory_id"] not in (stored.get("near_dup_of") or [])
+
+
+def test_the_check_still_looks_at_no_more_than_top_k_live_hits(tmp_path):
+    from agentb.dedup import _search
+    store = VecStore(tmp_path / "vec.sqlite")
+    for mid in ("one", "two"):
+        rec = tmp_path / f"{mid}.json"
+        rec.write_text(json.dumps({"id": mid, "summary": TEXT}))
+        store.upsert(mid, TEXT, list(VEC), source_file=str(rec), created_at=1.0)
+    store.close()
+    found = _search(tmp_path / "vec.sqlite", list(VEC), TEXT, "new", tmp_path / "no-allow.txt",
+                    top_k=1, cosine_threshold=0.80, overlap_threshold=0.55)
+    assert len(found) == 1

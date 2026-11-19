@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import unicodedata
@@ -52,6 +53,18 @@ def load_allowlist(path: Path) -> set[frozenset[str]]:
     return pairs
 
 
+def _is_demoted(source_file: str | None) -> bool:
+    """True when the hit's record carries superseded_by. A demoted memory's
+    vector should be out of the index; if one is back (an older backfill, a
+    hand repair) it must not hold a new save or be quoted as its twin."""
+    if not source_file:
+        return False
+    try:
+        return bool(json.loads(Path(source_file).read_text(encoding="utf-8")).get("superseded_by"))
+    except Exception:
+        return False
+
+
 def _search(db_path: Path, embedding: list[float], text: str, candidate_id: str,
             allow_path: Path, top_k: int, cosine_threshold: float,
             overlap_threshold: float) -> list[dict]:
@@ -63,7 +76,15 @@ def _search(db_path: Path, embedding: list[float], text: str, candidate_id: str,
         query_tokens = tokens(text)
         now = time.time()
         matches = []
-        for hit in store.search(embedding, top_k=top_k):
+        live = 0
+        # Over-fetch so demoted hits dropped below do not cost live candidates;
+        # still look at no more than top_k live ones.
+        for hit in store.search(embedding, top_k=top_k * 2):
+            if live >= top_k:
+                break
+            if _is_demoted(hit.source_file):
+                continue
+            live += 1
             if (frozenset((candidate_id, hit.memory_id)) in allow
                     or frozenset(("*", hit.memory_id)) in allow):
                 continue

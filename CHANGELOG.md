@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — a demoted memory never holds a save as its near-duplicate (2026-11-18)
+
+**Problem.** The write-time near-duplicate check (`agentb/dedup.py`) trusted the vector index the way `/context` did before "recall never serves a demoted memory" (2026-11-16, below). A demoted memory whose vector was back in the index (an older backfill, a hand repair) could hold a new interactive save as its near-duplicate, quote the demoted text back as the reason, and land in the new record's `near_dup_of` when the save was forced. A demoted hit also took one of the `top_k` candidate slots, so a live twin ranked just behind it was missed.
+
+**Fix.**
+- The check skips any hit whose record carries `superseded_by`, the same disk check recall uses. A record that cannot be read counts as live, as before.
+- It fetches `2 × top_k` hits and still looks at no more than `top_k` live ones, so dropped demoted hits do not cost live candidates (up to `top_k` of them).
+- Tests: four in `tests/test_writeback_dedup.py`: a demoted memory back in the index does not hold the save; a forced save does not record it in `near_dup_of`; a live twin ranked behind a demoted one is still found with `top_k=1`; and the check still looks at no more than `top_k` live hits. The first three fail on the code before this fix; removing the over-fetch fails the third, removing the `top_k` cap fails the fourth.
+
 ## Unreleased — the dreamer saves each dream once in its tenant (2026-11-18)
 
 **Problem.** `mnemo-dream.py` put every dream into the dreamer's memory folder (`agents/dreamer/memory/`) twice: its own `<dream_id>.json`, which was never indexed, and the `/writeback` save of the same brief under a second id, which is. Anything that walks that folder looking for memories missing from the index (`POST /vec/backfill`, the full reindex `mnemo-cortex migrate reindex`) would index every dream a second time. On one live host, 127 of the dreamer's 127 unindexed records were such copies. The dreamer's own copy was only there so `get_last_dream_time` could find when the last dream ran.
