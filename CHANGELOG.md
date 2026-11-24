@@ -1,5 +1,76 @@
 # Changelog
 
+## Unreleased — the dreamer's git-sync check watches the repo root, never skips silently, and knows pinned checkouts (2026-11-24)
+
+**Problem.** Three faults in the nightly git-sync check (`MNEMO_DREAM_GIT_SYNC_CHECK`):
+- A watched path with no `.git` directly inside it was dropped with no line.
+  A `BRAIN_DIR` that is a folder inside a checkout (not its root) was
+  therefore never watched, and the log read like a clean night.
+- A failed `git fetch` was ignored, so the check compared against a stale
+  remote ref and could print "✅ up to date" when it knew nothing.
+- A checkout held behind its upstream on purpose (moved only by a deliberate
+  deploy) drew "⚠️ N behind — pull to refresh" and a letter every night.
+
+**Fix (`mnemo-dream.py` only).**
+- **Repo roots.** Every watched path is resolved with
+  `git rev-parse --show-toplevel`; the checks run on the root. Two paths in
+  one repo give one block. When the path given was a folder inside the repo,
+  the block names the root and adds `— watched via <path>`.
+- **Behaviour change, said out loud:** a `BRAIN_DIR` that is a subfolder of a
+  checkout is now WATCHED. An install that never printed a brain line will
+  print one, and will send the letter if that working tree is dirty, has
+  unpushed commits or is behind at dream time. A `BRAIN_DIR` that is a plain
+  folder (no git at all) now prints a `⚠️ not checked` line and sends the
+  letter every night while the check is on: list only checkouts in
+  `MNEMO_DREAM_GIT_SYNC_REPOS` to stop it.
+- **Never silent.** A path that cannot be checked prints
+  `- ⚠️ not checked: <reason>` (path does not exist / not inside a git
+  checkout / git could not run: … / git said: …). It carries ⚠️, so it sends
+  the letter, every night until the path or the list is fixed. No state is
+  kept between runs: a skip is never by design, and the fix is one edit to
+  the watch list.
+- **Fetch.** A failed fetch prints `- ⚠️ fetch failed, so the counts below may
+  be stale: <git's message>` and the "up to date" line is not printed. It
+  sends the letter, pinned or not.
+- **Compare failures.** When a compare with the upstream fails (the upstream
+  branch was deleted on the remote and pruned, or git timed out), the line is
+  `- ⚠️ could not compare with <upstream>: <git's message>`. Before, nothing
+  was printed and no letter went out.
+- **UTF-8.** git's output is read as UTF-8, so a non-ASCII folder name no
+  longer garbles the path (or, on Windows, crashes the end of the run).
+- **Pinned checkouts.** New `MNEMO_DREAM_GIT_SYNC_PINNED` (comma-separated
+  paths, same form as `MNEMO_DREAM_GIT_SYNC_REPOS`; any folder inside the
+  checkout works). For a pinned checkout, being behind prints
+  `- 📌 pinned: N behind <upstream>, expected for a pinned checkout`, with no
+  ⚠️, so on its own it sends nothing. Dirty, unpushed, no upstream and a
+  failed fetch still carry ⚠️ and still send it. Paths match after resolving
+  symlinks; on Windows also regardless of case and slash direction.
+- **A pin that matches no watched repo** prints
+  `- 📌 pinned entry <path> matches no watched repo` (with the reason when the
+  path cannot be resolved), and sends nothing. Why no letter: if the entry was
+  meant for a watched repo (a typo), that repo is unpinned and still reports
+  "behind" with its ⚠️, so the mistake is loud anyway.
+- Unchanged: the letter rule (any line with ⚠️ sends the bus + Discord
+  letter; now in `run_git_sync()`), the output for a clean repo given by its
+  root, and everything for an unpinned repo except the fetch line.
+- **Not covered:**
+  - git missing from the PATH of the scheduled job, or git refusing a
+    checkout owned by another user (`safe.directory`, "dubious ownership"):
+    both now print a ⚠️ skip line every night, but fixing them is host setup.
+  - A watched path given as a file, not a folder, gets "git said: …" rather
+    than a friendlier reason.
+  - The "not a git repository" reason is matched on git's English message; a
+    git set to another language gets "git said: …" instead (still loud).
+  - Behind/unpushed are still computed only for the checked-out branch's
+    upstream; other local branches are not looked at (as before).
+- Tests: `test_dream_git_sync.py` (25; real git, scratch repos with a scratch
+  bare remote, scratch HOME; each asserts the block and whether the letter was
+  sent). 3 run on Windows only (case and slashes for a watched path and a
+  pin, 8.3 short names), 2 on POSIX only (symlinks). Run before the fix
+  (master's letter rule shimmed in, Linux): 16 fail; the 6 that pass are the
+  unchanged-behaviour controls. 10 mutants of the fix all go red on Linux.
+  CI: a `windows-latest` job runs this file on real Windows git.
+
 ## Unreleased — the clients send their seat and clock (item 18c', 2026-11-23)
 
 **Problem.** 18b' made a pause a window per (tenant, seat) on event time, but

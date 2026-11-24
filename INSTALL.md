@@ -261,6 +261,7 @@ how agents end up with a database they never think to read.
 | Server unreachable from another machine | Firewall. `ufw allow from <subnet> to any port 50001`. Default bind is `127.0.0.1`; switch to `0.0.0.0` in the manifest's `service.host` only if you want LAN access (and add auth). |
 | Memories from two hosts show under one agent | `MNEMO_AGENT_ID` not set or duplicated. Each host needs a unique value. |
 | Stage 0.5 fact extractions stop arriving overnight | The dreamer (`mnemo-dream.py`) isn't scheduled, or its environment has no `ANTHROPIC_API_KEY` (it calls Claude only and exits 1 without one), or `DREAM_SKIP_FACTS=1` is set. Run `python3 mnemo-dream.py` by hand with the same environment and read its log lines. |
+| The dreamer's git-sync letter says `⚠️ not checked` every night | A path in `MNEMO_DREAM_GIT_SYNC_REPOS` (or `BRAIN_DIR`) is missing or not inside a git checkout, or git cannot run for the job's user (not on its PATH, or a "dubious ownership" refusal). The line gives the reason. Fix the path or take it off the list; a checkout kept behind on purpose belongs in `MNEMO_DREAM_GIT_SYNC_PINNED`. |
 
 ---
 

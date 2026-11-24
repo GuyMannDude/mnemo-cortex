@@ -2267,11 +2267,12 @@ def notify_contradictions(contradictions: list[dict], dream_date: str, drift_not
 
 
 def _git_sync_repos() -> list[Path]:
-    """Repos the git-sync wedge watches. Default: the Dreamer's own checkout
+    """Paths the git-sync wedge watches. Default: the Dreamer's own checkout
     (catches 'running stale/divergent dreamer code' — the exact drift that bit
     the artforge checkout) plus the brain repo when BRAIN_DIR is set (Opie's
     portable-brain sync spec). MNEMO_DREAM_GIT_SYNC_REPOS (comma-separated paths)
-    overrides the defaults."""
+    overrides the defaults. A path may be any folder inside a checkout:
+    check_git_sync resolves it to the repo root."""
     override = os.getenv("MNEMO_DREAM_GIT_SYNC_REPOS", "").strip()
     if override:
         return [Path(p.strip()).expanduser() for p in override.split(",") if p.strip()]
@@ -2282,36 +2283,96 @@ def _git_sync_repos() -> list[Path]:
     return repos
 
 
+def _git_sync_pinned() -> list[Path]:
+    """Checkouts held behind their upstream on purpose (MNEMO_DREAM_GIT_SYNC_PINNED,
+    comma-separated, same form as MNEMO_DREAM_GIT_SYNC_REPOS). For these, being
+    behind is expected and is reported as a note, not as drift."""
+    raw = os.getenv("MNEMO_DREAM_GIT_SYNC_PINNED", "").strip()
+    return [Path(p.strip()).expanduser() for p in raw.split(",") if p.strip()]
+
+
 def check_git_sync() -> str | None:
     """Git-sync status of each watched repo. Returns a markdown block, or None
     when disabled. Best-effort: any git failure becomes a ⚠️ line, never raises.
-    Reports per repo: dirty working tree, unpushed commits, behind upstream.
-    Upstream is resolved via @{u} so it works whether the branch tracks
-    origin/main or origin/master."""
+    Each watched path is resolved to its repo root (two paths in one repo give
+    one block); a path that cannot be checked gets its own ⚠️ line with the
+    reason, never silence. Reports per repo: dirty working tree, a failed fetch
+    or compare, unpushed commits, behind upstream (a 📌 note, not a ⚠️, for a pinned
+    checkout). Upstream is resolved via @{u} so it works whether the branch
+    tracks origin/main or origin/master."""
     if not MNEMO_DREAM_GIT_SYNC_CHECK:
         return None
 
     import subprocess
 
-    def _git(repo: Path, *args: str) -> tuple[int, str]:
+    def _git(repo: Path, *args: str) -> tuple[int | None, str]:
+        """(returncode, output); returncode None when git could not be run."""
         try:
             p = subprocess.run(
                 ["git", "-C", str(repo), *args],
                 capture_output=True, text=True, timeout=30,
+                # git writes paths and subjects as UTF-8; the locale default
+                # (a Windows code page) would garble or fail on them.
+                encoding="utf-8", errors="replace",
             )
             # rstrip (not strip): porcelain status uses a leading-space column
             # on the first line that strip() would eat, shifting the path parse.
             return p.returncode, (p.stdout or p.stderr).rstrip()
         except (OSError, subprocess.SubprocessError) as e:
-            return 1, str(e)
+            return None, str(e)
+
+    def _key(path: Path) -> str:
+        # One spelling per folder: Windows folds case and slashes; both
+        # platforms resolve symlinks and drop trailing separators.
+        return os.path.normcase(os.path.realpath(path))
+
+    def _root(path: Path) -> tuple[Path | None, str]:
+        """(repo root, "") or (None, why this path cannot be checked)."""
+        if not path.exists():
+            return None, "path does not exist"
+        rc, out = _git(path, "rev-parse", "--show-toplevel")
+        if rc is None:
+            return None, f"git could not run: {out[:160]}"
+        if rc != 0:
+            if "not a git repository" in out.lower():
+                return None, "not inside a git checkout"
+            return None, f"git said: {out[:160]}"
+        if not out:
+            return None, "not inside a git work tree"
+        return Path(out), ""
+
+    pins: list[tuple[Path, str | None, str]] = []  # (entry, root key or None, why)
+    for pin in _git_sync_pinned():
+        root, why = _root(pin)
+        pins.append((pin, _key(root) if root is not None else None, why))
+    pinned = {key for _, key, _ in pins if key is not None}
+
+    # Resolve every watched path first, so two paths in one repo share a block.
+    order: list[str] = []                       # repo keys and skip blocks, in watch order
+    repos: dict[str, tuple[Path, list[Path]]] = {}  # key -> (path shown, subdirs that led here)
+    for path in _git_sync_repos():
+        root, why = _root(path)
+        if root is None:
+            order.append(f"**{path.name}** (`{path}`)\n- ⚠️ not checked: {why}")
+            continue
+        key = _key(root)
+        is_root = _key(path) == key
+        if key not in repos:
+            repos[key] = (path if is_root else root, [])
+            order.append(key)
+        if not is_root:
+            repos[key][1].append(path)
 
     blocks: list[str] = []
-    for repo in _git_sync_repos():
-        label = repo.name
-        if not (repo / ".git").exists():
-            continue  # not a git checkout (e.g. BRAIN_DIR is a subdir) — skip silently (audit 2.4)
-
-        lines = [f"**{label}** (`{repo}`)"]
+    for item in order:
+        if item not in repos:
+            blocks.append(item)
+            continue
+        repo, via = repos[item]
+        header = f"**{repo.name}** (`{repo}`)"
+        if via:
+            header += " — watched via " + ", ".join(f"`{v}`" for v in via)
+        lines = [header]
 
         rc, out = _git(repo, "status", "--porcelain")
         if rc != 0:
@@ -2329,21 +2390,40 @@ def check_git_sync() -> str | None:
             blocks.append("\n".join(lines))
             continue
 
-        _git(repo, "fetch", "--quiet")
+        rc, out = _git(repo, "fetch", "--quiet")
+        fetched = rc == 0
+        if not fetched:
+            lines.append(f"- ⚠️ fetch failed, so the counts below may be stale: {out[:160]}")
 
         rc, out = _git(repo, "log", "--oneline", f"{upstream}..HEAD")
         if rc == 0 and out:
             lines.append(f"- ⚠️ {len(out.splitlines())} unpushed commit(s); newest: {out.splitlines()[0]}")
         elif rc == 0:
             lines.append("- ✅ no unpushed commits")
+        else:
+            lines.append(f"- ⚠️ could not compare with {upstream}: {out[:160]}")
 
         rc, out = _git(repo, "log", "--oneline", f"HEAD..{upstream}")
         if rc == 0 and out:
-            lines.append(f"- ⚠️ {len(out.splitlines())} behind {upstream} — another machine pushed; pull to refresh")
-        elif rc == 0:
+            if item in pinned:
+                lines.append(f"- 📌 pinned: {len(out.splitlines())} behind {upstream}, expected for a pinned checkout")
+            else:
+                lines.append(f"- ⚠️ {len(out.splitlines())} behind {upstream} — another machine pushed; pull to refresh")
+        elif rc == 0 and fetched:
             lines.append(f"- ✅ up to date with {upstream}")
+        elif rc != 0:
+            lines.append(f"- ⚠️ could not compare with {upstream}: {out[:160]}")
 
         blocks.append("\n".join(lines))
+
+    # A pin that names nothing watched is a note, not drift: if it was meant
+    # for a watched repo, that repo still reports "behind" with a ⚠️.
+    notes = [
+        f"- 📌 pinned entry `{pin}` matches no watched repo" + (f" ({why})" if why else "")
+        for pin, key, why in pins if key not in repos
+    ]
+    if notes:
+        blocks.append("\n".join(notes))
 
     return "### git sync status\n" + "\n\n".join(blocks)
 
@@ -2389,6 +2469,17 @@ def notify_git_sync(sync_block: str, dream_date: str) -> None:
                 log.warning(f"  git-sync discord webhook returned {r.status_code}")
         except httpx.HTTPError as e:
             log.warning(f"  git-sync discord webhook failed: {e}")
+
+
+def run_git_sync(dream_date: str) -> str | None:
+    """Run the git-sync check, log it, and send the letter (bus + Discord) only
+    when a line carries ⚠️. 📌 pinned notes and ✅ lines never send one."""
+    sync_block = check_git_sync()
+    if sync_block:
+        log.info("Git-sync check:\n" + sync_block)
+        if "⚠️" in sync_block:
+            notify_git_sync(sync_block, dream_date)
+    return sync_block
 
 
 # ---------------------------------------------------------------------------
@@ -2577,11 +2668,7 @@ def _dream_once(args):
     # Git-sync wedge: surface repo drift (uncommitted / unpushed / behind remote).
     # Always logged + printed for cron.log visibility; pushed to bus + Discord only
     # when there's actionable drift, so clean nights stay quiet.
-    sync_block = check_git_sync()
-    if sync_block:
-        log.info("Git-sync check:\n" + sync_block)
-        if "⚠️" in sync_block:
-            notify_git_sync(sync_block, dream_date)
+    sync_block = run_git_sync(dream_date)
 
     print(f"\n{'='*60}")
     print(f"DREAM COMPLETE — {dream_date}")

@@ -40,6 +40,25 @@ jobs:
         # hours; now the culprit test fails loudly by name with a stack dump.
         run: pytest tests/ -v --timeout=180 --timeout-method=thread
 
+  # The dreamer's git-sync check matches paths (case, slashes, short names)
+  # that only Windows spells differently. Real git on a real Windows runner,
+  # this one test file only.
+  dream-git-sync-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run git-sync tests
+        run: pytest tests/test_dream_git_sync.py -v --timeout=180 --timeout-method=thread
+
   # Every MCP client talks to Mnemo through this bridge. Its unit tests need no
   # Mnemo server; test.js is the live integration test and is NOT run here
   # (the *.test.js glob skips it on purpose).

@@ -220,3 +220,14 @@ agents:
 #
 # Direct human visibility (opt-in, independent of bus):
 #   MNEMO_DREAM_DISCORD_WEBHOOK — Discord webhook URL
+#
+# Git-sync check (opt-in): reports, per watched checkout, uncommitted changes,
+# unpushed commits, a failed fetch and commits behind upstream. Any ⚠️ line
+# sends the bus + Discord notification above.
+#   MNEMO_DREAM_GIT_SYNC_CHECK  — 1/true/yes to turn it on
+#   MNEMO_DREAM_GIT_SYNC_REPOS  — comma-separated paths to watch (any folder
+#                                 inside a checkout); replaces the default of
+#                                 the Dreamer's own checkout + BRAIN_DIR
+#   MNEMO_DREAM_GIT_SYNC_PINNED — comma-separated checkouts held behind their
+#                                 upstream on purpose: "behind" prints as a 📌
+#                                 note and sends nothing on its own
