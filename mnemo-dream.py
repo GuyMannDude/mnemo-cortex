@@ -2306,7 +2306,10 @@ def check_git_sync() -> str | None:
     import subprocess
 
     def _git(repo: Path, *args: str) -> tuple[int | None, str]:
-        """(returncode, output); returncode None when git could not be run."""
+        """(returncode, output); returncode None when git could not be run.
+        On success the output is stdout only: a warning git writes to stderr
+        with exit 0 (e.g. an unreadable folder during `status`) is logged,
+        never parsed as data. On failure the output is git's message."""
         try:
             p = subprocess.run(
                 ["git", "-C", str(repo), *args],
@@ -2315,11 +2318,15 @@ def check_git_sync() -> str | None:
                 # (a Windows code page) would garble or fail on them.
                 encoding="utf-8", errors="replace",
             )
-            # rstrip (not strip): porcelain status uses a leading-space column
-            # on the first line that strip() would eat, shifting the path parse.
-            return p.returncode, (p.stdout or p.stderr).rstrip()
         except (OSError, subprocess.SubprocessError) as e:
             return None, str(e)
+        # rstrip (not strip): porcelain status uses a leading-space column
+        # on the first line that strip() would eat, shifting the path parse.
+        if p.returncode == 0:
+            if p.stderr and p.stderr.strip():
+                log.warning(f"  git-sync: `git {args[0]}` in {repo} exited 0 with: {' '.join(p.stderr.split())[:300]}")
+            return 0, (p.stdout or "").rstrip()
+        return p.returncode, (p.stderr or p.stdout or "").rstrip()
 
     def _key(path: Path) -> str:
         # One spelling per folder: Windows folds case and slashes; both
@@ -2385,7 +2392,7 @@ def check_git_sync() -> str | None:
             lines.append("- ✅ working tree clean")
 
         rc, upstream = _git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-        if rc != 0:
+        if rc != 0 or not upstream:
             lines.append("- ⚠️ no upstream tracking branch — skipping ahead/behind")
             blocks.append("\n".join(lines))
             continue

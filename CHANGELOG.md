@@ -38,6 +38,15 @@
   was printed and no letter went out.
 - **UTF-8.** git's output is read as UTF-8, so a non-ASCII folder name no
   longer garbles the path (or, on Windows, crashes the end of the run).
+- **A git warning is not data.** When git succeeds (exit 0) the check reads
+  stdout only; anything git wrote to stderr goes to the log as one warning
+  line naming the repo, never into the block and never with ⚠️. Before, a
+  clean tree whose `git status` warned about an unreadable folder (a cache
+  folder the job's user cannot open) printed `⚠️ 1 uncommitted change(s):
+  ning: could not open directory …` and sent a letter; the same warning on a
+  compare printed a false "unpushed" or "behind". A failing git call still
+  prints git's message (stderr first, then stdout). An upstream lookup that
+  succeeds with no name is treated as no upstream.
 - **Pinned checkouts.** New `MNEMO_DREAM_GIT_SYNC_PINNED` (comma-separated
   paths, same form as `MNEMO_DREAM_GIT_SYNC_REPOS`; any folder inside the
   checkout works). For a pinned checkout, being behind prints
@@ -63,10 +72,16 @@
     git set to another language gets "git said: …" instead (still loud).
   - Behind/unpushed are still computed only for the checked-out branch's
     upstream; other local branches are not looked at (as before).
-- Tests: `test_dream_git_sync.py` (25; real git, scratch repos with a scratch
+  - When `git status` warns that it could not open a folder, the block still
+    says "✅ working tree clean": untracked files inside that folder were not
+    seen. The warning is in the log only, by choice (a letter every night
+    about an unreadable cache folder would be noise).
+- Tests: `test_dream_git_sync.py` (30; real git, scratch repos with a scratch
   bare remote, scratch HOME; each asserts the block and whether the letter was
   sent). 3 run on Windows only (case and slashes for a watched path and a
-  pin, 8.3 short names), 2 on POSIX only (symlinks). Run before the fix
+  pin, 8.3 short names), 3 on POSIX only (symlinks; the real unreadable-folder
+  warning, which also skips as root). All 5 stderr tests fail on the code
+  before this fix; the empty-upstream one also fails if its guard is removed. Run before the fix
   (master's letter rule shimmed in, Linux): 16 fail; the 6 that pass are the
   unchanged-behaviour controls. 10 mutants of the fix all go red on Linux.
   CI: a `windows-latest` job runs this file on real Windows git.

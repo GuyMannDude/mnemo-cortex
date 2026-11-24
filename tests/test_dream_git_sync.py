@@ -372,3 +372,88 @@ def test_fetch_failure_is_a_warning(make_repo, tmp_path, monkeypatch, letters, p
     assert "- ⚠️ fetch failed, so the counts below may be stale:" in block
     assert "up to date" not in block
     assert letters == [block]
+
+
+# ── a git warning on stderr with exit 0 is logged, never read as data ──
+
+_CLEAN = (
+    "- ✅ working tree clean\n"
+    "- ✅ no unpushed commits\n"
+    "- ✅ up to date with origin/master"
+)
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs POSIX permissions and a non-root user")
+def test_real_git_unreadable_folder_warning_is_not_a_change(make_repo, monkeypatch, letters, caplog):
+    clone, _ = make_repo("proj")
+    locked = clone / "locked-cache"
+    locked.mkdir()
+    (locked / "f").write_text("x\n")
+    locked.chmod(0)
+    try:
+        # Prove the premise: real git exits 0, prints nothing on stdout and
+        # the warning on stderr.
+        p = subprocess.run(["git", "-C", str(clone), "status", "--porcelain"],
+                           capture_output=True, text=True)
+        assert (p.returncode, p.stdout) == (0, "")
+        assert "could not open directory" in p.stderr
+        _watch(monkeypatch, clone)
+        with caplog.at_level("WARNING", logger="mnemo-dream"):
+            block = dream.run_git_sync(DATE)
+    finally:
+        locked.chmod(0o755)
+    assert block == f"### git sync status\n**proj** (`{clone}`)\n" + _CLEAN
+    assert letters == []
+    assert any("git status" in r.getMessage() and "could not open directory" in r.getMessage()
+               and str(clone) in r.getMessage() for r in caplog.records)
+
+
+def _is_status(cmd):
+    return "status" in cmd
+
+
+def _is_unpushed_compare(cmd):
+    return "log" in cmd and cmd[-1].endswith("..HEAD")
+
+
+def _is_behind_compare(cmd):
+    return "log" in cmd and cmd[-1].startswith("HEAD..")
+
+
+@pytest.mark.parametrize("target", [_is_status, _is_unpushed_compare, _is_behind_compare],
+                         ids=["status", "unpushed-compare", "behind-compare"])
+def test_stderr_warning_with_exit_0_is_logged_not_data(make_repo, monkeypatch, letters, caplog, target):
+    clone, _ = make_repo("proj")
+    _watch(monkeypatch, clone)
+    real_run = subprocess.run
+    warning = "warning: could not open directory 'cache/': Permission denied\n"
+
+    def noisy(cmd, *a, **k):
+        p = real_run(cmd, *a, **k)
+        if p.returncode == 0 and target(cmd):
+            assert p.stdout == "", "premise: this call has no data on a clean, in-sync repo"
+            return subprocess.CompletedProcess(cmd, 0, p.stdout, (p.stderr or "") + warning)
+        return p
+    monkeypatch.setattr(subprocess, "run", noisy)
+    with caplog.at_level("WARNING", logger="mnemo-dream"):
+        block = dream.run_git_sync(DATE)
+    assert block == f"### git sync status\n**proj** (`{clone}`)\n" + _CLEAN
+    assert letters == []
+    assert any("could not open directory 'cache/'" in r.getMessage() for r in caplog.records)
+
+
+def test_upstream_lookup_exit_0_with_no_name_is_no_upstream(make_repo, monkeypatch, letters):
+    clone, _ = make_repo("proj")
+    _watch(monkeypatch, clone)
+    real_run = subprocess.run
+
+    def empty_upstream(cmd, *a, **k):
+        if "@{u}" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "", "warning: something\n")
+        return real_run(cmd, *a, **k)
+    monkeypatch.setattr(subprocess, "run", empty_upstream)
+    block = dream.run_git_sync(DATE)
+    assert "- ⚠️ no upstream tracking branch — skipping ahead/behind" in block
+    assert "no unpushed commits" not in block
+    assert letters == [block]
