@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased — the clients send their seat and clock (item 18c', 2026-11-23)
+
+**Problem.** 18b' made a pause a window per (tenant, seat) on event time, but
+no client sent a seat, a clock or an event span. A pause from any seat on a
+shared tenant covered every seat on it, and late posts were judged on post
+time only.
+
+**Fix (clients only; the server is 18b').**
+- **Bridge 2.43.0:** see its CHANGELOG. Seat = `MNEMO_SEAT`, else the session
+  prefix. Writes, pause and resume carry the seat and `client_now`; flushes
+  carry `event_span`. The 422 rule applies to flushes. Loud lines ride on the
+  next tool reply.
+- **jsonl sync (`mnemo-cc-sync.py`):** the seat comes from each session
+  file's projects folder (`MNEMO_CC_SEATS`), not from the process: one sync
+  serves every Claude Code seat on a machine. Each tick reads the tenant's
+  windows and drops messages timed inside one for their seat (an untimed
+  message: when a window touches the gap between its timed neighbours).
+  Those messages are consumed and never re-sent. The rest are posted with
+  seat, `client_now` and `event_span`. A server discard prints `DISCARDED`,
+  where it used to print `posted ... memory_id=` with an empty id. A 422
+  follows CC #7033: the session's start is the file's first timed line; with
+  no window since then the save is re-sent bare, otherwise it is spooled to
+  `422-spool/` beside the offset file; either way the tick exits 1. The
+  folder-to-seat map is written to the offset file so the bridge can check
+  the seam.
+- **Watchdog:** three states. PAUSED (exit 0, with the line) when the sync
+  withheld lines within the flush grace. FAIL outranks it on backlog and on
+  any file in `422-spool/`: that stays red until someone moves the files.
+- **Shipper (`transcript-ship.py`):** `--seat`, and `client_now` on every
+  POST (ISO). A reply held because the server does not trust this machine's
+  clock (`manifest.held_for_clock`) is not recorded as shipped: the file is
+  re-sent on the next run although mtime and size match, the run prints a
+  `CLOCK:` line with the count and this machine's time, and exits 1.
+  `/transcripts` never answers 422 to these fields, so the 422 rule does not
+  apply there.
+- **Not covered:**
+  - A backlog under a trusted clock: `client_now` proves this machine's clock
+    at the moment of the upload or post, not when the backlog's lines were
+    written. Lines written earlier while the clock was wrong carry wrong
+    times, and they are trusted anyway. That is inherent to judging on event
+    time (the archive filter's limit, and the pointer follows it). Accepted
+    as a limit (CC #6946).
+  - A transcript upload held for an unfinished last line waits for the file
+    to grow, as before.
+  - A trailing run of untimed transcript lines, behind a window that ended
+    after its last timed line, can never be judged. If the file never grows,
+    that run is never archived (a chosen loss).
+  - A session that an old shipper (no `client_now`) archived a line of keeps
+    its transcript pointer gated after the new shipper re-ships it (18b' F2,
+    the intended under-share).
+  - The seat strings are configuration: the bridge's `MNEMO_SEAT` (or prefix),
+    the sync's `MNEMO_CC_SEATS` and the shipper's `--seat` must agree, or a
+    pause does not cover the mis-seated lines. The pause reply checks only
+    that the bridge's seat is somewhere in the sync map, not that it is the
+    seat of this session's own folder. Nothing checks the shipper's flag;
+    leaving `--seat` out is the safe default.
+- Tests: `test_cc_sync_pause.py` (21: the sync against the real server app,
+  including a truly late post that only its `event_span` stops, with a
+  no-span control that lands; and the watchdog), 5 new in
+  `test_transcript_ship.py`, `seat-clock.test.js` (21: the 422 rule, flush
+  labelling, the replayed-spool seat) and one in `capture-buffer.test.js`.
+
 ## Unreleased — a capture pause is a window on event time, per seat (item 18b', 2026-11-19)
 
 **Problem.** A capture pause only answered "is capture off right now". Anything created during the pause but posted after it lifted landed: a bridge flush or jsonl-sync batch sent late, a `source=tool` save carrying an old timestamp, and every transcript upload after the pause (the shipper re-sent the whole file, pause lines included). A pause also covered a whole tenant, so one seat's pause (one of several Claude Code seats sharing a tenant) discarded every other seat's capture.

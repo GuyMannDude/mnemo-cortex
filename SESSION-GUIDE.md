@@ -389,9 +389,17 @@ python tools/transcript-ship.py --root ~/.claude/projects --agent cc --host igor
   --server http://localhost:50001
 ```
 
+`--seat` is optional and names the ONE seat every file under the root
+belongs to (the seat that session's bridge sends). Leaving it out is the safe
+default: every pause on the tenant then covers the files. Only use it with a
+root that holds one seat's sessions, e.g. `--root ~/.claude/projects/-home-guy
+--seat cc`: a root holding two seats' folders labelled with one seat leaves
+the other seat's lines uncovered by that seat's pause.
+
 Uploads are idempotent (the same file twice is a no-op, a grown file replaces
 the old one), so running it often is cheap. Exit 0 = clean, 1 = something
-did not ship (failure, 409 conflict, or capture paused), 2 = server down.
+did not ship (failure, 409 conflict, or held because the server does not
+trust this machine's clock: re-sent next run), 2 = server down.
 
 **How an agent finds it:** each archived session writes ONE pointer memory
 (`Full transcript archived: <first prompt> ... <N user turns, dates, host>`,
@@ -409,8 +417,9 @@ category `session_log`, tag `session:<id>`). The default recall lens hides
 Replies are budgeted; a page that runs out says `from=<n>` to continue.
 Subagent transcripts are archived as `<parent-id>_agent-<id>`.
 
-**Pausing:** `mnemo_capture_pause` stops transcript uploads too; the shipper
-retries after the pause.
+**Pausing:** `mnemo_capture_pause` pauses this seat. Transcript lines timed
+inside the window are archived as stubs (`mnemo-withheld`), whenever they are
+uploaded; the rest of the file lands.
 
 ---
 

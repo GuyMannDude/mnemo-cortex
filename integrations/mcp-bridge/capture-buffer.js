@@ -10,6 +10,8 @@
 //   - Sent entries are removed by identity, not by count, so a trim or a
 //     replay that reshapes the buffer during a send cannot make the success
 //     path delete entries that were never sent.
+//   - `send` may return false: delivered (the entries leave the buffer) but
+//     not stored. The "flushed" line is then not printed (item 18c').
 //   - The spool (`spool.persist(entries)`) is rewritten after every change to
 //     the buffer. A spool failure is logged, never thrown into a tool call;
 //     `replay` reports it so the caller can keep its source files.
@@ -78,8 +80,9 @@ export function createCaptureBuffer({
 
   async function sendOnce() {
     const batch = buffer.slice();
+    let stored;
     try {
-      await send(batch);
+      stored = await send(batch);
     } catch (err) {
       log(`[auto-capture] flush failed (will retry): ${err.message}`);
       trim();
@@ -92,7 +95,9 @@ export function createCaptureBuffer({
       if (i !== -1) buffer.splice(i, 1);
     }
     persist();
-    log(`[auto-capture] flushed ${batch.length} entries`);
+    // send() returns false for a batch Mnemo did NOT store (a pause discard,
+    // a 422): it said so itself, and "flushed" would read as stored.
+    if (stored !== false) log(`[auto-capture] flushed ${batch.length} entries`);
     return true;
   }
 

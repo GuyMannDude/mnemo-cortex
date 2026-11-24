@@ -125,7 +125,7 @@
       {"name": "mnemo_save_trajectory", "purpose": "Save a proven task recipe after a task: the ordered steps taken, the outcome and an honest 1-5 rating."},
       {"name": "mnemo_recall_trajectory", "purpose": "Recall proven task recipes before a task, ranked by similarity, then rating, then recency, each with its full steps."},
       {"name": "mnemo_transcript_push", "purpose": "Archive this chat's turns to the transcript tier by passing them as text, no file export needed. Later pushes of the same chat pass back its chat_id."},
-      {"name": "mnemo_capture_pause", "purpose": "Pause ambient auto-capture before sensitive work (this agent by default); auto-resumes after `minutes` (default 15, max 240). Activity in the window is discarded."},
+      {"name": "mnemo_capture_pause", "purpose": "Pause ambient auto-capture before sensitive work (this seat of this agent by default: MNEMO_SEAT, else the session prefix); auto-resumes after `minutes` (default 15, max 240). What this seat captures in the window never lands, whenever posted."},
       {"name": "mnemo_capture_resume", "purpose": "Resume auto-capture early after mnemo_capture_pause."},
       {"name": "mnemo_share", "purpose": "Toggle cross-agent sharing for the current session."},
       {"name": "mnemo_fact_get", "purpose": "Look up a single structured fact by (entity, attribute). Sub-millisecond exact lookup with confidence + evidence source."},

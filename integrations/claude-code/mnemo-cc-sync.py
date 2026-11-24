@@ -22,6 +22,21 @@ Configuration (all via env vars, all optional):
                            enforces auth, ignored otherwise)
     MNEMO_CC_IDLE_FLUSH_S  Flush a sub-batch pending tail once the session
                            JSONL has been idle this long (default: 300)
+    MNEMO_CC_SEATS         Which seat each projects folder is (item 18c'), e.g.
+                           "-home-guy=cc,-home-guy-CC3=cc-cc3". Must match the
+                           seat that session's bridge sends (MNEMO_SEAT, else
+                           its session prefix): a pause covers lines of ITS
+                           seat and seatless lines, not another seat's. An
+                           unmapped folder sends no seat, so every pause on the
+                           tenant covers it (the safe default).
+
+Capture pauses (item 18c'): each tick reads the tenant's pause windows and
+drops messages timed inside one for their seat; the rest are posted with
+seat, client_now and event_span (ISO). Dropped messages are consumed, never
+re-sent; the watchdog reports them as PAUSED. A 422 (the server refused the
+event_span) follows CC ruling #7033: re-sent bare only when no window exists
+on the tenant since the session's start, else spooled to 422-spool/ beside
+the offset file; either way the watchdog stays red until someone looks.
 
 Run modes:
     python3 mnemo-cc-sync.py            # batched: post when >=6 new msgs
@@ -33,10 +48,13 @@ under systemd, or invoke from a cron / scheduler of your choice.
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 MNEMO_URL = os.environ.get("MNEMO_URL", "http://localhost:50001").rstrip("/")
@@ -65,6 +83,29 @@ def _resolve_auth_token() -> str:
 
 
 AUTH_TOKEN = _resolve_auth_token()
+
+SEAT_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def parse_seats(raw: str) -> dict:
+    """MNEMO_CC_SEATS "folder=seat,folder=seat" -> {folder: seat}. A bad pair
+    is skipped loudly: that folder then sends no seat (covered by every
+    pause on the tenant), never a wrong one."""
+    seats = {}
+    for pair in (raw or "").split(","):
+        if not pair.strip():
+            continue
+        folder, _, seat = pair.partition("=")
+        folder, seat = folder.strip(), seat.strip()
+        if not folder or not SEAT_RE.fullmatch(seat):
+            print(f"[cc-sync] MNEMO_CC_SEATS: ignoring {pair.strip()!r} "
+                  f"(want folder=seat, seat [A-Za-z0-9_.-]{{1,64}})", file=sys.stderr)
+            continue
+        seats[folder] = seat
+    return seats
+
+
+SEATS = parse_seats(os.environ.get("MNEMO_CC_SEATS", ""))
 
 # One-time migration from the pre-rename default path. The script used to be
 # named mnemo-cc-artforge-sync.py and wrote its offset file to
@@ -267,7 +308,17 @@ def build_summary(messages: list, session_id: str) -> tuple[str, list]:
     return summary[:SUMMARY_MAX_CHARS], key_facts[:10]
 
 
-def post_to_mnemo(session_id: str, summary: str, key_facts: list) -> dict:
+def _headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    if AUTH_TOKEN:
+        headers["X-API-KEY"] = AUTH_TOKEN
+    return headers
+
+
+def post_to_mnemo(session_id: str, summary: str, key_facts: list,
+                  wire: dict | None = None, *, bare: bool = False) -> dict:
+    """POST /writeback. `wire` = the seat / client_now / event_span fields;
+    bare=True sends none of them (the 422 rule's re-send)."""
     payload = {
         "session_id": f"{AGENT_ID}-jsonl-{session_id[:12]}",
         "summary": summary,
@@ -276,23 +327,198 @@ def post_to_mnemo(session_id: str, summary: str, key_facts: list) -> dict:
         "decisions_made": [],
         "agent_id": AGENT_ID,
     }
-    headers = {"Content-Type": "application/json"}
-    if AUTH_TOKEN:
-        headers["X-API-KEY"] = AUTH_TOKEN
+    if wire and not bare:
+        payload.update(wire)
     req = urllib.request.Request(
         f"{MNEMO_URL}/writeback",
         data=json.dumps(payload).encode(),
-        headers=headers,
+        headers=_headers(),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())
 
 
-def sync_file(jsonl: Path, entry: dict, force: bool) -> tuple[bool, bool]:
+def read_windows(since: float | None = None) -> list:
+    """GET /capture/windows for the whole tenant (no seat: every window on
+    it, its seats', tenant-wide and fleet-wide). `since` is epoch SECONDS (the
+    endpoint's type). Raises on any failure."""
+    q = {"agent_id": AGENT_ID}
+    if since is not None:
+        q["since"] = repr(float(since))
+    req = urllib.request.Request(
+        f"{MNEMO_URL}/capture/windows?{urllib.parse.urlencode(q)}", headers=_headers())
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        windows = json.loads(resp.read()).get("windows")
+    if not isinstance(windows, list):
+        raise ValueError("reply has no windows list")
+    return windows
+
+
+def to_epoch(value) -> float | None:
+    """An ISO-8601 line time -> epoch seconds; None when it cannot be read."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
+def seat_for(key: str) -> str | None:
+    """The seat of a session file, from its projects folder (MNEMO_CC_SEATS)."""
+    return SEATS.get(Path(key).parts[0]) if Path(key).parts else None
+
+
+def windows_for_seat(windows: list, seat: str | None) -> list:
+    """The server's rule (capture_gate.windows_for): a window applies when
+    its seat or the writer's seat is None, or they match."""
+    return [w for w in windows
+            if w.get("seat") is None or seat is None or w.get("seat") == seat]
+
+
+def covering(windows: list, lo: float, hi: float) -> str | None:
+    """Id of a window that overlaps [lo, hi], or None."""
+    for w in windows:
+        end = w.get("end")
+        if w["start"] <= hi and (end is None or end >= lo):
+            return w["id"]
+    return None
+
+
+def split_by_windows(messages: list, windows: list) -> tuple[list, list, list]:
+    """(kept, dropped, window_ids). A timed message is dropped when a window
+    covers its time; an untimed one when a window touches the gap between its
+    timed neighbours (none before / after = open-ended), the server's rule."""
+    times = [to_epoch(m["timestamp"]) for m in messages]
+    kept, dropped, wids = [], [], []
+    for i, m in enumerate(messages):
+        t = times[i]
+        if t is not None:
+            lo = hi = t
+        else:
+            lo = next((times[j] for j in range(i - 1, -1, -1) if times[j] is not None),
+                      float("-inf"))
+            hi = next((times[j] for j in range(i + 1, len(messages)) if times[j] is not None),
+                      float("inf"))
+        wid = covering(windows, lo, hi)
+        if wid:
+            dropped.append(m)
+            if wid not in wids:
+                wids.append(wid)
+        else:
+            kept.append(m)
+    return kept, dropped, wids
+
+
+def event_span(messages: list) -> list | None:
+    """[first, last] event time of what a post carries, ISO; a trailing
+    untimed message reaches to now. None when no message carries a time."""
+    times = [t for t in (to_epoch(m["timestamp"]) for m in messages) if t is not None]
+    if not times:
+        return None
+    hi = time.time() if to_epoch(messages[-1]["timestamp"]) is None else max(times)
+    return [iso(min(times)), iso(hi)]
+
+
+def session_start(jsonl: Path, entry: dict) -> float | None:
+    """The session's start: the first timed line of its file, read once and
+    kept in the file's offset entry. None when no line carries a time."""
+    if entry.get("session_start") is not None:
+        return entry["session_start"]
+    try:
+        with jsonl.open("rb") as fh:
+            for raw in fh:
+                try:
+                    t = to_epoch(json.loads(raw).get("timestamp"))
+                except (ValueError, AttributeError):
+                    continue
+                if t is not None:
+                    entry["session_start"] = t
+                    return t
+    except OSError:
+        return None
+    return None
+
+
+def spool_dir() -> Path:
+    return OFFSET_FILE.parent / "422-spool"
+
+
+def note_withheld(state: dict, wids: list, lines: int) -> None:
+    w = state.setdefault("withheld", {"window_ids": [], "lines": 0})
+    w["window_ids"] = (w.get("window_ids", []) + [x for x in wids if x not in w.get("window_ids", [])])[-10:]
+    w["lines"] = int(w.get("lines", 0)) + lines
+    w["last_at"] = iso(time.time())
+
+
+def resolve_422(session_id: str, summary: str, key_facts: list, wire: dict,
+                since: float | None, state: dict, err) -> bool:
+    """CC ruling #7033. Returns True when the save is now accounted for (re-
+    sent bare, or spooled) so the offset may advance."""
+    detail = ""
+    try:
+        detail = err.read().decode("utf-8", "replace")[:200]
+    except Exception:
+        pass
+    why = f"the server refused event_span {wire.get('event_span')} (422: {detail})"
+    windows, read_error = None, None
+    if since is None:
+        read_error = "the session's start cannot be told"
+    else:
+        try:
+            windows = read_windows(since)
+        except Exception as e:
+            read_error = str(e)
+    if windows == []:
+        try:
+            post_to_mnemo(session_id, summary, key_facts, wire, bare=True)
+        except Exception as e:
+            print(f"[cc-sync] 422 field event_span on {session_id[:8]}: {why}; "
+                  f"the bare re-send FAILED too ({e}); will retry", file=sys.stderr)
+            return False
+        print(f"[cc-sync] 422 field event_span on {session_id[:8]}: {why}. No pause "
+              f"window on tenant {AGENT_ID} since the session started, so it was "
+              f"RE-SENT BARE (no seat, no clock). Client bug: report it.", file=sys.stderr)
+        return True
+    cause = (f"{len(windows)} pause window(s) on tenant {AGENT_ID} since the session "
+             f"started ({', '.join(w.get('id', '?') for w in windows)})"
+             if windows else f"the windows read failed ({read_error})")
+    path = spool_dir() / f"{session_id[:12]}-{int(time.time() * 1000)}.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"session_id": session_id, "summary": summary,
+                                    "key_facts": key_facts, "agent_id": AGENT_ID, **wire}))
+        os.chmod(path, 0o600)
+    except OSError as e:
+        print(f"[cc-sync] 422 field event_span on {session_id[:8]}: {why}; NOT re-sent "
+              f"({cause}) and the spool write FAILED ({e}); will retry", file=sys.stderr)
+        return False
+    sp = state.setdefault("spool_422", {"count": 0})
+    sp["count"] = int(sp.get("count", 0)) + 1
+    sp["last_at"] = iso(time.time())
+    sp["path"] = str(path)
+    print(f"[cc-sync] 422 field event_span on {session_id[:8]}: {why}. NOT re-sent: "
+          f"{cause}. The raw save is spooled at {path}. Client bug: report it.",
+          file=sys.stderr)
+    return True
+
+
+def sync_file(jsonl: Path, entry: dict, force: bool, state: dict | None = None,
+              windows: list | None = None, key: str = "") -> tuple[bool, bool]:
     """Sync one session file against its own offset entry (mutated in place).
-    Returns (posted, failed)."""
+    `windows`: the tenant's pause windows this tick (None = the read failed:
+    no client filter, the server still enforces). Returns (posted, failed)."""
+    state = state if state is not None else {}
     session_id = jsonl.stem
+    seat = seat_for(key)
     offset = entry.get("byte_offset", 0)
     if jsonl.stat().st_size < offset:
         offset = 0  # truncated/rotated — re-read rather than wedge
@@ -310,14 +536,54 @@ def sync_file(jsonl: Path, entry: dict, force: bool) -> tuple[bool, bool]:
             return False, False  # Defer — wait for more activity; offset unchanged
         # JSONL idle with a pending tail — flush it rather than hold forever.
 
+    dropped, wids = [], []
+    if windows:
+        messages, dropped, wids = split_by_windows(messages, windows_for_seat(windows, seat))
+    if dropped:
+        # Consumed, never re-sent: what a pause covers never lands.
+        note_withheld(state, wids, len(dropped))
+        print(f"[cc-sync] WITHHELD {len(dropped)} msgs from {session_id[:8]} "
+              f"(seat {seat or 'none'}) by pause window(s) {', '.join(wids)}")
+    if not messages:
+        entry["byte_offset"] = new_offset
+        return False, False
+
     summary, key_facts = build_summary(messages, session_id)
+    wire = {"client_now": iso(time.time())}
+    if seat:
+        wire["seat"] = seat
+    span = event_span(messages)
+    if span:
+        wire["event_span"] = span
 
     try:
-        result = post_to_mnemo(session_id, summary, key_facts)
+        result = post_to_mnemo(session_id, summary, key_facts, wire)
+    except urllib.error.HTTPError as e:
+        if e.code != 422:
+            print(f"[cc-sync] POST to {MNEMO_URL}/writeback failed for {session_id[:8]}: {e}",
+                  file=sys.stderr)
+            return False, True
+        if resolve_422(session_id, summary, key_facts, wire,
+                       session_start(jsonl, entry), state, e):
+            entry["byte_offset"] = new_offset
+            if "files" in state:
+                # Persist now, like a post: a crash later in the tick must not
+                # re-send bare twice or spool twice (no retry dedup).
+                save_state(state)
+        return False, True  # loud: rc 1 this tick; the watchdog keeps it red
     except (urllib.error.URLError, TimeoutError) as e:
         print(f"[cc-sync] POST to {MNEMO_URL}/writeback failed for {session_id[:8]}: {e}",
               file=sys.stderr)
         return False, True  # Don't update offset — try again next tick
+
+    if result.get("status") == "paused":
+        # Delivered, not stored: the server's own window check (backstop).
+        entry["byte_offset"] = new_offset
+        m = re.search(r"window (w-[A-Za-z0-9_-]+)", result.get("message", ""))
+        note_withheld(state, [m.group(1)] if m else [], len(messages))
+        print(f"[cc-sync] DISCARDED {len(messages)} msgs from {session_id[:8]} "
+              f"by capture pause{' window ' + m.group(1) if m else ''} (server)")
+        return False, False
 
     entry.update({
         "byte_offset": new_offset,
@@ -363,12 +629,22 @@ def main(force: bool = False) -> int:
             files.setdefault(key, {"byte_offset": size})
         state["seeded"] = True
 
+    # The seat map, for the bridge's pause-reply seat check (the seam).
+    state["seat_map"] = SEATS
+    windows = None
+    if active:
+        try:
+            windows = read_windows()
+        except Exception as e:
+            print(f"[cc-sync] pause windows read failed ({e}): posting unfiltered, "
+                  f"the server still withholds by window", file=sys.stderr)
+
     any_failed = False
     for jsonl in active:
         key = str(jsonl.relative_to(SESSIONS_DIR))
         entry = files.setdefault(key, {"byte_offset": 0})
         try:
-            posted, failed = sync_file(jsonl, entry, force)
+            posted, failed = sync_file(jsonl, entry, force, state, windows, key)
         except OSError as e:
             # One vanished/unreadable file must not abort the other sessions.
             print(f"[cc-sync] skipping {key}: {e}", file=sys.stderr)

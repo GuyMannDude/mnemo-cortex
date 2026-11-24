@@ -109,6 +109,9 @@ All env-var, all optional:
 | `MNEMO_CC_SESSIONS_DIR` | `~/.claude/projects` | Where Claude Code stores `.jsonl` |
 | `MNEMO_CC_OFFSET_FILE` | `~/.mnemo-cc/cc-sync.offset.json` | Sync offset state |
 | `MNEMO_CC_SYNC_INTERVAL` | `60` | Seconds between syncs (loop only) |
+| `MNEMO_CC_SEATS` | *(none)* | Which seat each projects folder is, for capture pauses: `-home-guy=cc,-home-guy-CC3=cc-cc3`. Each seat must equal what that session's bridge sends (`MNEMO_SEAT`, else its session prefix: see the bridge README); a mismatched seat is NOT covered by that bridge's pause. An unmapped folder sends no seat, so every pause on the tenant covers it. The map is written to the offset file, and the bridge's pause reply warns when its seat is not in it. |
+
+**Capture pauses.** Each tick reads the tenant's pause windows (`GET /capture/windows`) and drops the messages timed inside a window for their folder's seat: consumed, never re-sent. The rest go out with `seat`, `client_now` and `event_span` (ISO), and the server checks them again. If the server refuses the `event_span` (422, a client bug), the save is re-sent without seat or clock only when no window exists on the tenant since the session's first line; otherwise it is written to `422-spool/` next to the offset file. Either way the tick exits 1.
 
 ### Install as a systemd service (Linux)
 
@@ -146,7 +149,7 @@ Silent failure modes are the worst kind — a sync that stops working without al
 
 **systemd OnFailure=** — wrap the watchdog in a oneshot unit + timer; OnFailure triggers your alert unit.
 
-The watchdog exits OK when (a) the service is active and (b) either Claude Code is idle (no JSONL writes in 30 min) or the sync has posted within 30 min.
+The watchdog has three states. **OK** (exit 0): the service is active and no active session file holds unsynced lines past the flush grace (600 s). **PAUSED** (exit 0, the line names the windows): the sync withheld lines by a capture pause within the grace; a pause is not a failure and never causes backlog. **FAIL** (exit 1): the service is down, a file is stuck, or any file sits in `422-spool/`. FAIL outranks PAUSED, and a 422 spool stays red until someone reads the files and moves them out of that folder.
 
 ### Hooks vs Sync
 

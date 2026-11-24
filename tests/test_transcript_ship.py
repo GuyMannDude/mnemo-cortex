@@ -178,3 +178,126 @@ def test_ship_server_down_exits_2(tmp_path, capsys):
                     "--timeout", "3"])
     assert rc == ship.EXIT_DOWN
     assert "server down" in capsys.readouterr().out
+
+
+# ── item 18c': seat, client_now, the clock hold, old-shipper sessions ──
+
+def _now_lines(sid: str, t: float, n: int = 4) -> bytes:
+    from datetime import datetime as _dt, timezone as _tz
+    out = []
+    for i in range(n):
+        role = "user" if i % 2 == 0 else "assistant"
+        out.append(json.dumps({"sessionId": sid, "type": role, "uuid": f"n{i}",
+                               "timestamp": _dt.fromtimestamp(t + i, _tz.utc).isoformat(),
+                               "message": {"role": role, "content": f"now-line-{i}"}}))
+    return ("\n".join(out) + "\n").encode()
+
+
+class _Spy(_Shared):
+    def __init__(self, client, seen):
+        super().__init__(client)
+        real = client.post
+
+        def post(url, **kw):
+            seen.append(kw.get("params") or {})
+            return real(url, **kw)
+        self.post = post
+
+
+def _run_spy(app_client, root, state, seen, *extra):
+    client, _ = app_client
+    with patch.object(ship.httpx, "Client", lambda base_url, timeout: _Spy(client, seen)):
+        return ship.main(["--root", str(root), "--agent", "cc", "--host", "igor",
+                          "--server", "http://testserver", "--state", str(state), *extra])
+
+
+def test_ship_sends_seat_and_iso_client_now(app_client, tmp_path):
+    from datetime import datetime as _dt
+    root = _tree(tmp_path)
+    seen = []
+    assert _run_spy(app_client, root, tmp_path / "s.json", seen, "--seat", "cc-cc3") == ship.EXIT_CLEAN
+    assert seen and all(p["seat"] == "cc-cc3" for p in seen)
+    for p in seen:
+        assert isinstance(p["client_now"], str)
+        assert _dt.fromisoformat(p["client_now"]).tzinfo is not None
+    seen.clear()
+    (root / "proj" / f"{SID}.jsonl").write_bytes(specimen() + b'{"type":"system","content":"x"}\n')
+    _run_spy(app_client, root, tmp_path / "s.json", seen)
+    assert seen and "seat" not in seen[0], "no --seat: no seat on the wire"
+
+
+def test_ship_seat_bystander_lands_pauser_is_stubbed(app_client, tmp_path):
+    client = app_client[0]
+    client.post("/capture/pause", json={"agent_id": "cc", "seat": "linus-a", "minutes": 5})
+    t = __import__("time").time()
+    for seat, sid in (("linus-a", SID), ("linus-b", OTHER_SID)):
+        root = tmp_path / seat
+        (root / "proj").mkdir(parents=True)
+        (root / "proj" / f"{sid}.jsonl").write_bytes(_now_lines(sid, t))
+        assert _run(app_client, root, tmp_path / f"{seat}.json", "--seat", seat) == ship.EXIT_CLEAN
+    got = {s["session_id"]: s for s in client.get(
+        "/transcripts", params={"agent_id": "cc"}).json()["sessions"]}
+    m_a = client.get(f"/transcripts/{SID}", params={"agent_id": "cc"}).json()
+    m_b = client.get(f"/transcripts/{OTHER_SID}", params={"agent_id": "cc"}).json()
+    assert SID in got and OTHER_SID in got
+    assert (m_a.get("manifest") or m_a).get("withheld_lines") == 4
+    assert (m_b.get("manifest") or m_b).get("withheld_lines", 0) == 0
+
+
+class _SkewedDatetime(ship.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return super().now(tz) + __import__("datetime").timedelta(minutes=10)
+
+
+def test_ship_held_for_clock_is_resent_not_stored(app_client, tmp_path, capsys):
+    """A reply held FOR CLOCK must not be stored as shipped: a file that does
+    not grow would never ship its lines (#7039 q3)."""
+    client = app_client[0]
+    root = _tree(tmp_path)
+    state = tmp_path / "state.json"
+    assert _run(app_client, root, state) == ship.EXIT_CLEAN          # trusted first ship
+    capsys.readouterr()
+    client.post("/capture/pause", json={"agent_id": "cc", "minutes": 5})
+    f = root / "proj" / f"{SID}.jsonl"
+    f.write_bytes(f.read_bytes() + b'{"type":"system","content":"grown",'
+                  b'"timestamp":"2026-09-22T10:10:00.000Z"}\n')
+    with patch.object(ship, "datetime", _SkewedDatetime):
+        assert _run(app_client, root, state) == ship.EXIT_PARTIAL    # clock 10 min fast: held
+    cap = capsys.readouterr()
+    assert f"HELD-CLOCK {SID}" in cap.err and "CLOCK: 1 file(s)" in cap.err
+    assert "held_clock=1" in cap.out
+    saved = json.loads(state.read_text(encoding="utf-8"))["files"]
+    assert saved[str(f)]["status"] == "archived", "the held upload was not stored as shipped"
+    client.post("/capture/resume", json={"all": True})
+    # clock fixed, file unchanged (same mtime and size): it is re-sent and lands
+    assert _run(app_client, root, state) == ship.EXIT_CLEAN
+    assert "replaced=1" in capsys.readouterr().out
+
+
+def test_ship_other_holds_stay_as_before(app_client, tmp_path, capsys):
+    """An unfinished last line is a hold that needs growth: stored as before."""
+    root = tmp_path / "projects"
+    (root / "proj").mkdir(parents=True)
+    f = root / "proj" / f"{SID}.jsonl"
+    f.write_bytes(specimen())
+    state = tmp_path / "state.json"
+    assert _run(app_client, root, state) == ship.EXIT_CLEAN
+    f.write_bytes(f.read_bytes() + b'{"type":"user","unfinished')
+    assert _run(app_client, root, state) == ship.EXIT_CLEAN
+    assert "held_clock=0" in capsys.readouterr().out
+
+
+def test_old_shipper_session_stays_gated_after_new_shipper(app_client, tmp_path):
+    """A session an old (no client_now) shipper archived a line of keeps its
+    pointer gated after the new shipper re-ships it (server marker, 18b' F2)."""
+    client = app_client[0]
+    root = _tree(tmp_path)
+    f = root / "proj" / f"{SID}.jsonl"
+    r = client.post("/transcripts", params={"agent_id": "cc", "host": "igor", "session_id": SID},
+                    content=f.read_bytes())                           # old shipper: no clock
+    assert r.status_code == 200
+    f.write_bytes(f.read_bytes() + b'{"type":"system","content":"later"}\n')
+    assert _run(app_client, root, tmp_path / "s.json", "--seat", "cc-cc3") == ship.EXIT_CLEAN
+    m = client.get(f"/transcripts/{SID}", params={"agent_id": "cc"}).json()
+    assert (m.get("manifest") or m).get("lines_clock_trusted") is False

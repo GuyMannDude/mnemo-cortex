@@ -19,6 +19,14 @@
 # sessions pause constantly and the old heuristic's false pages cost more
 # than the shorter detection gap bought.
 #
+# Three states (item 18c'): OK (exit 0), FAIL (exit 1), and PAUSED (exit 0):
+# the sync withheld lines by a capture-pause window within the flush grace.
+# A pause is not a failure, and under 18c' it never causes backlog (withheld
+# lines are consumed, not deferred), so red keeps meaning stuck. Two things
+# outrank PAUSED as FAIL: real backlog, and any file in the sync's 422-spool/
+# (the server refused an event_span: our own client bug). It stays red until
+# someone reads the spooled files and moves them out of that folder.
+#
 # Exits non-zero on failure so cron / scheduler can alert. Designed to plug
 # into any monitoring tool that watches command exit codes — CronAlarm,
 # systemd OnFailure=, healthchecks.io, or a plain cron + email. Every failure
@@ -64,6 +72,20 @@ def fail(msg):
 now = time.time()
 cutoff = now - active_hours * 3600
 
+# 422 spool: checked first, whatever else is true (no network, no state).
+spool_dir = os.path.join(os.path.dirname(offset_path), "422-spool")
+try:
+    spooled = sorted(n for n in os.listdir(spool_dir) if n.endswith(".json"))
+except FileNotFoundError:
+    spooled = []
+except OSError as e:
+    fail(f"422 spool dir {spool_dir} unreadable ({e})")
+spool_fail = []
+if spooled:
+    spool_fail = [f"{len(spooled)} save(s) in {spool_dir}: the server refused their "
+                  f"event_span (422) and a pause window kept them from a bare re-send. "
+                  f"Client bug: read them, then move them out of that folder"]
+
 # Files the sync itself considers active (same cutoff rule as mnemo-cc-sync.py)
 active = []
 for root, _dirs, names in os.walk(sessions_dir):
@@ -78,6 +100,8 @@ for root, _dirs, names in os.walk(sessions_dir):
         if st.st_mtime >= cutoff:
             active.append((path, st))
 
+if not active and spool_fail:
+    fail(spool_fail[0])
 if not active:
     print(f"OK: {service} active, no Claude Code sessions in the last {active_hours:g}h")
     sys.exit(0)
@@ -86,7 +110,8 @@ if not os.path.isfile(offset_path):
     fail(f"active sessions exist but no offset file at {offset_path} — sync has never completed a cycle")
 try:
     with open(offset_path) as fh:
-        files = json.load(fh).get("files", {})
+        state = json.load(fh)
+    files = state.get("files", {})
 except (json.JSONDecodeError, OSError) as e:
     fail(f"offset file {offset_path} unreadable ({e}) — sync state is corrupt")
 
@@ -123,12 +148,29 @@ for path, st in active:
         continue  # torn line only — nothing consumable, not a wedge
     stuck.append(f"{rel}: {backlog}B unsynced despite {age:.0f}s of idle")
 
-if stuck:
-    print(f"WATCHDOG FAIL: sync is stuck on {len(stuck)} file(s):")
-    for line in stuck:
-        print(f"  {line}")
-    print(f"  offset: {offset_path}")
+if stuck or spool_fail:
+    if stuck:
+        print(f"WATCHDOG FAIL: sync is stuck on {len(stuck)} file(s):")
+        for line in stuck:
+            print(f"  {line}")
+        print(f"  offset: {offset_path}")
+    for line in spool_fail:
+        print(f"WATCHDOG FAIL: {line}")
     sys.exit(1)
+
+withheld = state.get("withheld") if isinstance(state, dict) else None
+if isinstance(withheld, dict) and withheld.get("last_at"):
+    try:
+        from datetime import datetime
+        last = datetime.fromisoformat(withheld["last_at"]).timestamp()
+    except (TypeError, ValueError):
+        last = None
+    if last is not None and now - last <= grace_s:
+        ids = ", ".join(withheld.get("window_ids") or []) or "?"
+        print(f"WATCHDOG PAUSED: {service} withheld {withheld.get('lines', '?')} line(s) "
+              f"by capture-pause window(s) {ids}, last at {withheld['last_at']}; "
+              f"no unsynced backlog on {len(active)} active file(s)")
+        sys.exit(0)
 
 note = f", {pending} file(s) accumulating within flush grace" if pending else ""
 print(f"OK: {service} active, no unsynced backlog on {len(active)} active file(s){note}")

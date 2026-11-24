@@ -20,13 +20,24 @@ whose bytes hash the same is skipped after hashing. A 409 (the server holds
 a different file under that session id) is recorded with the sha, so the
 same bytes are not re-posted every run; the file retries once it changes.
 
+Capture pauses (item 18c'): every POST carries this machine's clock
+(client_now, ISO) and, with --seat, the seat the root's sessions belong to;
+the server withholds lines timed inside a pause window for that seat (stubs)
+and archives the rest. No --seat = every window on the tenant applies. An
+upload the server HELD because it does not trust this machine's clock (more
+than 60 s off) is not recorded as shipped: it is re-sent on the next run, and
+the run says so and exits 1. The other two holds (an unfinished last line; a
+trailing run of untimed lines a window may still reach) wait for the file to
+grow, as before.
+
 Environment:
   MNEMO_URL          default for --server (else http://127.0.0.1:50001)
   MNEMO_AUTH_TOKEN   sent as X-API-KEY when set
 
 Exit codes:
   0  clean: every changed file shipped (or there was nothing to ship)
-  1  partial: at least one file failed, conflicted, or hit a capture pause
+  1  partial: at least one file failed, conflicted, hit a capture pause, or
+     was held because the server does not trust this machine's clock
   2  nothing shipped because the server is down or unreachable
 
 Pure ASCII on purpose (Windows consoles, cp1252 logs).
@@ -109,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="directory to walk for *.jsonl (repeatable)")
     ap.add_argument("--agent", required=True, help="tenant (agent_id), e.g. cc, opie")
     ap.add_argument("--host", required=True, help="where the sessions ran, e.g. igor, igor-2, cowork")
+    ap.add_argument("--seat", default=None,
+                    help="the seat these sessions belong to (must match that seat's bridge, "
+                         "e.g. cc-cc3); omitted = every pause on the tenant covers them")
     ap.add_argument("--server", default=os.environ.get("MNEMO_URL", "http://127.0.0.1:50001"))
     ap.add_argument("--state", default=None,
                     help="state JSON (default ~/.mnemo-transcript-ship-<agent>-<host>.json)")
@@ -139,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
             candidates.append((p, key))
 
     counts = {"archived": 0, "replaced": 0, "unchanged": 0, "skipped_same": 0,
-              "conflict": 0, "paused": 0, "failed": 0, "would_ship": 0, "gone": 0}
+              "conflict": 0, "paused": 0, "held_clock": 0, "failed": 0, "would_ship": 0,
+              "gone": 0}
     redactions = 0
     bad_lines = 0
     down = False
@@ -204,10 +219,13 @@ def main(argv: list[str] | None = None) -> int:
                 counts["would_ship"] += 1
                 continue
 
+            params = {"agent_id": args.agent, "host": args.host, "session_id": key,
+                      "client_now": datetime.now(timezone.utc).isoformat()}
+            if args.seat:
+                params["seat"] = args.seat
             try:
                 resp = client.post(
-                    "/transcripts",
-                    params={"agent_id": args.agent, "host": args.host, "session_id": key},
+                    "/transcripts", params=params,
                     content=gzip.compress(raw), headers=headers)
             except httpx.TransportError as e:
                 print(f"FAIL {key}: {ascii_only(str(e))}", file=sys.stderr)
@@ -245,6 +263,14 @@ def main(argv: list[str] | None = None) -> int:
                 counts["failed"] += 1
                 continue
             manifest = body.get("manifest") or {}
+            if body.get("held") and int(manifest.get("held_for_clock") or 0) > 0:
+                # Not stored as shipped: same mtime and size must not skip it
+                # next run, or a file that never grows never ships its lines.
+                print(f"HELD-CLOCK {key}: {manifest.get('held_for_clock')} line(s) held, the "
+                      f"server does not trust this machine's clock; re-sent next run",
+                      file=sys.stderr)
+                counts["held_clock"] += 1
+                continue
             redactions += int(manifest.get("redactions_applied") or 0) if status != "unchanged" else 0
             bad_lines += int(manifest.get("bad_lines") or 0) if status != "unchanged" else 0
             counts[status] += 1
@@ -259,7 +285,12 @@ def main(argv: list[str] | None = None) -> int:
             client.close()
 
     shipped = counts["archived"] + counts["replaced"] + counts["unchanged"]
-    trouble = counts["failed"] + counts["conflict"] + counts["paused"]
+    trouble = counts["failed"] + counts["conflict"] + counts["paused"] + counts["held_clock"]
+    if counts["held_clock"]:
+        print(f"CLOCK: {counts['held_clock']} file(s) held because the server does not trust "
+              f"this machine's clock (now {datetime.now(timezone.utc).isoformat()}, more than "
+              f"60 s from the server's); fix the clock, they ship on the next run",
+              file=sys.stderr)
     print("summary: " + " ".join(f"{k}={v}" for k, v in counts.items())
           + f" not_a_session={skipped_unrecognized} redactions={redactions}"
           + f" bad_lines={bad_lines} candidates={len(candidates)}")

@@ -12,6 +12,49 @@
 > through those releases. The full history is in the main repo
 > [CHANGELOG.md](../../CHANGELOG.md).
 
+## 2.43.0 — 2026-11-23 — a pause covers this seat, not the whole tenant (item 18c')
+
+**Why.** Since server 18b' a capture pause is a window on event time per
+(tenant, seat), but no bridge sent a seat or a clock, so a pause from any
+seat on a shared tenant (CC, CC2, CC3 are all `cc`) covered every seat on it,
+and an auto-capture flush posted late was judged on post time only.
+
+**Changes.**
+- Seat: `MNEMO_SEAT`, else the session prefix (`cc` + `MNEMO_LANE=cc3-igor.md`
+  = `cc-cc3`; no lane = the agent id). An unusable value sends no seat.
+- Every `/writeback` carries `seat` and `client_now` (ISO). An auto-capture
+  flush also carries `event_span`: the ISO first and last time of its entries.
+  Each captured entry records its seat. A flush claims this bridge's seat only
+  when EVERY entry carries it. A replayed orphan spool (claimed per tenant, so
+  CC's can reach CC3's bridge) or a pre-2.43 spool goes with no seat, so every
+  window on the tenant covers it. Sent under this seat, a window on the dead
+  bridge's seat would not have covered it.
+  `mnemo_save` and checkpoints carry no span (they are events at post time).
+  Transcript pushes send `seat` and `client_now` too.
+- `mnemo_capture_pause` and `mnemo_capture_resume` carry this seat. Before
+  pausing, the buffer is flushed (it was captured before the pause). The
+  reply names the scope the server applied (a pre-18b' Cortex ignores the
+  seat and pauses the whole tenant: the reply says so), the window id, and
+  the server's withheld / not withheld lists. It also warns when the jsonl
+  sync on this machine maps its folders to seats and none of them is this
+  bridge's (`MNEMO_CC_OFFSET_FILE`, default `~/.mnemo-cc/cc-sync.offset.json`).
+- The 422 rule (CC #7033): if the server refuses a flush's `event_span`, the
+  bridge reads `GET /capture/windows` for its tenant since the earlier of its
+  own start and the batch's oldest entry. With no window it re-sends the
+  batch bare (no seat, no clock, no span). With any window, or if the read
+  fails, it writes the raw save to `~/.mnemo-cortex/422-spool/` and re-sends
+  nothing. Either way one loud line names the field and what happened. If
+  the bare re-send or the spool write itself fails, that is said loudly too
+  and the batch stays in the buffer for a retry.
+- Loud lines reach the agent: a discarded flush and either 422 outcome are
+  appended to the next tool reply, not only to stderr (which nobody reads on
+  most seats).
+- `[auto-capture] flushed N entries` is printed only when Mnemo stored the
+  batch. After a discarded flush it read as stored.
+- Against an older Cortex: its request models ignore unknown fields
+  (pydantic's default), so `seat`, `client_now` and `event_span` are dropped
+  there and behaviour is as before.
+
 ## 2.42.0 — 2026-11-19 — only a stored save says Saved (item 18a)
 
 **Why.** On 2026-11-18 a `mnemo_save` made during a capture pause answered

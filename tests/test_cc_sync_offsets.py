@@ -49,11 +49,12 @@ def ccsync(tmp_path, monkeypatch):
 
     mod.posts = []
 
-    def fake_post(session_id, summary, key_facts):
+    def fake_post(session_id, summary, key_facts, wire=None, *, bare=False):
         mod.posts.append({"session_id": session_id, "summary": summary})
         return {"memory_id": f"m{len(mod.posts)}"}
 
     monkeypatch.setattr(mod, "post_to_mnemo", fake_post)
+    monkeypatch.setattr(mod, "read_windows", lambda since=None: [])  # item 18c': no server
     return mod
 
 
@@ -109,7 +110,7 @@ def test_failed_post_retries_without_loss(ccsync, monkeypatch):
     f = mod.SESSIONS_DIR / "dddd4444.jsonl"
     f.write_text(batch("d1"))
 
-    def broken_post(session_id, summary, key_facts):
+    def broken_post(session_id, summary, key_facts, wire=None, *, bare=False):
         raise urllib.error.URLError("mnemo down")
 
     real_post = mod.post_to_mnemo
@@ -188,10 +189,10 @@ def test_vanished_file_does_not_abort_tick(ccsync, monkeypatch):
 
     real_sync = mod.sync_file
 
-    def flaky(jsonl, entry, force):
+    def flaky(jsonl, entry, force, *rest):
         if "gone" in jsonl.name:
             raise FileNotFoundError(jsonl)  # deleted between walk and read
-        return real_sync(jsonl, entry, force)
+        return real_sync(jsonl, entry, force, *rest)
 
     monkeypatch.setattr(mod, "sync_file", flaky)
     assert mod.main() == 1                     # failure reported...

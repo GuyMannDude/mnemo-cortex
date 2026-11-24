@@ -121,6 +121,16 @@ await test("entries stay in buffer and spool until the send succeeds", async () 
   assert(h.logs.some((l) => l === "[auto-capture] flushed 1 entries"), "success log line");
 });
 
+await test("a delivered-but-not-stored batch leaves the buffer without a 'flushed' line (item 18c')", async () => {
+  const h = harness();
+  h.buf.capture(entry("a", 1));
+  const p = h.buf.flush();
+  h.sender.calls[0].resolve(false);
+  assertEq(await p, true, "delivered");
+  assertEq(h.buf.size, 0, "not retried");
+  assert(!h.logs.some((l) => l.includes("flushed")), `no flushed line, got ${JSON.stringify(h.logs)}`);
+});
+
 await test("size trigger sends when the buffer reaches flushSize", async () => {
   const h = harness();
   h.buf.capture(entry("a", 1));

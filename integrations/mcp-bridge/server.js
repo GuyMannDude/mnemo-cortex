@@ -36,6 +36,7 @@ import { fetchUnrepliedBusSummary } from "./bus-startup.js";
 import { spoolFile, persistSpool, orphanSpools } from "./capture-spool.js";
 import { createCaptureBuffer } from "./capture-buffer.js";
 import { writebackVerdict, mnemoSaveLine, flushNotice, PAUSE_GATE_RULE } from "./writeback-render.js";
+import { bridgeSeat, labelled, flushBatch, spoolWriter, seamLine, seatScope, createNotices } from "./seat-clock.js";
 
 // ── Configuration ──────────────────────────────────────────────
 // MNEMO_URL: where your Mnemo Cortex API lives
@@ -59,6 +60,15 @@ const SESSION_PREFIX = sessionPrefix(AGENT_ID, process.env.MNEMO_LANE);
 // Filename stem session_end may commit: the lane's short name (cc3), not the
 // tenant (cc) — see laneOwner.
 const LANE_OWNER = laneOwner(AGENT_ID, process.env.MNEMO_LANE);
+// MNEMO_SEAT: which seat of the tenant this bridge is (item 18c'). Default =
+// SESSION_PREFIX. Sent on every write, pause and resume, so a pause here
+// covers this seat only and other seats on the tenant keep capturing.
+const { seat: SEAT, warning: SEAT_WARNING } = bridgeSeat(process.env.MNEMO_SEAT, SESSION_PREFIX);
+if (SEAT_WARNING) process.stderr.write(`${SEAT_WARNING}\n`);
+const BRIDGE_STARTED_AT_MS = Date.now();
+// The jsonl sync's state file, for the pause reply's seat check.
+const SYNC_STATE_FILE = process.env.MNEMO_CC_OFFSET_FILE ||
+  join(process.env.HOME || homedir(), ".mnemo-cc", "cc-sync.offset.json");
 // Bridge-side state that outlives a process: boot-cut log, capture spool.
 const MNEMO_STATE_DIR = join(process.env.HOME || homedir(), ".mnemo-cortex");
 // MNEMO_AUTH_TOKEN: optional bearer token for the Mnemo Cortex API. Read from
@@ -174,7 +184,10 @@ async function mnemoRequest(method, path, body) {
     process.stderr.write(
       `[mnemo-mcp] HTTP error: ${method} ${path} → ${res.status}: ${text}\n`
     );
-    throw new Error(`Mnemo Cortex returned ${res.status}: ${text}`);
+    const err = new Error(`Mnemo Cortex returned ${res.status}: ${text}`);
+    err.status = res.status;
+    err.detail = text;
+    throw err;
   }
 
   let data;
@@ -188,6 +201,11 @@ async function mnemoRequest(method, path, body) {
   }
 
   return data;
+}
+
+// Every /writeback carries this bridge's seat and clock (item 18c').
+async function mnemoWriteback(body) {
+  return mnemoRequest("POST", "/writeback", labelled(body, SEAT));
 }
 
 // Text-bodied GET (the archive tier's format=raw is NDJSON, not JSON).
@@ -245,7 +263,9 @@ async function mnemoUploadTranscript(sessionUuid, body) {
   const headers = { "Content-Type": "application/x-ndjson" };
   if (AUTH_TOKEN) headers["X-API-KEY"] = AUTH_TOKEN;
   const host = hostname().replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 64) || "unknown";
-  const q = new URLSearchParams({ agent_id: AGENT_ID, host, session_id: sessionUuid });
+  const q = new URLSearchParams({ agent_id: AGENT_ID, host, session_id: sessionUuid,
+                                  client_now: new Date().toISOString() });
+  if (SEAT) q.set("seat", SEAT);
   try {
     const res = await fetch(`${MNEMO_URL}/transcripts?${q}`, { method: "POST", headers, body, signal: controller.signal });
     const text = await res.text();
@@ -404,13 +424,13 @@ let checkpointIds = [];
 // shape. A hold against anything else is returned as-is for the caller to
 // report. Never forces blindly, so the dedup gate stays on for the session.
 async function writebackPastOwnCheckpoints(body) {
-  const data = await mnemoRequest("POST", "/writeback", body);
+  const data = await mnemoWriteback(body);
   if (data.status !== "held" || checkpointIds.length === 0) return data;
   const dupIds = (data.near_duplicates || []).map((m) => m.id);
   const onlyOwn = dupIds.length > 0 && dupIds.every((id) => checkpointIds.includes(id));
   if (!onlyOwn) return data;
   process.stderr.write(`[mnemo-mcp] save HELD by this session's own checkpoint(s) ${dupIds.join(", ")} — retrying with force\n`);
-  return mnemoRequest("POST", "/writeback", { ...body, force: true });
+  return mnemoWriteback({ ...body, force: true });
 }
 
 // Session timestamps use host-local time, not UTC, so the date portion
@@ -535,13 +555,23 @@ const TOOL_CAPTURE = {
   passport_forget_or_override: "skip",
 };
 
+// Lines the agent must SEE (a discarded flush, a 422): stderr reaches nobody
+// on most seats, so they ride on the next tool reply too.
+const notices = createNotices();
+
+function loud(line) {
+  process.stderr.write(`${line}\n`);
+  notices.push(line);
+}
+
+// Returns true when Mnemo stored the batch (the buffer's "flushed" line).
 async function sendCaptureBatch(entries) {
   const narrative = entries.map((e) => `- [${e.tool}] ${e.summary}`).join("\n");
   const keyFacts = entries
     .filter((e) => TOOL_CAPTURE[e.tool] === "full")
     .map((e) => e.summary.slice(0, 100));
   const sid = sessionId || `${SESSION_PREFIX}-auto-${Date.now()}`;
-  const data = await mnemoRequest("POST", "/writeback", {
+  const body = {
     session_id: sid,
     summary: `[AUTO-CAPTURE] ${entries.length} tool calls:\n${narrative}`,
     key_facts: keyFacts.length > 0 ? keyFacts : ["auto_capture_flush"],
@@ -552,11 +582,27 @@ async function sendCaptureBatch(entries) {
     // accordingly so default recalls don't drown in tool-call narratives.
     source: "tool",
     category: "session_log",
+  };
+  // Seat, clock and the entries' event span; the 422 rule (#7033) when the
+  // server refuses the span: re-sent bare only if no window could apply,
+  // else spooled to this machine's disk; the batch then leaves the buffer (a
+  // retry would meet the same 422). If the re-send or the spool write fails,
+  // that is said too and the batch stays for a retry. The agent is told.
+  const { data } = await flushBatch({
+    entries, body, seat: SEAT, startedAtMs: BRIDGE_STARTED_AT_MS,
+    post: (b) => mnemoRequest("POST", "/writeback", b),
+    readWindows: (since) => mnemoRequest(
+      "GET", `/capture/windows?${new URLSearchParams({ agent_id: AGENT_ID, since: String(since) })}`),
+    resend: (b) => mnemoRequest("POST", "/writeback", b),
+    writeSpool: spoolWriter(join(MNEMO_STATE_DIR, "422-spool"), AGENT_ID),
+    onLine: loud,
   });
+  if (!data) return false;
   // A 200 is delivered, so the buffer drops these entries either way; a
   // flush that was not stored must still say so (item 18a).
   const notice = flushNotice(data, entries.length, AGENT_ID);
-  if (notice) process.stderr.write(`${notice}\n`);
+  if (notice) loud(notice);
+  return notice === null;
 }
 
 // The state machine lives in capture-buffer.js (tested against a stubbed
@@ -580,6 +626,7 @@ function captureCall(toolName, summary) {
     tool: toolName,
     summary,
     ts: new Date().toISOString(),
+    seat: SEAT,  // a replayed spool may hold other seats' entries: see batchSeat
   });
 }
 
@@ -685,7 +732,7 @@ server.registerTool = (name, schema, handler) =>
     _origRegisterTool,
     name,
     schema,
-    dump.wrap(name, latency.wrap(name, handler))
+    dump.wrap(name, latency.wrap(name, notices.wrap(handler)))
   );
 
 if (dump.enabled) {
@@ -989,7 +1036,7 @@ server.registerTool(
       if (force !== undefined) body.force = force;
       if (supersedes !== undefined) body.supersedes = supersedes;
 
-      const data = await mnemoRequest("POST", "/writeback", body);
+      const data = await mnemoWriteback(body);
 
       if (data.status === "held") {
         const matches = (data.near_duplicates || []).map((m) =>
@@ -1649,7 +1696,7 @@ async function _runStartup({ effectiveAgentId, sessionPrefix, identityHeader, la
     }
 
     try {
-      await mnemoRequest("POST", "/writeback", {
+      await mnemoWriteback({
         session_id: sessionId,
         summary: `${effectiveAgentId} session started at ${sessionStartTime}. Brain lane loaded${laneLoaded ? ` (${laneLoaded})` : ""}.`,
         key_facts: ["session_start"],
@@ -3040,8 +3087,9 @@ server.registerTool(
 
 // ── Tools: capture pause gate (v4.1) ───────────────────────────
 // "I'm about to handle a secret — stop recording." Pauses ambient capture
-// for THIS agent_id — the TENANT, so every seat and sync writing as it —
-// (auto-sync, captureCall flushes, /ingest); fleet-wide on request.
+// for THIS seat of this agent_id (item 18c'; before it, the whole tenant):
+// what this seat captures during the window never lands, whenever posted.
+// Writers that send no seat are covered too; fleet-wide on request.
 // Dead-man switch: auto-resumes at expiry even if everyone forgets. A
 // mnemo_save with source user/inferred and a real summary still lands;
 // source=tool, category=session_log and routine-shaped saves are discarded
@@ -3050,7 +3098,7 @@ server.registerTool(
 server.registerTool(
   "mnemo_capture_pause",
   {
-    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Scope is this agent_id — the TENANT: every session and sync that writes under the same agent_id pauses too; other agent_ids keep capturing. Set fleet_wide=true only when every agent_id's capture must stop. Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. While paused, auto-capture flushes and ingested exchanges are DISCARDED, not buffered, and so is any mnemo_save with source=tool, category=session_log or a routine-shaped summary or key_facts; a mnemo_save with source user/inferred and a real summary still lands. Raw transcript uploads are refused while paused and the hourly shipper sends them after the pause (redacted).",
+    description: "Pause Mnemo's ambient auto-capture before sensitive operations (key rotations, credential pastes). Scope is THIS SEAT of this agent_id (the reply names it): its auto-capture, the jsonl sync and transcript lines labelled with this seat, and any writer that sends no seat. Other seats that send their seat, and other agent_ids, keep capturing. Set fleet_wide=true only when every agent_id's capture must stop. Auto-resumes after `minutes` (default 15, max 240) even if you forget — a dead-man switch, not a toggle. While paused, auto-capture flushes and ingested exchanges are DISCARDED, not buffered, and so is any mnemo_save with source=tool, category=session_log or a routine-shaped summary or key_facts; a mnemo_save with source user/inferred and a real summary still lands. Transcript lines timed inside the window are archived as stubs; the rest of the file lands.",
     inputSchema: {
       minutes: z
         .number()
@@ -3077,20 +3125,34 @@ server.registerTool(
       // agent's checkpoints for 4 h). Fleet-wide only on an explicit ask.
       const body = { reason: reason || "" };
       if (minutes !== undefined) body.minutes = minutes;
-      if (!fleet_wide) body.agent_id = AGENT_ID;
+      if (!fleet_wide) {
+        body.agent_id = AGENT_ID;
+        if (SEAT) body.seat = SEAT;
+      }
+      // Anything buffered was captured BEFORE the pause: send it first, so
+      // its batch does not straddle the window and get discarded with it.
+      await capture.drain().catch(() => {});
       const data = await mnemoRequest("POST", "/capture/pause", body);
       const mins = Math.round((data.remaining_seconds || 0) / 60);
       // A pre-4.28 server ignores agent_id and pauses everyone; it also never
       // returns `fleet_wide`. Report what the server DID, not what we asked.
       const scope = data.fleet_wide === false
-        ? `scope: tenant ${AGENT_ID} — every session and sync writing as ${AGENT_ID} pauses too; other tenants keep capturing`
+        ? seatScope(data, AGENT_ID, SEAT)
         : data.fleet_wide === true
           ? "⚠️ FLEET-WIDE — every agent's ambient capture is discarded until it lifts (the save and transcript rules below apply to every agent)"
           : "⚠️ FLEET-WIDE — this Cortex is older than 4.28 and cannot scope a pause; every agent's capture is discarded until it lifts";
       return {
         content: [{
           type: "text",
-          text: `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}\n${scope}\nAuto-resumes at expiry. Resume early with mnemo_capture_resume.\nmnemo_save: source user/inferred with a real summary still lands; ${PAUSE_GATE_RULE}. Raw transcripts are delayed, not discarded: the hourly shipper sends them after the pause.`,
+          text: [
+            `⏸ Ambient capture PAUSED for ~${mins} min — ${data.reason}${data.window ? ` (window ${data.window})` : ""}`,
+            scope,
+            "Auto-resumes at expiry. Resume early with mnemo_capture_resume.",
+            `mnemo_save: source user/inferred with a real summary still lands; ${PAUSE_GATE_RULE}.`,
+            ...(Array.isArray(data.withheld) ? ["Withheld:", ...data.withheld.map((w) => `  - ${w}`)] : []),
+            ...(Array.isArray(data.not_withheld) ? ["Not withheld:", ...data.not_withheld.map((w) => `  - ${w}`)] : []),
+            ...(fleet_wide ? [] : [seamLine(SEAT, SYNC_STATE_FILE)].filter(Boolean)),
+          ].join("\n"),
         }],
       };
     } catch (err) {
@@ -3110,10 +3172,12 @@ server.registerTool(
     try {
       // Lifts this agent's pause (and a fleet-wide one, which nobody owns).
       // Other agents' own pauses are left alone.
-      const data = await mnemoRequest("POST", "/capture/resume", { agent_id: AGENT_ID });
+      const body = { agent_id: AGENT_ID };
+      if (SEAT) body.seat = SEAT;
+      const data = await mnemoRequest("POST", "/capture/resume", body);
       // A pre-4.28 server has one global switch and returns no `scopes`.
       const text = data && data.scopes !== undefined
-        ? `▶ Ambient capture RESUMED for ${AGENT_ID} (other agents' pauses untouched).`
+        ? `▶ Ambient capture RESUMED for ${AGENT_ID}${SEAT ? ` seat ${SEAT}` : ""} (other seats' and agents' pauses untouched).`
         : "▶ Ambient capture RESUMED for every agent (this Cortex is older than 4.28 and has one switch for every agent).";
       return { content: [{ type: "text", text }] };
     } catch (err) {
