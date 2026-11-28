@@ -290,6 +290,13 @@ def _stick_run(tmp_path, b, stick, server_write):
     return json.loads(finish(p).strip().splitlines()[-1])
 
 
+def _base_m1(stick: Path) -> dict:
+    """host-b's base inventory entry for m1 (the stick's 3-way merge base)."""
+    inv = json.loads((stick / "state" / "inventory-host-b.json").read_text())
+    return {(ch, rel): e for ch, d in inv.items() for rel, e in d.items()
+            if rel.endswith("m1.json")}
+
+
 def _demote_on(host: Path):
     return lambda: update_record(_mem(host, "m1"), lambda old: {**old, "demoted_at": "D"})
 
@@ -298,10 +305,12 @@ def test_stick_pull_skips_a_record_the_server_changed_after_the_scan(tmp_path):
     a, b, stick = _two_hosts(tmp_path)
     _mem(a, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from A"}))
     sync(a, stick, host_id="host-a", pad=False)           # the stick now holds v2
+    base = _base_m1(stick)
     r = _stick_run(tmp_path, b, stick, _demote_on(b))
     on_b = json.loads(_mem(b, "m1").read_text())
     assert on_b.get("demoted_at") == "D", on_b              # the demote is still live
     assert r["skipped"] == ["memories/cc/memory/m1.json"] and r["to_host"] == []
+    assert base and _base_m1(stick) == base                 # base kept on skip
     # base not advanced: the next sync sees a both-edit and keeps the loser
     r2 = sync(b, stick, host_id="host-b", pad=False)
     assert any("m1.json" in c for c in r2.conflicts), r2.conflicts
@@ -322,10 +331,12 @@ def test_stick_delete_skips_a_record_the_server_changed_after_the_scan(tmp_path)
     a, b, stick = _two_hosts(tmp_path)
     _mem(a, "m1").unlink()
     sync(a, stick, host_id="host-a", pad=False)           # the stick carries the delete
+    base = _base_m1(stick)
     r = _stick_run(tmp_path, b, stick, _demote_on(b))
     assert _mem(b, "m1").is_file()                          # a skipped delete never unlinks
     assert json.loads(_mem(b, "m1").read_text()).get("demoted_at") == "D"
     assert r["skipped"] == ["memories/cc/memory/m1.json"] and r["deleted_on_host"] == []
+    assert base and _base_m1(stick) == base                 # base kept on skip
 
 
 def test_stick_delete_control_without_a_server_write_deletes(tmp_path):
@@ -342,10 +353,12 @@ def test_stick_both_edit_skips_when_the_server_wrote_again_after_the_scan(tmp_pa
     _mem(a, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from A"}))
     sync(a, stick, host_id="host-a", pad=False)
     _mem(b, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from B"}))  # both edited
+    base = _base_m1(stick)
     r = _stick_run(tmp_path, b, stick, _demote_on(b))
     on_b = json.loads(_mem(b, "m1").read_text())
     assert on_b.get("demoted_at") == "D" and on_b["summary"] == "v2 from B"
     assert r["skipped"] == ["memories/cc/memory/m1.json"] and r["conflicts"] == []
+    assert base and _base_m1(stick) == base                 # base kept on skip
 
 
 def test_stick_trajectory_pull_skips_when_the_server_appended_after_the_scan(tmp_path):
