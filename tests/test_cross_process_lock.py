@@ -625,6 +625,117 @@ def test_lock_skip_names_its_reason_and_keeps_the_base(tmp_path):
     assert _inv(stick)["memories/cc/memory"]["m1.json"] == base_before
 
 
+def _unreadable_after_scan(monkeypatch, host_dir: Path, *paths):
+    """sha256_file raises for these paths only once the REAL pass (sync plans
+    with a dry run of every channel first) has scanned host_dir: readable at
+    the scan, unreadable at the guarded re-read under the record lock. An AV
+    lock landing between scan and write is this shape (CC #7198 mutant B)."""
+    import agentb.stick as st
+    real_sha, real_scan, real_channel = st.sha256_file, st._scan, st.sync_channel
+    targets = {Path(p).resolve() for p in paths}
+    state = {"real": False, "armed": False}
+
+    def channel(ch, *a, dry_run=False, **kw):
+        state["real"] = not dry_run and Path(ch.host_dir) == host_dir
+        return real_channel(ch, *a, dry_run=dry_run, **kw)
+
+    def scan(root, pattern, transform=None, **kw):
+        out = real_scan(root, pattern, transform, **kw)
+        if state["real"] and Path(root) == host_dir:
+            state["armed"] = True
+        return out
+
+    def sha(p):
+        if state["armed"] and Path(p).resolve() in targets:
+            raise PermissionError(13, "simulated", str(p))
+        return real_sha(p)
+
+    monkeypatch.setattr(st, "sync_channel", channel)
+    monkeypatch.setattr(st, "_scan", scan)
+    monkeypatch.setattr(st, "sha256_file", sha)
+    return state
+
+
+def test_host_file_unreadable_at_the_guarded_reread_is_skipped_and_carried(tmp_path, monkeypatch):
+    from agentb.stick import verify_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    _mem(a, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from A"}))
+    sync(a, stick, host_id="host-a", pad=False)                     # the stick now holds v2
+    base_before = _inv(stick)["memories/cc/memory"]["m1.json"]
+    entry_before = _manifest_files(stick)[M1]
+    state = _unreadable_after_scan(monkeypatch, _mem(b, "m1").parent, _mem(b, "m1"))
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert state["armed"]                                           # the scan read it fine
+    assert r.skipped == [M1] and r.to_host == [] and r.deleted_on_stick == [], r
+    assert r.skip_reasons[M1].startswith("unreadable on the host (PermissionError errno 13"), r
+    assert json.loads(_mem(b, "m1").read_text())["summary"] == "v1"           # host untouched
+    assert json.loads((stick / M1).read_text())["summary"] == "v2 from A"     # stick intact
+    assert _inv(stick)["memories/cc/memory"]["m1.json"] == base_before        # base carried
+    assert _manifest_files(stick)[M1] == entry_before                         # entry carried
+    verify_manifest(stick)
+
+
+def _stat_denied(monkeypatch, *paths):
+    """Python 3.14's Path.is_file() reads ANY stat error as False. Simulate
+    that on every Python: for these paths is_file() is False and stat()
+    raises PermissionError, as a listed-but-unstattable file does."""
+    import pathlib
+    targets = {os.path.normcase(os.path.abspath(p)) for p in paths}
+    real_stat, real_is_file = pathlib.Path.stat, pathlib.Path.is_file
+
+    def hit(p):
+        return os.path.normcase(os.path.abspath(p)) in targets
+
+    def fake_stat(self, *a, **kw):
+        if hit(self):
+            raise PermissionError(13, "simulated", str(self))
+        return real_stat(self, *a, **kw)
+
+    def fake_is_file(self, *a, **kw):
+        return False if hit(self) else real_is_file(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "stat", fake_stat)
+    monkeypatch.setattr(pathlib.Path, "is_file", fake_is_file)
+
+
+def test_host_file_whose_stat_fails_is_unknown_never_absent(tmp_path, monkeypatch):
+    from agentb.stick import verify_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    entry_before = _manifest_files(stick)[M1]
+    _stat_denied(monkeypatch, _mem(b, "m1"))
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.deleted_on_stick == [] and r.skipped == [M1], r
+    assert r.skip_reasons[M1].startswith("unreadable on the host (PermissionError errno 13"), r
+    assert (stick / M1).is_file() and _manifest_files(stick)[M1] == entry_before
+    verify_manifest(stick)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="real POSIX permission bits; root ignores them")
+def test_host_dir_that_lists_but_denies_stat_deletes_nothing_off_the_stick(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    d = _mem(b, "m1").parent
+    d.chmod(0o400)                          # names list, stat of the children is denied
+    try:
+        r = sync(b, stick, host_id="host-b", pad=False)
+    finally:
+        d.chmod(0o755)
+    assert r.deleted_on_stick == [] and r.skipped == [M1], r
+    assert r.skip_reasons[M1].startswith("unreadable on the host (PermissionError errno 13"), r
+    assert (stick / M1).is_file()
+
+
+def test_dangling_symlink_on_the_host_is_absent_not_a_permanent_partial(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    link = _mem(b, "m5")
+    try:
+        link.symlink_to(tmp_path / "nowhere.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a symlink here (Windows without Developer Mode)")
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [] and r.to_stick == [] and r.deleted_on_stick == [], r
+
+
 @contextlib.contextmanager
 def _os_locked(path: Path):
     """A REAL lock, not a patch: Windows opens the file with share mode 0

@@ -24,6 +24,7 @@ changes, works against any existing install.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -665,7 +666,20 @@ def _scan(root: Path, pattern: str, transform=None,
         if p.name.endswith(".tmp"):
             continue
         try:
-            if not p.is_file():
+            # stat, not is_file(): is_file() reads ANY stat error as False
+            # (Python 3.14 swallows every OSError there), so a listed file
+            # whose stat is denied would drop out as absent = a delete.
+            # Only "no such path" is absent: it really is gone, and a
+            # dangling symlink (or a loop) must not become a permanent skip.
+            try:
+                mode = p.stat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    continue
+                raise
+            if not stat.S_ISREG(mode):
                 continue
             if transform is None:
                 sha = sha256_file(p)

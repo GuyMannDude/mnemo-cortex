@@ -20,7 +20,16 @@ copy (`del_stick`). A locked file would delete itself off the stick.
   fix's skip path. One rule for both reasons: nothing done on either side,
   base and manifest entry carried forward unchanged. A file that is really
   gone is deleted on the next pass, when it no longer lists.
-- The record-lock re-hash catches a read error the same way.
+- The record-lock re-hash catches a read error the same way: a file
+  readable at the scan and unreadable at the locked re-read (an AV lock
+  landing between scan and write) is skipped, not raised.
+- `_scan` decides "is a file" by `stat` + `S_ISREG`, not `is_file()`.
+  `is_file()` reads any stat error as False (Python 3.14 swallows every
+  `OSError`), so a listed file whose stat was denied (a host dir with read
+  but no search permission) dropped out as absent, and the stick copy was
+  deleted. A stat error is now unreadable = unknown. Only "no such path"
+  (gone, a dangling symlink, a symlink loop) stays absent, so a dead link
+  never becomes a permanent PARTIAL.
 - `report.skip_reasons` names why each skipped path was skipped:
   `unreadable on the host (PermissionError errno 13 winerror 32)` or
   `changed since the scan (the server wrote it)`. The report prints it.
@@ -36,7 +45,9 @@ copy (`del_stick`). A locked file would delete itself off the stick.
   while the rest syncs; a real OS lock (Windows share-mode 0 open, POSIX
   mode 000); vanish-then-delete; many unreadables neither trip the guard
   nor delete; stick-side skip and refusal; repair; exit 3 and its controls;
-  and the delete control (a real host delete still deletes on the stick).
+  unreadable at the guarded re-read; a stat error (patched everywhere, and a
+  real POSIX `0o400` dir); a dangling symlink stays absent; and the delete
+  control (a real host delete still deletes on the stick).
 
 ## Unreleased — a read naming an unknown agent creates nothing on disk (2026-11-27)
 
