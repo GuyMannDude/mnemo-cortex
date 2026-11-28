@@ -1619,8 +1619,10 @@ def _stick_report(report) -> None:
     for c in report.conflicts:
         console.print(f"  [bold red]⚡ CONFLICT[/] {c}")
     for k in report.skipped:
-        console.print(f"  [yellow]⏭ skipped[/] {k}: the host file changed during this sync "
-                      "(the server wrote it); nothing done, the next sync carries it")
+        why = report.skip_reasons.get(k, "the host file changed during this sync "
+                                         "(the server wrote it)")
+        console.print(f"  [yellow]⏭ skipped[/] {k}: {why}; nothing done on either "
+                      "side, the next sync carries it")
     if not report.changed and not report.warnings and not report.skipped:
         console.print("  [dim]nothing to carry — already in sync[/]")
 
@@ -1952,9 +1954,14 @@ def _eject_stick(stick_dir, extra_roots=None) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
+STICK_PARTIAL_EXIT = 3   # sync committed, but some files were skipped
+
+
 def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
-                    eject=False):
-    """Shared by `stick sync` and `stick watch`. Returns True on success.
+                    eject=False, out=None):
+    """Shared by `stick sync` and `stick watch`. Returns True on success
+    (a PARTIAL sync — files skipped — is a success that committed; pass a
+    list as `out` to receive the SyncReport and tell the two apart).
 
     With eject=True the volume is unmounted/ejected after the verified sync
     (never on a dry run, never after a refusal, never when the sync left
@@ -1989,6 +1996,8 @@ def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
             # needs a human (torn generation, guard trip, wrong key)
             _notify_desktop("Cortex Stick — SYNC REFUSED", str(e)[:180])
         return False
+    if out is not None:
+        out.append(report)
     verb = "[yellow]DRY RUN[/]" if dry_run else "[bold]Synced[/]"
     console.print(f"{verb} {stick_dir}")
     _stick_report(report)
@@ -2007,8 +2016,8 @@ def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
                           "left mounted, see state/conflicts/ before pulling")
             title = "Cortex Stick — synced, CONFLICTS: left mounted, see state/conflicts/"
         elif eject and report.skipped:
-            console.print("  [bold yellow]⏭ files skipped[/] (the server wrote them during "
-                          "the sync) — left mounted: sync again before pulling")
+            console.print("  [bold yellow]⏭ files skipped[/] (changed during the sync, "
+                          "or unreadable) — left mounted: sync again before pulling")
             title = "Cortex Stick — synced, FILES SKIPPED: left mounted, sync again"
         elif eject:
             console.print("  [green]✓ verified[/] (hashes readback-verified) — ejecting…")
@@ -2021,6 +2030,9 @@ def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
                 console.print(f"  [bold yellow]⚠ EJECT FAILED[/] ({eject_detail}) "
                               "— unmount by hand before pulling")
                 title = "Cortex Stick — synced, EJECT FAILED: unmount by hand"
+        elif report.skipped:
+            console.print(f"  [bold yellow]⏭ PARTIAL[/] — {len(report.skipped)} file(s) "
+                          "skipped, the rest verified; sync again to carry them")
         else:
             console.print("  [green]✓ safe to remove[/] (hashes readback-verified)")
         if notify:
@@ -2189,9 +2201,16 @@ def stick_brain_clone_cmd(dest, mount):
               help="Unmount/eject the stick after a verified sync "
                    "(what `stick watch` does by default).")
 def stick_sync_cmd(mount, tenants, brain, force, dry_run, eject):
-    """Bidirectional courier sync with the stick (auto-located if no MOUNT)."""
-    if not _stick_run_sync(mount, tenants, brain, force, dry_run, eject=eject):
+    """Bidirectional courier sync with the stick (auto-located if no MOUNT).
+
+    Exit 0 = synced, 1 = refused or failed, 3 = PARTIAL: committed, but files
+    were skipped (changed during the sync, or unreadable) — sync again."""
+    got: list = []
+    if not _stick_run_sync(mount, tenants, brain, force, dry_run, eject=eject,
+                           out=got):
         raise SystemExit(1)
+    if got and got[0].skipped and not dry_run:
+        raise SystemExit(STICK_PARTIAL_EXIT)
 
 
 @stick.command("status")
@@ -2244,8 +2263,9 @@ def stick_repair_cmd(mount):
     stick_dir = _stick_locate(mount, host_cfg)
     if not stick_dir:
         raise SystemExit(1)
+    unreadable: dict = {}
     try:
-        manifest = repair_manifest(stick_dir)
+        manifest = repair_manifest(stick_dir, unreadable=unreadable)
     except StickError as e:
         console.print(f"[red]{e}[/]")
         raise SystemExit(1)
@@ -2253,6 +2273,11 @@ def stick_repair_cmd(mount):
                   f"{len(manifest['files'])} file(s), "
                   f"now generation {manifest['generation']}. "
                   "Run: mnemo-cortex stick sync")
+    for rel, why in sorted(unreadable.items()):
+        console.print(f"  [bold yellow]⏭ unreadable[/] {rel}: {why}; its old manifest "
+                      "entry (if any) kept, not re-hashed — fix the file, then repair again")
+    if unreadable:
+        raise SystemExit(STICK_PARTIAL_EXIT)
 
 
 @stick.command("watch")

@@ -7,6 +7,7 @@ luck): one side reaches the dangerous point, says so, and waits for GO.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -226,8 +227,8 @@ STICK_SYNC = """
             armed.append(1)
         return orig_channel(ch, *a, dry_run=dry_run, **kw)
     st.sync_channel = channel
-    def hooked(root, pattern, transform=None):
-        out = orig(root, pattern, transform)
+    def hooked(root, pattern, transform=None, **kw):
+        out = orig(root, pattern, transform, **kw)
         if Path(root) == gate_dir and armed:
             armed.clear()
             (marks / "SCANNED").write_text("1")
@@ -255,7 +256,8 @@ STICK_SYNC = """
     r = st.sync(data, stick, host_id="host-b", pad=False)
     print(json.dumps({"to_host": r.to_host, "to_stick": r.to_stick,
                       "deleted_on_host": r.deleted_on_host,
-                      "skipped": r.skipped, "conflicts": r.conflicts}))
+                      "skipped": r.skipped, "conflicts": r.conflicts,
+                      "skip_reasons": r.skip_reasons}))
 """
 
 
@@ -466,3 +468,238 @@ def test_trajectory_save_off_loop_keeps_the_loop_running(tmp_path):
     store.close()
     assert pending and ticks == 20                          # waited, and the loop ran
     assert len(jsonl.read_text().splitlines()) == 2
+
+
+# ── unreadable files ride the same skip (snag-stick-watch-permissionerror-scan) ──
+# Before: one file the scan could not read raised PermissionError and killed the
+# whole sync (IGOR-2, 09-04: 57 watcher crashes on one locked memory file). The
+# trap a naive "skip it" falls into: a host file missing from the scan reads as
+# HOST DELETED, and the merge unlinks the stick's copy. Unreadable = unknown.
+
+M1 = "memories/cc/memory/m1.json"
+
+
+def _unreadable(monkeypatch, *paths, exc=PermissionError):
+    """Make sha256_file raise for these paths, as a lock or a denial would."""
+    import agentb.stick as st
+    real = st.sha256_file
+    targets = {Path(p).resolve() for p in paths}
+
+    def fake(p):
+        if Path(p).resolve() in targets:
+            raise exc(13 if exc is PermissionError else 2, "simulated", str(p))
+        return real(p)
+
+    monkeypatch.setattr(st, "sha256_file", fake)
+
+
+def _inv(stick: Path, hid: str = "host-b") -> dict:
+    return json.loads((stick / "state" / f"inventory-{hid}.json").read_text())
+
+
+def _manifest_files(stick: Path) -> dict:
+    return json.loads((stick / "manifest.json").read_text())["files"]
+
+
+def test_unreadable_host_file_is_skipped_and_never_deleted_off_the_stick(tmp_path, monkeypatch):
+    from agentb.stick import verify_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    base_before = _inv(stick)["memories/cc/memory"]["m1.json"]
+    entry_before = _manifest_files(stick)[M1]
+    _unreadable(monkeypatch, _mem(b, "m1"))
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [M1] and r.deleted_on_stick == [] and r.to_host == [], r
+    assert r.skip_reasons[M1].startswith("unreadable on the host (PermissionError errno 13"), r
+    assert (stick / M1).is_file()                                   # the stick copy survives
+    assert _inv(stick)["memories/cc/memory"]["m1.json"] == base_before   # base carried forward
+    assert _manifest_files(stick)[M1] == entry_before               # manifest entry too
+    verify_manifest(stick)                                          # generation not torn
+    monkeypatch.undo()
+    r2 = sync(b, stick, host_id="host-b", pad=False)                # readable again: in sync
+    assert r2.skipped == [] and r2.deleted_on_stick == [] and not r2.changed, r2
+
+
+def test_unreadable_host_file_does_not_stop_the_rest_of_the_sync(tmp_path, monkeypatch):
+    from agentb.stick import verify_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    _mem(a, "m3").write_text(json.dumps({"id": "m3", "summary": "from A"}))
+    sync(a, stick, host_id="host-a", pad=False)
+    _mem(b, "m2").write_text(json.dumps({"id": "m2", "summary": "from B"}))
+    _unreadable(monkeypatch, _mem(b, "m1"))
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [M1], r
+    assert r.to_stick == ["memories/cc/memory/m2.json"], r
+    assert r.to_host == ["memories/cc/memory/m3.json"], r
+    assert _mem(b, "m3").is_file() and (stick / "memories/cc/memory/m2.json").is_file()
+    verify_manifest(stick)
+
+
+def test_delete_control_a_real_host_delete_still_deletes_on_the_stick(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    _mem(b, "m1").unlink()
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.deleted_on_stick == [M1] and r.skipped == [], r
+    assert not (stick / M1).exists()
+
+
+def test_file_gone_between_listing_and_read_is_carried_then_deleted_next_pass(tmp_path, monkeypatch):
+    a, b, stick = _two_hosts(tmp_path)
+    _unreadable(monkeypatch, _mem(b, "m1"), exc=FileNotFoundError)
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [M1] and "FileNotFoundError errno 2" in r.skip_reasons[M1], r
+    assert (stick / M1).is_file()                                   # not deleted this pass
+    monkeypatch.undo()
+    _mem(b, "m1").unlink()                                          # it really is gone
+    r2 = sync(b, stick, host_id="host-b", pad=False)
+    assert r2.deleted_on_stick == [M1] and r2.skipped == [], r2     # the next pass deletes
+
+
+def test_many_unreadable_host_files_neither_trip_the_guard_nor_delete(tmp_path, monkeypatch):
+    from agentb.stick import MASS_DELETE_MIN_FILES
+    a, b, stick = _two_hosts(tmp_path)
+    ids = [f"n{i}" for i in range(MASS_DELETE_MIN_FILES + 2)]
+    for i in ids:
+        _mem(a, i).write_text(json.dumps({"id": i}))
+    sync(a, stick, host_id="host-a", pad=False)
+    sync(b, stick, host_id="host-b", pad=False)
+    _unreadable(monkeypatch, *(_mem(b, i) for i in ids))
+    r = sync(b, stick, host_id="host-b", pad=False)                 # no MASS-DELETE refusal
+    assert sorted(r.skipped) == sorted(f"memories/cc/memory/{i}.json" for i in ids), r
+    assert r.deleted_on_stick == []
+    assert all((stick / "memories/cc/memory" / f"{i}.json").is_file() for i in ids)
+
+
+def test_unreadable_stick_file_outside_the_manifest_is_skipped_not_pulled(tmp_path, monkeypatch):
+    a, b, stick = _two_hosts(tmp_path)
+    stray = stick / "memories/cc/memory/m9.json"                    # on the stick, not in the manifest
+    stray.write_text(json.dumps({"id": "m9"}))
+    _unreadable(monkeypatch, stray)
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == ["memories/cc/memory/m9.json"], r
+    assert r.skip_reasons["memories/cc/memory/m9.json"].startswith("unreadable on the stick")
+    assert not _mem(b, "m9").exists() and stray.is_file()
+
+
+def test_unreadable_manifest_file_on_the_stick_refuses_by_name(tmp_path, monkeypatch):
+    from agentb.stick import StickError
+    a, b, stick = _two_hosts(tmp_path)
+    _unreadable(monkeypatch, stick / M1)
+    with pytest.raises(StickError, match=r"unreadable: memories/cc/memory/m1\.json "
+                                         r"\(PermissionError errno 13"):
+        sync(b, stick, host_id="host-b", pad=False)
+    assert _mem(b, "m1").is_file() and (stick / M1).is_file()      # a refusal changes nothing
+
+
+def test_repair_keeps_the_old_entry_of_a_file_it_cannot_read(tmp_path, monkeypatch):
+    from agentb.stick import repair_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    entry_before = _manifest_files(stick)[M1]
+    _unreadable(monkeypatch, stick / M1)
+    bad: dict = {}
+    manifest = repair_manifest(stick, unreadable=bad)
+    assert manifest["files"][M1] == entry_before                    # never dropped
+    assert list(bad) == [M1] and bad[M1].startswith("PermissionError errno 13")
+
+
+def test_lock_skip_names_its_reason_and_keeps_the_base(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    base_before = _inv(stick)["memories/cc/memory"]["m1.json"]
+    _mem(a, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from A"}))
+    sync(a, stick, host_id="host-a", pad=False)
+    r = _stick_run(tmp_path, b, stick, _demote_on(b))
+    assert r["skipped"] == [M1]
+    assert r["skip_reasons"] == {M1: "changed since the scan (the server wrote it)"}, r
+    assert _inv(stick)["memories/cc/memory"]["m1.json"] == base_before
+
+
+@contextlib.contextmanager
+def _os_locked(path: Path):
+    """A REAL lock, not a patch: Windows opens the file with share mode 0
+    (what an exclusive open by AV or another process does); POSIX drops the
+    file to mode 000."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.HANDLE]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
+        assert h not in (None, 0, ctypes.c_void_p(-1).value), ctypes.get_last_error()
+        try:
+            yield
+        finally:
+            k32.CloseHandle(h)
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root reads a mode-000 file; no real lock to test")
+        mode = path.stat().st_mode
+        path.chmod(0)
+        try:
+            yield
+        finally:
+            path.chmod(mode)
+
+
+def test_a_really_locked_host_file_is_skipped_and_the_stick_copy_survives(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    _mem(b, "m2").write_text(json.dumps({"id": "m2"}))
+    with _os_locked(_mem(b, "m1")):
+        with pytest.raises(PermissionError):                       # the lock really bites
+            _mem(b, "m1").read_bytes()
+        r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [M1] and r.deleted_on_stick == [], r
+    assert r.skip_reasons[M1].startswith("unreadable on the host (PermissionError"), r
+    assert r.to_stick == ["memories/cc/memory/m2.json"], r         # the rest still synced
+    assert (stick / M1).is_file()
+    r2 = sync(b, stick, host_id="host-b", pad=False)                # lock gone: in sync
+    assert r2.skipped == [] and r2.deleted_on_stick == [], r2
+
+
+def _cli_sync(monkeypatch, tmp_path, report, args=("stick", "sync")):
+    import agentb.config
+    import agentb.stick
+    from click.testing import CliRunner
+    from agentb import cli
+
+    class Cfg:
+        data_dir = str(tmp_path)
+
+    monkeypatch.setattr(agentb.config, "load_config", lambda: Cfg())
+    monkeypatch.setattr(agentb.stick, "load_host_config", lambda d: {})
+    monkeypatch.setattr(agentb.stick, "sync", lambda *a, **kw: report)
+    stick_dir = tmp_path / "cortex"
+    stick_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(cli, "_stick_locate", lambda m, h: stick_dir)
+    return CliRunner().invoke(cli.main, list(args))
+
+
+@pytest.mark.parametrize("why", [
+    "unreadable on the host (PermissionError errno 13 winerror 32)",
+    "changed since the scan (the server wrote it)",
+])
+def test_stick_sync_exits_3_on_any_skip_and_names_the_reason(monkeypatch, tmp_path, why):
+    from agentb.stick import SyncReport
+    rep = SyncReport(to_stick=["memories/cc/memory/m2.json"], skipped=[M1],
+                     skip_reasons={M1: why})
+    res = _cli_sync(monkeypatch, tmp_path, rep)
+    assert res.exit_code == 3, res.output
+    flat = " ".join(res.output.split())                             # rich wraps long lines
+    assert why in flat and "PARTIAL" in flat, res.output
+
+
+def test_stick_sync_exit_control_clean_sync_exits_0(monkeypatch, tmp_path):
+    from agentb.stick import SyncReport
+    res = _cli_sync(monkeypatch, tmp_path, SyncReport(to_stick=["memories/cc/memory/m2.json"]))
+    assert res.exit_code == 0, res.output
+    assert "safe to remove" in res.output
+
+
+def test_stick_sync_dry_run_with_skips_exits_0(monkeypatch, tmp_path):
+    from agentb.stick import SyncReport
+    rep = SyncReport(skipped=[M1], skip_reasons={M1: "unreadable on the host (x)"})
+    res = _cli_sync(monkeypatch, tmp_path, rep, ("stick", "sync", "--dry-run"))
+    assert res.exit_code == 0, res.output                           # a plan is not a partial sync
+    assert "unreadable on the host (x)" in " ".join(res.output.split())

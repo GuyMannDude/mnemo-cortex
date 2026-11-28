@@ -388,10 +388,16 @@ def verify_manifest(stick: Path) -> dict:
         p = stick / rel
         if sha is None:
             bad.append(f"malformed manifest entry: {rel}")
-        elif not p.is_file():
-            bad.append(f"missing: {rel}")
-        elif sha256_file(p) != sha:
-            bad.append(f"hash mismatch: {rel}")
+            continue
+        try:
+            if not p.is_file():
+                bad.append(f"missing: {rel}")
+            elif sha256_file(p) != sha:
+                bad.append(f"hash mismatch: {rel}")
+        except OSError as e:
+            # a stick file nobody can read cannot be verified: refuse by name
+            # (a clean StickError the watcher toasts), never a traceback
+            bad.append(f"unreadable: {rel} ({_os_reason(e)})")
     if bad:
         detail = "\n  ".join(bad[:10])
         more = f"\n  … and {len(bad) - 10} more" if len(bad) > 10 else ""
@@ -405,7 +411,8 @@ def verify_manifest(stick: Path) -> dict:
     return manifest
 
 
-def repair_manifest(stick: Path) -> dict:
+def repair_manifest(stick: Path,
+                    unreadable: Optional[dict[str, str]] = None) -> dict:
     """Rebuild manifest.json from what is actually on the stick.
 
     The escape hatch after a mid-write yank or bit rot: accepts the stick's
@@ -413,7 +420,11 @@ def repair_manifest(stick: Path) -> dict:
     inventories are kept — they still describe the last state each host
     agreed on, so the next sync 3-way-merges from the repaired state
     (partially-carried files simply look like "changed on the stick").
-    Also clears a stale lock left by a killed sync."""
+    Also clears a stale lock left by a killed sync.
+
+    A file the repair cannot read keeps its old manifest entry (never
+    dropped: unread is not gone) and is named in `unreadable` when given."""
+    bad: dict[str, str] = {}
     manifest = _load_json(stick / "manifest.json", None)
     if manifest is None:
         raise StickError(f"No manifest.json at {stick} — not a Cortex Stick.")
@@ -439,12 +450,23 @@ def repair_manifest(stick: Path) -> dict:
         for tenant in sorted(d for d in mems.iterdir() if d.is_dir()):
             for sub, pat in (("memory", MEMORY_GLOB),
                              ("trajectories", TRAJECTORY_GLOB)):
-                for rel, sha in _scan(tenant / sub, pat).items():
+                miss: dict[str, str] = {}
+                for rel, sha in _scan(tenant / sub, pat, unreadable=miss).items():
                     add(f"memories/{tenant.name}/{sub}/{rel}", sha)
-    for rel, sha in _scan(stick / "pad", "**/*").items():
-        add(f"pad/{rel}", sha)
-    for rel, sha in _scan(stick / "facts", "**/*").items():
-        add(f"facts/{rel}", sha)
+                bad.update({f"memories/{tenant.name}/{sub}/{r}": w
+                            for r, w in miss.items()})
+    for prefix in ("pad", "facts"):
+        miss = {}
+        for rel, sha in _scan(stick / prefix, "**/*", unreadable=miss).items():
+            add(f"{prefix}/{rel}", sha)
+        bad.update({f"{prefix}/{r}": w for r, w in miss.items()})
+    for rel, why in bad.items():
+        if isinstance(old_files.get(rel), dict):
+            files[rel] = old_files[rel]
+        log.warning("stick repair: %s unreadable (%s); old manifest entry kept",
+                    rel, why)
+    if unreadable is not None:
+        unreadable.update(bad)
 
     manifest["files"] = files
     manifest["generation"] = manifest.get("generation", 0) + 1
@@ -573,6 +595,11 @@ class SyncReport:
     # Host file changed between the scan and its write (the server wrote
     # it): nothing done, base not advanced; the next sync resolves it.
     skipped: list[str] = field(default_factory=list)
+    # Why each skipped path was skipped (same keys as `skipped`): the server
+    # wrote it after the scan, or the file could not be read. One skip rule
+    # either way: touch neither side, carry the base and manifest entry
+    # forward unchanged. A sync with any skip is PARTIAL (CLI exit 3).
+    skip_reasons: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     brain: str = "not configured"   # no brain_repo on this host
     facts_to_host: int = 0
@@ -614,25 +641,55 @@ def _index_cleanup(report: SyncReport, *, dry_run: bool = False) -> list[str]:
     return lines
 
 
-def _scan(root: Path, pattern: str, transform=None) -> dict[str, str]:
+def _scan(root: Path, pattern: str, transform=None,
+          unreadable: Optional[dict[str, str]] = None) -> dict[str, str]:
     """relpath → sha256 for truth files directly under root (non-recursive
     for globs; pad uses rglob via pattern '**/*').
 
     transform maps file bytes before hashing: on an encrypted stick the host
     side scans with codec.encode so host and stick compare in ciphertext
-    space (SIV determinism is what makes this hash stable)."""
+    space (SIV determinism is what makes this hash stable).
+
+    unreadable: pass a dict and a file the scan cannot read (locked by
+    another process, permission denied, gone between listing and read) is
+    left OUT of the hashes and named there as relpath → reason instead of
+    raising. The caller must then treat that path as UNKNOWN, never as
+    absent: an absent host file is what a delete looks like
+    (snag-stick-watch-permissionerror-scan). Without the dict the error
+    raises, as before."""
     if not root.is_dir():
         return {}
     out = {}
     it = root.rglob(pattern[3:]) if pattern.startswith("**/") else root.glob(pattern)
     for p in sorted(it):
-        if p.is_file() and not p.name.endswith(".tmp"):
-            rel = p.relative_to(root).as_posix()
+        if p.name.endswith(".tmp"):
+            continue
+        try:
+            if not p.is_file():
+                continue
             if transform is None:
-                out[rel] = sha256_file(p)
+                sha = sha256_file(p)
             else:
-                out[rel] = hashlib.sha256(transform(p.read_bytes())).hexdigest()
+                sha = hashlib.sha256(transform(p.read_bytes())).hexdigest()
+        except OSError as e:
+            if unreadable is None:
+                raise
+            unreadable[p.relative_to(root).as_posix()] = _os_reason(e)
+            continue
+        out[p.relative_to(root).as_posix()] = sha
     return out
+
+
+def _os_reason(e: OSError) -> str:
+    """One-line reason for an unreadable file: the error class and errno
+    (plus the Windows error code, which tells a sharing lock (32) from a
+    permission denial (5))."""
+    bits = [type(e).__name__]
+    if e.errno is not None:
+        bits.append(f"errno {e.errno}")
+    if getattr(e, "winerror", None):
+        bits.append(f"winerror {e.winerror}")
+    return " ".join(bits)
 
 
 def _copy_verified(src: Path, dst: Path, expect_sha: str) -> None:
@@ -732,16 +789,29 @@ def sync_channel(
     manifest — is a CIPHERTEXT hash; the host scan encrypts in memory to
     compute its stick-shape hash (deterministic SIV makes that stable)."""
     codec = codec or PlainCodec()
+    host_bad: dict[str, str] = {}
+    stick_bad: dict[str, str] = {}
     host = _scan(ch.host_dir, ch.glob,
-                 transform=codec.encode if codec.encrypted else None)
+                 transform=codec.encode if codec.encrypted else None,
+                 unreadable=host_bad)
     stick_root = ch.stick_dir
-    stick = _scan(stick_root, ch.glob)
+    stick = _scan(stick_root, ch.glob, unreadable=stick_bad)
+    # A file either side could not read is UNKNOWN this pass, not absent:
+    # left out of the scan it would read as a delete (host_dels below, then
+    # del_stick unlinks the stick's copy). It is skipped like a file the
+    # server wrote after the scan, and the next sync sees it again.
+    unreadable = {rel: f"unreadable on the host ({why})"
+                  for rel, why in host_bad.items()}
+    for rel, why in stick_bad.items():
+        unreadable[rel] = (f"{unreadable[rel]}; on the stick ({why})"
+                           if rel in unreadable
+                           else f"unreadable on the stick ({why})")
 
     # Mass-delete guard: count deletions this sync WOULD apply on each side.
     host_dels = [r for r in base if r not in host and r in stick
-                 and stick[r] == base[r].get("sha256")]
+                 and r not in unreadable and stick[r] == base[r].get("sha256")]
     stick_dels = [r for r in base if r not in stick and r in host
-                  and host[r] == base[r].get("sha256")]
+                  and r not in unreadable and host[r] == base[r].get("sha256")]
     for side, dels, total in (("host", stick_dels, len(host)),
                               ("stick", host_dels, len(stick))):
         if (total >= MASS_DELETE_MIN_FILES and dels
@@ -754,7 +824,20 @@ def sync_channel(
             )
 
     new_base: dict[str, dict] = {}
-    for rel in sorted(set(host) | set(stick) | set(base)):
+
+    def skip(rel: str, why: str) -> None:
+        """The one skip rule: nothing done on either side, base and manifest
+        entry carried forward unchanged, the report names path + reason."""
+        key = f"{ch.name}/{rel}"
+        report.skipped.append(key)
+        report.skip_reasons[key] = why
+        if rel in base:
+            new_base[rel] = base[rel]
+
+    for rel in sorted(set(host) | set(stick) | set(base) | set(unreadable)):
+        if rel in unreadable:
+            skip(rel, unreadable[rel])
+            continue
         h, s = host.get(rel), stick.get(rel)
         b = base.get(rel, {}).get("sha256")
         ver = base.get(rel, {}).get("version", 0)
@@ -785,11 +868,9 @@ def sync_channel(
         guarded = (ch.locked and not dry_run
                    and kind in ("to_host", "to_stick", "del_host", "conflict"))
         with (_host_unchanged(hp, h, codec) if guarded
-              else contextlib.nullcontext(True)) as unchanged:
-            if not unchanged:
-                report.skipped.append(f"{ch.name}/{rel}")
-                if rel in base:
-                    new_base[rel] = base[rel]
+              else contextlib.nullcontext(None)) as why_not:
+            if why_not:
+                skip(rel, why_not)
                 continue
             if kind == "agree":
                 entry = {"sha256": h,
@@ -829,17 +910,23 @@ def sync_channel(
 @contextlib.contextmanager
 def _host_unchanged(hp: Path, expect: Optional[str], codec):
     """Hold the host file's record lock (the server's lock, cross-process)
-    and yield whether its hash still equals what the scan saw (`expect`;
-    None = absent), in the same space the scan hashed it (ciphertext on an
-    encrypted stick)."""
+    and check its hash still equals what the scan saw (`expect`; None =
+    absent), in the same space the scan hashed it (ciphertext on an
+    encrypted stick). Yields None when unchanged, else the skip reason:
+    changed since the scan, or unreadable now."""
     with locked_record(hp):
-        if not hp.is_file():
-            now = None
-        elif codec.encrypted:
-            now = hashlib.sha256(codec.encode(hp.read_bytes())).hexdigest()
-        else:
-            now = sha256_file(hp)
-        yield now == expect
+        try:
+            if not hp.is_file():
+                now = None
+            elif codec.encrypted:
+                now = hashlib.sha256(codec.encode(hp.read_bytes())).hexdigest()
+            else:
+                now = sha256_file(hp)
+        except OSError as e:
+            yield f"unreadable on the host ({_os_reason(e)})"
+            return
+        yield (None if now == expect
+               else "changed since the scan (the server wrote it)")
 
 
 def _mkey(ch: Channel, rel: str) -> str:

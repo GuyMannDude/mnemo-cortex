@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — one file the stick cannot read no longer kills the sync, and is never read as a delete (2026-11-27)
+
+**Problem.** The Cortex Stick's scan hashed every truth file and let a read
+error propagate. One memory file another process held open (IGOR-2, 09-04:
+57 watcher crashes in 20 minutes on one locked `memory/*.json`) raised
+`PermissionError` and stopped the whole sync, every other file and channel
+included. The obvious fix is wrong: a host file left out of the scan looks
+exactly like a host delete, and the 3-way merge then unlinks the stick's
+copy (`del_stick`). A locked file would delete itself off the stick.
+
+**Fix (`agentb/stick.py`, `agentb/cli.py`).**
+- `_scan(..., unreadable=dict)`: a file it cannot read (any `OSError`:
+  locked, permission denied, gone between listing and read) is left out of
+  the hashes and named with its reason (error class, errno, Windows error
+  code). Without the dict it raises, as before.
+- `sync_channel` treats an unreadable path, on either side, as **unknown**:
+  out of the mass-delete count, out of the merge, and through the lock
+  fix's skip path. One rule for both reasons: nothing done on either side,
+  base and manifest entry carried forward unchanged. A file that is really
+  gone is deleted on the next pass, when it no longer lists.
+- The record-lock re-hash catches a read error the same way.
+- `report.skip_reasons` names why each skipped path was skipped:
+  `unreadable on the host (PermissionError errno 13 winerror 32)` or
+  `changed since the scan (the server wrote it)`. The report prints it.
+- `verify_manifest` names an unreadable stick file in its refusal
+  (`unreadable: <path> (<reason>)`), not a traceback. `repair_manifest`
+  keeps the old entry of a file it cannot read (never dropped) and
+  `stick repair` lists it and exits 3.
+- `stick sync` exits **3** (PARTIAL) when the sync committed with any skip,
+  by lock or by read error; 0 clean, 1 refused or failed. A dry run exits 0.
+  A partial sync without `--eject` says `⏭ PARTIAL`, not `safe to remove`.
+- Tests join `tests/test_cross_process_lock.py` (so the Windows job runs
+  them): a locked host file's stick copy, base and manifest entry survive
+  while the rest syncs; a real OS lock (Windows share-mode 0 open, POSIX
+  mode 000); vanish-then-delete; many unreadables neither trip the guard
+  nor delete; stick-side skip and refusal; repair; exit 3 and its controls;
+  and the delete control (a real host delete still deletes on the stick).
+
 ## Unreleased — a second process can no longer lose the server's update to a memory record or trajectory file (2026-11-27)
 
 **Problem.** Item 17's record lock covered threads inside the server only.
