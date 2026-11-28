@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — a closed server lets go of its record-lock files (2026-11-27)
+
+**Problem.** The cross-process record lock (1d58995) keeps one open handle
+per lock file, `<tenant>/.record-locks/NN.lock`, for the life of the process,
+and nothing closed them. Windows refuses to rename or remove a directory
+while any file under it is open (MS-FSA 2.1.4.2, "Algorithm for Detecting If
+Open Files Exist Under a Directory"; FileRenameInformation fails with
+STATUS_ACCESS_DENIED), so after the server closed, moving its tenant dir
+failed with `WinError 32` (snag
+mnemo-record-lock-handle-blocks-data-dir-move-windows). Linux moves open
+files, so only Windows saw it.
+
+**Fix (`agentb/fsutil.py`, `agentb/server.py`).**
+- `release_lock_files(folder, for_good=False)` closes this process's lock
+  handles under `folder`. A handle a thread is waiting on or holding is never
+  closed under it: each handle counts its users, and it closes when the last
+  one is done.
+- `TenantManager.close` (the app's shutdown) releases every tenant's data dir
+  `for_good`, also when its index close raises: a lock taken there later (a
+  worker thread still finishing) closes its handle when done instead of
+  keeping it. A throwaway read tenant releases its temp dir before removing it.
+- Windows CI runs the three moved-data-dir test files and the new
+  `tests/test_record_lock_release.py` (one older Windows failure deselected
+  by name, snag mnemo-windows-ci-runs-a-subset).
+
+**What still holds while the server is LIVE.** On Windows a tenant dir
+cannot be moved, renamed or removed while the server (or `mnemo stick
+watch`, which takes the same lock) is running: the server keeps its sqlite
+indexes open, and NTFS refuses the move for any open file under the dir.
+Stop the server and the stick watcher first. Linux and macOS are unchanged.
+
+**Tests.** 12 in `tests/test_record_lock_release.py`: a closed server holds
+no lock handle under its data dir (`/proc/self/fd` agrees on Linux) and the
+dir moves; a throwaway read tenant releases its handles; release touches only
+its own folder (a sibling `ab` is not under `a`); after a release the next
+lock opens a fresh handle that still excludes a second process; a held lock
+and a waiting lock (a real second process holds it) keep their handle through
+a release and close it when done; a lock timeout lets go of its handle; a
+lock taken after the server closed lets go of its handle (and the control:
+without `for_good` it is kept); two users of one handle keep it open until
+the last is done (POSIX); a data dir named through a symlink is released by
+either name; a tenant whose index close raises still releases. The three
+red CI tests fail on 1d58995..c490539 on Windows (run 46100687330). Twelve
+mutants each turn the file red.
+
 ## Unreleased — one file the stick cannot read no longer kills the sync, and is never read as a delete (2026-11-27)
 
 **Problem.** The Cortex Stick's scan hashed every truth file and let a read
