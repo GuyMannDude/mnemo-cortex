@@ -340,6 +340,59 @@ def test_a_build_that_fails_partway_leaves_nothing(tmp_path, temp_root):
     assert not any(str(temp_root) in str(p) for p in ledger_mod._REGISTRY)
 
 
+def _closed(store) -> bool:
+    try:
+        store._conn.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("breaks", ["TrajectoryStore", "SessionManager"])
+@pytest.mark.parametrize("entry", ["peek", "get"])
+def test_a_half_built_tenant_holds_no_open_handle(tmp_path, temp_root, entry, breaks):
+    """_build fails after VecStore opened (and, for SessionManager, after
+    TrajectoryStore opened its own): every sqlite handle it opened is closed
+    before the error leaves, on the throwaway path AND a real get(). Then a
+    second try, with nothing broken, works (CC #7192)."""
+    import agentb.server as srv
+    data = tmp_path / "data"
+    opened = []
+    real_vec, real_traj = srv.VecStore, srv.TrajectoryStore
+
+    def vec(path):
+        opened.append(real_vec(path))
+        return opened[-1]
+
+    def traj(path):
+        store = real_traj(path)
+        opened.append(store.vec)
+        return store
+
+    def broken(*a, **kw):
+        raise RuntimeError("forced build failure")
+
+    tm = srv.TenantManager(_cfg(data))
+    with patch.object(srv, "VecStore", vec), patch.object(srv, "TrajectoryStore", traj), \
+            patch.object(srv, breaks, broken):
+        with pytest.raises(RuntimeError, match="forced build failure"):
+            getattr(tm, entry)(NEW)
+    assert len(opened) == (1 if breaks == "TrajectoryStore" else 2)
+    assert [_closed(s) for s in opened] == [True] * len(opened), "a half-built tenant kept a handle open"
+    assert tm.active_tenants == []
+
+    if entry == "get":
+        tenant = tm.get(NEW)                                # the retry builds the real tenant
+        assert tenant["vec"].count() == 0
+        assert tm.active_tenants == [NEW]
+        tm.close()
+    else:
+        tenant, close = tm.peek(NEW)
+        assert tenant["vec"].count() == 0
+        close()
+    assert _tree(temp_root) == []
+
+
 def test_after_a_restart_a_tenant_on_disk_reads_as_real(tmp_path, temp_root):
     """A tenant written before a restart is KNOWN by its data dir: the new
     process reads the real data, never an empty throwaway (CC #7184 mutant B)."""

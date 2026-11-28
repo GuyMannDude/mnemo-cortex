@@ -525,25 +525,35 @@ class TenantManager:
 
         vec_mode = vec_detect_mode(memory_dir)
         vec_store = VecStore(data_dir / "vec_index.sqlite")
-        if not quiet:
-            log.info(f"Tenant '{key}' vec index ({vec_mode} mode, {vec_store.count()} embedded)")
+        traj_store = None
+        try:
+            if not quiet:
+                log.info(f"Tenant '{key}' vec index ({vec_mode} mode, {vec_store.count()} embedded)")
 
-        # v4.5: trajectory learning — proven task recipes, isolated under the
-        # tenant's own trajectories/ dir (JSONL truth + its own vec index).
-        traj_store = TrajectoryStore(data_dir / "trajectories")
+            # v4.5: trajectory learning — proven task recipes, isolated under the
+            # tenant's own trajectories/ dir (JSONL truth + its own vec index).
+            traj_store = TrajectoryStore(data_dir / "trajectories")
 
-        return {
-            "data_dir": data_dir,
-            "memory_dir": memory_dir,
-            "sessions": SessionManager(data_dir, session_cfg),
-            "vec": vec_store,
-            "vec_mode": vec_mode,
-            # saves the embedder missed, re-indexed later (drain_pending)
-            "pending": PendingIndex(data_dir / "vec_pending.txt"),
-            "trajectories": traj_store,
-            # v4.25: full client transcripts (never embedded; see transcripts.py)
-            "transcripts": TranscriptArchive(data_dir, key),
-        }
+            return {
+                "data_dir": data_dir,
+                "memory_dir": memory_dir,
+                "sessions": SessionManager(data_dir, session_cfg),
+                "vec": vec_store,
+                "vec_mode": vec_mode,
+                # saves the embedder missed, re-indexed later (drain_pending)
+                "pending": PendingIndex(data_dir / "vec_pending.txt"),
+                "trajectories": traj_store,
+                # v4.25: full client transcripts (never embedded; see transcripts.py)
+                "transcripts": TranscriptArchive(data_dir, key),
+            }
+        except BaseException:
+            # a half-built tenant is never returned, so nobody else can close
+            # its sqlite handles; left open, Windows refuses peek's temp-dir
+            # delete (CI 46099077451) and get() leaks them
+            if traj_store is not None:
+                traj_store.close()
+            vec_store.close()
+            raise
 
     def has_named_tenants(self) -> bool:
         """Whether this installation contains any non-default tenant.
