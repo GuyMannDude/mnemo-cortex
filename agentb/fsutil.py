@@ -139,11 +139,19 @@ def lock_file_path(path: Path) -> Path:
 # open per write costs on Windows (antivirus), and on POSIX closing ANY fd
 # of a file would drop an fcntl lock (we use flock, which is per open file,
 # but one handle is simpler still). os.open handles are not inheritable.
+# Kept, but not forever: Windows refuses to rename or remove a folder while
+# ANY file under it is open (MS-FSA 2.1.4.2), so whoever closes a tenant calls
+# release_lock_files on its folder (snag-mnemo-record-lock-handle-blocks-data-
+# dir-move-windows). A handle a thread is using (waiting for or holding the
+# lock) is never closed under it: it closes when its last user lets go.
 _LOCK_FDS: dict[str, int] = {}
+_LOCK_USERS: dict[str, int] = {}
+_LOCK_CLOSE_WHEN_IDLE: set[str] = set()
 _LOCK_FDS_GUARD = threading.Lock()
 
 
 def _lock_fd(lock_path: Path) -> int:
+    """The lock file's handle, counted as in use until _done_with(key)."""
     key = str(lock_path)
     with _LOCK_FDS_GUARD:
         fd = _LOCK_FDS.get(key)
@@ -151,7 +159,36 @@ def _lock_fd(lock_path: Path) -> int:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(key, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
             _LOCK_FDS[key] = fd
+        _LOCK_USERS[key] = _LOCK_USERS.get(key, 0) + 1
         return fd
+
+
+def _done_with(key: str) -> None:
+    with _LOCK_FDS_GUARD:
+        users = _LOCK_USERS[key] - 1
+        if users:
+            _LOCK_USERS[key] = users
+            return
+        del _LOCK_USERS[key]
+        if key in _LOCK_CLOSE_WHEN_IDLE:
+            _LOCK_CLOSE_WHEN_IDLE.discard(key)
+            os.close(_LOCK_FDS.pop(key))
+
+
+def release_lock_files(folder: Path) -> None:
+    """Close this process's lock-file handles under `folder` (a closed
+    tenant's data dir), so Windows lets it be moved or removed. A handle in
+    use now closes the moment its last user is done. A later lock under the
+    folder opens a fresh handle."""
+    root = os.path.join(os.path.normcase(os.path.realpath(folder)), "")
+    with _LOCK_FDS_GUARD:
+        for key in list(_LOCK_FDS):
+            if not os.path.normcase(os.path.realpath(key)).startswith(root):
+                continue
+            if _LOCK_USERS.get(key):
+                _LOCK_CLOSE_WHEN_IDLE.add(key)
+            else:
+                os.close(_LOCK_FDS.pop(key))
 
 
 def _try_lock(fd: int) -> bool:
@@ -188,20 +225,24 @@ def file_lock(lock_path: Path, deadline_s: Optional[float] = None) -> Iterator[N
     naming the file: never a silent wait forever. The OS drops the lock if
     the process dies, so a crash leaves no stale lock. Callers in one process
     must serialise on a thread lock first (locked_record does)."""
-    fd = _lock_fd(Path(lock_path))
-    limit = time.monotonic() + (LOCK_DEADLINE_S if deadline_s is None else deadline_s)
-    pause = 0.005
-    while not _try_lock(fd):
-        if time.monotonic() >= limit:
-            raise RecordLockTimeout(
-                f"record lock {lock_path} held by another process for more than "
-                f"{LOCK_DEADLINE_S if deadline_s is None else deadline_s:g} s")
-        time.sleep(pause)
-        pause = min(pause * 2, 0.1)
+    lock_path = Path(lock_path)
+    fd = _lock_fd(lock_path)
     try:
-        yield
+        limit = time.monotonic() + (LOCK_DEADLINE_S if deadline_s is None else deadline_s)
+        pause = 0.005
+        while not _try_lock(fd):
+            if time.monotonic() >= limit:
+                raise RecordLockTimeout(
+                    f"record lock {lock_path} held by another process for more than "
+                    f"{LOCK_DEADLINE_S if deadline_s is None else deadline_s:g} s")
+            time.sleep(pause)
+            pause = min(pause * 2, 0.1)
+        try:
+            yield
+        finally:
+            _unlock(fd)
     finally:
-        _unlock(fd)
+        _done_with(str(lock_path))
 
 
 @contextlib.contextmanager
