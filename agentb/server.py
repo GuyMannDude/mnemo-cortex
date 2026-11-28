@@ -580,11 +580,14 @@ class TenantManager:
     def close(self) -> None:
         """Release the persistent SQLite and record-lock handles owned by
         initialized tenants (Windows refuses to move a folder with any file
-        in it open)."""
+        in it open). A lock handle in use right now closes when its user is
+        done; so does one a late worker opens after this."""
         for tenant in self._tenants.values():
-            tenant["trajectories"].close()
-            tenant["vec"].close()
-            release_lock_files(tenant["data_dir"])
+            try:
+                tenant["trajectories"].close()
+                tenant["vec"].close()
+            finally:
+                release_lock_files(tenant["data_dir"], for_good=True)
 
 
 # ─────────────────────────────────────────────

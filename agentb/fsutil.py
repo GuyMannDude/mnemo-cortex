@@ -145,9 +145,15 @@ def lock_file_path(path: Path) -> Path:
 # dir-move-windows). A handle a thread is using (waiting for or holding the
 # lock) is never closed under it: it closes when its last user lets go.
 _LOCK_FDS: dict[str, int] = {}
+_LOCK_REAL: dict[str, str] = {}          # key -> its real, case-folded path
 _LOCK_USERS: dict[str, int] = {}
 _LOCK_CLOSE_WHEN_IDLE: set[str] = set()
+_CLOSED_FOLDERS: set[str] = set()        # released for good: real path + sep
 _LOCK_FDS_GUARD = threading.Lock()
+
+
+def _folder_root(folder: Path) -> str:
+    return os.path.join(os.path.normcase(os.path.realpath(folder)), "")
 
 
 def _lock_fd(lock_path: Path) -> int:
@@ -159,8 +165,16 @@ def _lock_fd(lock_path: Path) -> int:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(key, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
             _LOCK_FDS[key] = fd
+            real = _LOCK_REAL[key] = os.path.normcase(os.path.realpath(key))
+            if any(real.startswith(root) for root in _CLOSED_FOLDERS):
+                _LOCK_CLOSE_WHEN_IDLE.add(key)   # a writer after its tenant closed
         _LOCK_USERS[key] = _LOCK_USERS.get(key, 0) + 1
         return fd
+
+
+def _close_fd(key: str) -> None:
+    del _LOCK_REAL[key]
+    os.close(_LOCK_FDS.pop(key))
 
 
 def _done_with(key: str) -> None:
@@ -172,23 +186,29 @@ def _done_with(key: str) -> None:
         del _LOCK_USERS[key]
         if key in _LOCK_CLOSE_WHEN_IDLE:
             _LOCK_CLOSE_WHEN_IDLE.discard(key)
-            os.close(_LOCK_FDS.pop(key))
+            _close_fd(key)
 
 
-def release_lock_files(folder: Path) -> None:
+def release_lock_files(folder: Path, for_good: bool = False) -> None:
     """Close this process's lock-file handles under `folder` (a closed
     tenant's data dir), so Windows lets it be moved or removed. A handle in
-    use now closes the moment its last user is done. A later lock under the
-    folder opens a fresh handle."""
-    root = os.path.join(os.path.normcase(os.path.realpath(folder)), "")
+    use now closes the moment its last user is done.
+
+    for_good: the folder's owner is closed for the life of the process, so a
+    lock taken under it LATER (a worker thread still finishing) also closes
+    its handle when done, instead of keeping it: one open per lock there
+    from then on. Without it, a later lock opens a handle that is kept."""
+    root = _folder_root(folder)
     with _LOCK_FDS_GUARD:
-        for key in list(_LOCK_FDS):
-            if not os.path.normcase(os.path.realpath(key)).startswith(root):
+        if for_good:
+            _CLOSED_FOLDERS.add(root)
+        for key, real in list(_LOCK_REAL.items()):
+            if not real.startswith(root):
                 continue
             if _LOCK_USERS.get(key):
                 _LOCK_CLOSE_WHEN_IDLE.add(key)
             else:
-                os.close(_LOCK_FDS.pop(key))
+                _close_fd(key)
 
 
 def _try_lock(fd: int) -> bool:

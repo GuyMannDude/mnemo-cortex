@@ -222,3 +222,102 @@ def test_a_lock_timeout_still_lets_go_of_the_handle(tmp_path):
     finally:
         go.touch()
         finish(other)
+
+
+# ── a writer that comes AFTER the close (review of 9803a83, finding 1) ─────
+
+def test_a_lock_taken_after_the_server_closed_lets_go_of_its_handle(tmp_path):
+    with _client(tmp_path) as client:
+        mid = _save(client, "the vault lives on the-north-box")
+    rec = tmp_path / "cody" / "memory" / f"{mid}.json"
+    assert _keys_under(tmp_path / "cody") == []
+    # a worker thread still finishing (asyncio.to_thread outlives the cancel)
+    update_record(rec, lambda old: {**old, "demoted_at": "late"})
+    assert _keys_under(tmp_path / "cody") == []
+    shutil.move(str(tmp_path / "cody"), str(tmp_path / "cody-moved"))
+
+
+def test_without_for_good_a_later_lock_keeps_its_handle(tmp_path):
+    # the control: what for_good changes (a throwaway tenant's folder is
+    # deleted right after its release, so nothing locks there later)
+    rec = _rec(tmp_path)
+    update_record(rec, lambda old: {"id": "m1"})
+    release_lock_files(tmp_path)
+    update_record(rec, lambda old: {"id": "m1", "again": True})
+    assert _keys_under(tmp_path)
+    release_lock_files(tmp_path, for_good=True)
+    assert _keys_under(tmp_path) == []
+    update_record(rec, lambda old: {"id": "m1", "late": True})
+    assert _keys_under(tmp_path) == []
+
+
+# ── two users of ONE handle (finding 2) ────────────────────────────────────
+
+@pytest.mark.skipif(os.name == "nt", reason="msvcrt.locking: one handle, one holder")
+def test_the_handle_stays_open_until_its_last_user_is_done(tmp_path):
+    # flock is per open file: a second thread on the same handle gets in at
+    # once, so two direct file_lock callers can share one key
+    lock = lock_file_path(_rec(tmp_path))
+    in1, in2, out2, out1 = (threading.Event() for _ in range(4))
+
+    def user(entered, leave):
+        with file_lock(lock, deadline_s=5):
+            entered.set()
+            leave.wait(20)
+
+    t1 = threading.Thread(target=user, args=(in1, out1))
+    t2 = threading.Thread(target=user, args=(in2, out2))
+    t1.start()
+    assert in1.wait(20)
+    t2.start()
+    assert in2.wait(20)
+    (key,) = _keys_under(tmp_path)
+    assert fsutil._LOCK_USERS[key] == 2
+    release_lock_files(tmp_path)
+    out2.set()
+    t2.join(20)
+    assert fsutil._LOCK_USERS[key] == 1
+    os.fstat(fsutil._LOCK_FDS[key])            # still open under its other user
+    out1.set()
+    t1.join(20)
+    assert _keys_under(tmp_path) == []
+
+
+# ── a data dir reached through a link (finding 3) ──────────────────────────
+
+def test_a_data_dir_named_through_a_symlink_is_released_either_way(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("no symlinks here")
+    update_record(_rec(link), lambda old: {"id": "m1"})
+    assert _keys_under(real)
+    release_lock_files(real)                     # named by its real path
+    assert _keys_under(real) == []
+    update_record(_rec(real), lambda old: {"id": "m1", "x": 1})
+    release_lock_files(link)                     # named by the link
+    assert _keys_under(real) == []
+
+
+def test_a_tenant_whose_index_close_fails_still_releases_its_lock_files(tmp_path):
+    from agentb.config import AgentBConfig
+    from agentb.server import TenantManager
+    tm = TenantManager(AgentBConfig(data_dir=str(tmp_path / "data")))
+    tenant = tm.get("cody")
+    update_record(tenant["memory_dir"] / "x.json", lambda old: {"id": "x"})
+    assert _keys_under(tenant["data_dir"])
+    real_close = tenant["vec"].close
+
+    def broken_close():
+        raise RuntimeError("index close failed")
+
+    tenant["vec"].close = broken_close
+    try:
+        with pytest.raises(RuntimeError, match="index close failed"):
+            tm.close()
+        assert _keys_under(tenant["data_dir"]) == []
+    finally:
+        real_close()
