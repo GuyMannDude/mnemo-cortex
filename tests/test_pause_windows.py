@@ -542,15 +542,17 @@ def test_epoch_milliseconds_are_not_an_event_time(client, tmp_path):
     assert clock_trusted(now * 1000) is False
 
 
-def test_old_shipper_with_a_skewed_clock_gets_no_pointer_exemption(client, tmp_path):
+def test_old_shipper_with_a_skewed_clock_gets_a_text_free_pointer(client, tmp_path):
     # Reviewer I1: no client_now, clock 10 min slow. The filter trusts its line
     # times, so the archive keeps the line (the documented old-shipper gap);
-    # the pointer, which recall serves, must not carry it.
+    # the pointer, which recall serves, must not carry it. #7142: it is
+    # saved TEXT-FREE, exempt from the gate.
     pause(client)                                          # open now
     now = time.time()
     body = upload(client, [line(now - 600, text="SKEW-SECRET")], seat=PAUSER)
-    assert body["pointer"] == "paused"
-    assert not body["manifest"]["pointer_memory_id"]
+    assert body["pointer"] == "archived"
+    assert body["manifest"]["pointer_memory_id"]
+    assert _on_disk(tmp_path, b"text withheld: line times not clock-trusted")
     assert [h for h in _on_disk(tmp_path, b"SKEW-SECRET") if "/sessions/" not in h] == []
 
 
@@ -563,28 +565,28 @@ def _outside_archive(tmp_path, needle: bytes) -> list:
     return [h for h in _on_disk(tmp_path, needle) if "/sessions/" not in h]
 
 
-def test_untrusted_line_then_trusted_growth_keeps_the_pointer_gated(client, tmp_path):
+def test_untrusted_line_then_trusted_growth_keeps_the_pointer_text_free(client, tmp_path):
     pause(client)
     now = time.time()
     first = [line(now - 600, text="SKEW-SECRET")]          # old shipper, clock 10 min slow
-    assert upload(client, first, seat=PAUSER)["pointer"] == "paused"
+    assert upload(client, first, seat=PAUSER)["pointer"] == "archived"   # text-free
     t = time.time()
     body = upload(client, first + [line(t, kind="assistant", text="ok")],
                   seat=PAUSER, client_now=iso(t))
     assert body["status"] == "replaced"
     assert body["manifest"]["lines_clock_trusted"] is False
-    assert body["pointer"] == "paused"
+    assert body["pointer"] is None                          # final: no second pointer
     assert _on_disk(tmp_path, b"SKEW-SECRET")               # presence: the archive has it
     assert _outside_archive(tmp_path, b"SKEW-SECRET") == []
 
 
-def test_untrusted_line_then_trusted_identical_resend_keeps_the_pointer_gated(client, tmp_path):
+def test_untrusted_line_then_trusted_identical_resend_keeps_the_pointer_text_free(client, tmp_path):
     pause(client)
     first = [line(time.time() - 600, text="SKEW-SECRET")]
-    upload(client, first, seat=PAUSER)
+    assert upload(client, first, seat=PAUSER)["pointer"] == "archived"   # text-free
     body = upload(client, first, seat=PAUSER, client_now=iso(time.time()))
     assert body["status"] == "unchanged"
-    assert body["pointer"] == "paused"
+    assert body["pointer"] is None                          # final: no second pointer
     assert _outside_archive(tmp_path, b"SKEW-SECRET") == []
 
 
@@ -605,13 +607,14 @@ def test_manifest_with_no_trust_marker_is_untrusted(client, tmp_path):
     mpath.write_text(json.dumps(m))
     body = upload(client, lines, seat=PAUSER, client_now=iso(time.time()))
     assert body["status"] == "unchanged"
-    assert body["pointer"] == "paused"
+    assert body["pointer"] == "archived"                    # untrusted: the text-free one
+    assert _on_disk(tmp_path, b"text withheld: line times not clock-trusted")
     # and it stays untrusted when the file grows under a trusted clock
     t = time.time()
     body = upload(client, lines + [line(t, kind="assistant")], seat=PAUSER, client_now=iso(t))
     assert body["status"] == "replaced"
     assert body["manifest"]["lines_clock_trusted"] is False
-    assert body["pointer"] == "paused"
+    assert body["pointer"] is None                          # final
 
 
 def test_ai_title_never_reaches_the_pointer_through_the_title_fallback(client, tmp_path):
@@ -664,3 +667,190 @@ def test_reprocess_keeps_the_trust_marker(tmp_path):
     mp.write_text(json.dumps(m))
     assert arch.reprocess(SID)["status"] == "reprocessed"
     assert arch.manifest(SID)["lines_clock_trusted"] is True
+
+
+# ── #7142: a session whose lines are not all clock-trusted gets a TEXT-FREE
+# pointer, exempt from the gate. Before, the gate discarded its pointer, and
+# every upload retried it for good (Winston's 755aa9c2 on the IGOR-2 host).
+
+def _pointers(tmp_path) -> list[dict]:
+    mem = Path(tmp_path) / "agents" / "cc" / "memory"
+    out = [json.loads(p.read_text(encoding="utf-8")) for p in mem.glob("*.json")]
+    return [m for m in out if "transcript-archive" in (m.get("additional_tags") or [])]
+
+
+def _leaves(obj, skip=("sessionId", "timestamp", "ts")):
+    """Every string value in a parsed line, except the keys whose values the
+    text-free pointer may carry by design (the session id; times, which it
+    re-renders)."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k not in skip:
+                yield from _leaves(v, skip)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _leaves(v, skip)
+    elif isinstance(obj, str):
+        yield obj
+
+
+def _assert_no_archived_text(tmp_path, ptr):
+    text = ptr["summary"] + "\n" + "\n".join(ptr.get("key_facts") or [])
+    lines = archived(tmp_path).decode().splitlines()
+    assert lines                                            # presence: there is an archive
+    for raw in lines:                                       # every line, not a sample
+        assert raw not in text
+        for leaf in _leaves(json.loads(raw)):
+            if len(leaf) >= 4:
+                assert leaf not in text, (leaf, text)
+
+
+def _old_shipper_lines(now):
+    title = json.dumps({"type": "ai-title", "sessionId": SID, "aiTitle": "TITLE-SECRET"})
+    cwd = json.dumps({"type": "system", "sessionId": SID, "cwd": "/srv/CWD-SECRET",
+                      "timestamp": iso(now - 900)})
+    hostile = json.dumps({"type": "system", "sessionId": SID, "content": "x",
+                          "timestamp": "TS-SECRET-not-a-time"})
+    # the hostile time sits between two lines timed outside the window, so
+    # the archive keeps it verbatim (and it sorts last: it becomes last_ts)
+    return [line(now - 1000, text="PROMPT-SECRET-OUTSIDE"), hostile, cwd, title,
+            line(now - 1, text="LIVE-SECRET")]
+
+
+def test_stuck_old_shipper_session_gets_a_text_free_pointer_on_next_upload(client, tmp_path):
+    pause(client, seat=BYSTANDER)                           # live window on the tenant, seat cc
+    now = time.time()
+    lines = _old_shipper_lines(now)
+    body = upload(client, lines, host="igor-2")             # old shipper: no client_now, no seat
+    assert body["manifest"]["lines_clock_trusted"] is False
+    # the state a pre-#7142 host left: no pointer, the gate's refusal recorded
+    mpath = Path(tmp_path) / "agents" / "cc" / "sessions" / "archive" / f"{SID}.manifest.json"
+    m = json.loads(mpath.read_text())
+    for p in _pointers(tmp_path):
+        (Path(tmp_path) / "agents" / "cc" / "memory" / f"{p['id']}.json").unlink()
+    m["pointer_memory_id"] = None
+    m["pointer_error"] = "writeback status paused"
+    mpath.write_text(json.dumps(m))
+    assert _pointers(tmp_path) == []
+
+    lines.append(line(time.time(), kind="assistant", text="more"))
+    body = upload(client, lines, host="igor-2")
+    assert body["status"] == "replaced"
+    assert body["pointer"] == "archived"
+    assert body["manifest"]["pointer_memory_id"]
+    assert "pointer_error" not in body["manifest"]
+    [ptr] = _pointers(tmp_path)
+    assert ptr["summary"].startswith(
+        "Full transcript archived (text withheld: line times not clock-trusted): "
+        f"session {SID} <")
+    assert "igor-2" in ptr["summary"] and "seat none" in ptr["summary"]
+    assert f"{body['manifest']['withheld_lines']} withheld" in ptr["summary"]
+    _assert_no_archived_text(tmp_path, ptr)
+    assert body["manifest"]["last_ts"] == "TS-SECRET-not-a-time"
+    for needle in (b"PROMPT-SECRET", b"CWD-SECRET", b"TS-SECRET"):   # outside the window
+        assert _on_disk(tmp_path, needle)                   # presence: the archive has them
+    for needle in (b"PROMPT-SECRET", b"TITLE-SECRET", b"CWD-SECRET", b"TS-SECRET",
+                   b"LIVE-SECRET"):
+        assert [h for h in _on_disk(tmp_path, needle) if "/sessions/" not in h] == [], needle
+    # final: the next upload writes no second pointer
+    body = upload(client, lines + [line(time.time(), kind="assistant", text="again")],
+                  host="igor-2", client_now=iso(time.time()))
+    assert body["pointer"] is None and len(_pointers(tmp_path)) == 1
+
+
+def test_untrusted_session_with_no_window_gets_the_text_free_pointer(client, tmp_path):
+    # No window in the way today proves nothing: the gate judges the same
+    # untrusted line times (the two skew tests below), so an untrusted
+    # session never gets the text pointer.
+    now = time.time()
+    body = upload(client, [line(now - 1000, text="Rebuild the zebra"),
+                           line(now - 5, kind="assistant", text="ok")])
+    assert body["manifest"]["lines_clock_trusted"] is False
+    [ptr] = _pointers(tmp_path)
+    assert ptr["summary"].startswith("Full transcript archived (text withheld")
+    assert _on_disk(tmp_path, b"Rebuild the zebra")                 # presence: archived
+    assert _outside_archive(tmp_path, b"Rebuild the zebra") == []
+
+
+# Reviewer pass on the #7142 build: two ways an untrusted line clock hides a
+# window from the gate. Both put window text in a text pointer on master.
+
+def test_fast_old_shipper_clock_cannot_put_window_text_in_the_pointer(client, tmp_path):
+    pause(client)
+    resume(client)
+    shift_windows(tmp_path, 7200)                         # closed 2 h ago
+    now = time.time()
+    # typed inside that window; the shipper's clock is 1.5 h fast, so the
+    # line says now-1800: outside the window, archived verbatim
+    body = upload(client, [line(now - 1800, text="FAST-SECRET")])
+    assert body["manifest"]["lines_clock_trusted"] is False
+    assert body["manifest"]["pointer_memory_id"]
+    assert _on_disk(tmp_path, b"FAST-SECRET")             # presence: the archive has it
+    assert _outside_archive(tmp_path, b"FAST-SECRET") == []
+
+
+def test_unparseable_first_ts_cannot_open_the_gate_for_window_text(client, tmp_path):
+    pause(client)
+    resume(client)
+    shift_windows(tmp_path, 7200)
+    now = time.time()
+    bang = json.dumps({"type": "system", "sessionId": SID, "content": "x", "timestamp": "!"})
+    body = upload(client, [bang, line(now - 4 * 3600, text="SLOW-SECRET")])
+    assert body["manifest"]["first_ts"] == "!"
+    assert body["manifest"]["pointer_memory_id"]
+    assert _on_disk(tmp_path, b"SLOW-SECRET")
+    assert _outside_archive(tmp_path, b"SLOW-SECRET") == []
+    [ptr] = _pointers(tmp_path)
+    assert " ? to " in ptr["summary"]                     # "!" is not a time: never printed
+
+
+def test_out_of_range_first_ts_still_gets_a_pointer(client, tmp_path):
+    pause(client)                                          # live window
+    now = time.time()
+    early = json.dumps({"type": "system", "sessionId": SID, "content": "x",
+                        "timestamp": "0001-01-01T00:00:00+05:00"})
+    body = upload(client, [early, line(now - 1000, text="hi")])
+    assert body["manifest"]["first_ts"] == "0001-01-01T00:00:00+05:00"
+    assert body["pointer"] == "archived", body["manifest"].get("pointer_error")
+    assert body["manifest"]["pointer_memory_id"]
+
+
+def test_trusted_session_still_writes_the_text_pointer_inside_a_live_window(client, tmp_path):
+    pause(client)                                           # open now, seat cc-cc3
+    now = time.time()
+    body = upload(client, [line(now - 1000, text="OUTSIDE-PROMPT"),
+                           line(now - 1, text="LIVE-SECRET")],
+                  seat=PAUSER, client_now=iso(now))
+    assert body["manifest"]["lines_clock_trusted"] is True
+    [ptr] = _pointers(tmp_path)
+    assert ptr["summary"].startswith("Full transcript archived: OUTSIDE-PROMPT")
+    assert _on_disk(tmp_path, b"LIVE-SECRET") == []
+
+
+def test_held_upload_on_the_untrusted_path_writes_no_pointer(client, tmp_path):
+    pause(client)
+    now = time.time()
+    body = upload(client, [line(now - 1, text="LIVE-SECRET")],
+                  seat=PAUSER, client_now=iso(now - 600))   # clock 10 min off: not trusted
+    assert body["status"] == "unchanged" and body["held"] is True
+    assert body["pointer"] is None
+    assert _pointers(tmp_path) == []
+
+
+def test_subagent_transcript_on_the_untrusted_path_writes_no_pointer(client, tmp_path):
+    pause(client, seat=BYSTANDER)
+    sub = f"{SID}_agent-a3181710c8d1f6bbc"
+    body = upload(client, [line(time.time() - 1000, text="sub prompt")], sid=sub)
+    assert body["manifest"]["parent_session_id"] == SID
+    assert body["manifest"]["lines_clock_trusted"] is False
+    assert body["pointer"] is None
+    assert _pointers(tmp_path) == []
+
+
+def test_pointer_time_keeps_only_a_parsed_time():
+    from agentb.transcripts import pointer_time
+    assert pointer_time("2026-11-24T00:40:38.025Z") == "2026-11-24T00:40:38.025000Z"
+    assert pointer_time("2026-11-24T00:40:38") == "2026-11-24T00:40:38Z"
+    for bad in ("TS-SECRET", "", None, 5, "!", "2026-11-24T00:40:38Z SECRET",
+                "0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"):
+        assert pointer_time(bad) is None

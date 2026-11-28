@@ -56,7 +56,7 @@ from agentb.ledger import get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.transcripts import (
     TranscriptArchive, TranscriptConflict, TranscriptCorrupt, validate_transcript_id,
-    pointer_text,
+    pointer_text, pointer_text_free, pointer_time,
     UUID_RE as TRANSCRIPT_UUID_RE,
 )
 from agentb.provenance import (
@@ -1942,8 +1942,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     async def _writeback(req: WritebackRequest, request: Request, *,
                          window_exempt: bool = False) -> WritebackResponse:
         """The save core. `window_exempt` is for the server's own transcript
-        pointer only (item 18b' F1): it is built from the FILTERED archive, so
-        it holds no in-window text. A private argument, never a request field
+        pointer only (item 18b' F1): it is built from the FILTERED archive
+        under a trusted clock, or carries no transcript text at all (#7142),
+        so it holds no in-window text. A private argument, never a request field
         or query parameter: no client can claim it."""
         _enforce_scope(request, req.agent_id)
         if bad := _bad_memory_ids(req.supersedes):
@@ -2854,28 +2855,36 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # transcript never writes one (its parent's pointer is the door).
         if (status != "held" and manifest.get("parent_session_id") is None
                 and not manifest.get("pointer_memory_id")):
+            # Every archived line filtered under a trusted clock (F2: the
+            # sticky manifest marker, set by the archive, never by the wire):
+            # the text pointer is built from an archive filtered on trusted
+            # line times. Otherwise a line from a pre-18c' shipper (no
+            # client_now) may carry a skewed time the filter missed, and the
+            # window gate cannot see that skew either (it judges the same
+            # untrusted line times), so the pointer carries NO transcript
+            # text (#7142): ids from validated upload parameters, re-rendered
+            # times, counts. Both are exempt from the window gate (F1):
+            # judged on first_ts, a pointer would be discarded for good by
+            # any window in the session's life (before #7142 an untrusted
+            # session never got one, and every upload retried it). Whichever
+            # lands is final: once pointer_memory_id is set, no upload writes
+            # another.
+            trusted = manifest.get("lines_clock_trusted") is True
             wb = WritebackRequest(
                 session_id=f"transcript-{session_id}",
                 agent_id=agent_id,
-                summary=pointer_text(manifest),
+                summary=(pointer_text(manifest) if trusted
+                         else pointer_text_free(manifest, session_id, seat)),
                 key_facts=[f"Transcript session_id {session_id}: read it with "
                            f"mnemo_transcript get, or GET /transcripts/{session_id}"],
                 source="tool", category="session_log",
                 additional_tags=["transcript-archive", f"session:{session_id}"],
-                timestamp=manifest.get("first_ts"), seat=seat,
+                timestamp=(manifest.get("first_ts") if trusted
+                           else pointer_time(manifest.get("first_ts"))),
+                seat=seat,
             )
             try:
-                # Exempt from the window gate (F1) only when EVERY archived
-                # line of the session was filtered under a trusted clock (F2:
-                # the sticky manifest marker, set by the archive, never by the
-                # wire): its text then comes from an archive filtered on
-                # trusted line times, and judged on first_ts it would be
-                # discarded for good by any window in the session's life. A
-                # line archived from a pre-18c' shipper (no client_now) may
-                # carry a skewed time the filter missed: that session's
-                # pointer stays gated.
-                saved = await _writeback(
-                    wb, request, window_exempt=manifest.get("lines_clock_trusted") is True)
+                saved = await _writeback(wb, request, window_exempt=True)
                 pointer_status = saved.status
                 if saved.memory_id:
                     manifest = await asyncio.to_thread(

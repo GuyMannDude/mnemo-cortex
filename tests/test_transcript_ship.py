@@ -288,9 +288,10 @@ def test_ship_other_holds_stay_as_before(app_client, tmp_path, capsys):
     assert "held_clock=0" in capsys.readouterr().out
 
 
-def test_old_shipper_session_stays_gated_after_new_shipper(app_client, tmp_path):
-    """A session an old (no client_now) shipper archived a line of keeps its
-    pointer gated after the new shipper re-ships it (server marker, 18b' F2)."""
+def test_old_shipper_session_stays_untrusted_after_new_shipper(app_client, tmp_path):
+    """A session an old (no client_now) shipper archived a line of stays
+    untrusted after the new shipper re-ships it (server marker, 18b' F2), so
+    its pointer stays text-free (#7142)."""
     client = app_client[0]
     root = _tree(tmp_path)
     f = root / "proj" / f"{SID}.jsonl"

@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — a session shipped without a trusted clock gets a text-free transcript pointer instead of none (2026-11-27)
+
+**Problem.** The transcript archive writes one recall "pointer" memory per
+top-level session. When any archived line of a session came from a shipper
+with no trusted clock (`lines_clock_trusted` false: a pre-18c' shipper, no
+`client_now`), the pointer was judged by the capture-window gate on
+`[first_ts - GUARD, now]`. Once any pause window falls inside that span, the
+pointer is discarded on every upload, forever: the session never gets a door
+in recall, and each upload retries it (seen on the IGOR-2 host, session
+`755aa9c2`, `REPLACED ... pointer=paused` every hour). Nothing leaked: the
+discarded pointer was never stored.
+
+**Fix (`agentb/server.py`, `agentb/transcripts.py`).**
+- Trusted clock (every archived line filtered under a trusted clock):
+  unchanged. Text pointer, exempt from the window gate.
+- Untrusted clock: a **text-free** pointer, exempt from the gate: session
+  id, host and seat (validated upload parameters), first/last time
+  re-rendered from the parsed time (a line's timestamp field can hold any
+  text; one that does not parse, or falls outside the gate's time range,
+  prints `?`), line and withheld counts, and the read-it-with line. No
+  prompt, title, cwd or file name. The window gate is not a backstop here:
+  it judges the same untrusted line times, so a fast clock, or one line with
+  a timestamp that does not parse, used to let window text into a text
+  pointer (on master too; both now have tests).
+- **Behaviour change, said out loud:** every NEW session from a shipper that
+  sends no trusted `client_now` now gets the text-free pointer, so recall
+  finds it by id, host and time, not by its first prompt. Existing pointers
+  are not touched.
+- Whichever pointer lands is final: no later upload writes another.
+- A held upload and a subagent transcript still write no pointer.
+- A session left with no pointer by an earlier build gets its text-free
+  pointer on its next upload. One that is never uploaded again keeps none
+  (no backfill in this change).
+
 ## Unreleased — the dreamer's git-sync check watches the repo root, never skips silently, and knows pinned checkouts (2026-11-24)
 
 **Problem.** Three faults in the nightly git-sync check (`MNEMO_DREAM_GIT_SYNC_CHECK`):

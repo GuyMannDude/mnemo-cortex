@@ -297,7 +297,9 @@ def _memories(tmp_path, agent="cc") -> list[dict]:
 
 def test_endpoint_upload_writes_one_pointer_and_embeds_only_it(client, tmp_path):
     raw = specimen()
-    r = client.post("/transcripts", params={"agent_id": "cc", "host": "igor-2"}, content=raw)
+    # client_now: a trusted clock, so the TEXT pointer (#7142: untrusted = text-free)
+    r = client.post("/transcripts", params={"agent_id": "cc", "host": "igor-2",
+                                            "client_now": str(time.time())}, content=raw)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "archived" and body["pointer"] == "archived"

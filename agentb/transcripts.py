@@ -1038,3 +1038,30 @@ def pointer_text(manifest: dict) -> str:
             f"<{manifest.get('user_turns', 0)} user turns, "
             f"{manifest.get('first_ts') or '?'} to {manifest.get('last_ts') or '?'}, "
             f"{manifest.get('host') or 'unknown host'}>")
+
+
+def pointer_time(value) -> Optional[str]:
+    """A line's timestamp, re-rendered from the parsed time (UTC ISO), or
+    None. first_ts / last_ts are copied from the lines as written, so they
+    can hold any text; this keeps only the time. Parsed by the capture
+    gate's to_epoch (bounded: never raises, None outside its range)."""
+    from agentb.capture_gate import to_epoch
+    t = to_epoch(value) if isinstance(value, str) else None
+    if t is None:
+        return None
+    return datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def pointer_text_free(manifest: dict, session_id: str, seat: Optional[str]) -> str:
+    """The pointer for a session whose line times are not all clock-trusted:
+    no transcript text at all (no prompt, no title, no cwd, no file name).
+    Session id (UUID-validated), host and seat (validated upload parameters);
+    the times re-rendered by pointer_time; the rest are counts. Safe to save
+    inside any pause window."""
+    return (f"Full transcript archived (text withheld: line times not clock-trusted): "
+            f"session {session_id} "
+            f"<{int(manifest.get('lines') or 0)} lines, "
+            f"{int(manifest.get('withheld_lines') or 0)} withheld, "
+            f"{pointer_time(manifest.get('first_ts')) or '?'} to "
+            f"{pointer_time(manifest.get('last_ts')) or '?'}, "
+            f"{manifest.get('host') or 'unknown host'}, seat {seat or 'none'}>")
