@@ -315,3 +315,44 @@ def test_the_temp_root_is_never_under_the_data_dir(tmp_path, monkeypatch):
     finally:
         close()
     assert not data.exists() or _tree(data) == []
+
+
+def test_a_build_that_fails_partway_leaves_nothing(tmp_path, temp_root):
+    """_build raises after VecStore opened its file: peek re-raises and its
+    except branch removes the half-built temp dir (CC #7184 mutant A)."""
+    import agentb.server as srv
+    data = tmp_path / "data"
+    ran = []
+
+    def broken_traj(path):
+        ran.append(Path(path))
+        assert any(p.name == "vec_index.sqlite" for p in Path(path).parent.iterdir())
+        raise RuntimeError("forced build failure")
+
+    tm = srv.TenantManager(_cfg(data))
+    with patch.object(srv, "TrajectoryStore", broken_traj):
+        with pytest.raises(RuntimeError, match="forced build failure"):
+            tm.peek(NEW)
+    assert ran and ran[0].is_relative_to(temp_root)        # it really ran in a throwaway
+    assert _tree(temp_root) == []
+    assert not data.exists() or _tree(data) == []
+    assert tm.active_tenants == []
+    assert not any(str(temp_root) in str(p) for p in ledger_mod._REGISTRY)
+
+
+def test_after_a_restart_a_tenant_on_disk_reads_as_real(tmp_path, temp_root):
+    """A tenant written before a restart is KNOWN by its data dir: the new
+    process reads the real data, never an empty throwaway (CC #7184 mutant B)."""
+    data = tmp_path / "data"
+    with _client(_cfg(data)) as c:
+        r = c.post("/writeback", json={
+            "session_id": "s-1", "agent_id": NEW,
+            "summary": "the bus path points at the wrong database",
+            "key_facts": ["bus db moved"]})
+        assert r.status_code == 200, r.text
+    with _client(_cfg(data)) as c:                          # a restart: new app, same dir
+        assert NEW not in c.app.state.tenants.active_tenants
+        assert c.get("/vec/status", params={"agent_id": NEW}).json()["memory_entries_on_disk"] == 1
+        ctx = c.post("/context", json={"prompt": "bus database path", "agent_id": NEW}).json()
+        assert any("wrong database" in ch["content"] for ch in ctx["chunks"]), ctx
+    assert _tree(temp_root) == []
