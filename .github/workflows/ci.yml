@@ -67,6 +67,16 @@ jobs:
       - name: Run read-never-creates-tenant tests
         if: success() || failure()
         run: pytest tests/test_read_never_creates_tenant.py -v --timeout=180 --timeout-method=thread
+      # A closed server holds no lock-file handle, so its tenant dir can move
+      # (snag-mnemo-record-lock-handle-blocks-data-dir-move-windows). The one
+      # deselected test fails on Windows for an older reason
+      # (snag-mnemo-windows-ci-runs-a-subset), not this one.
+      - name: Run moved-data-dir tests
+        if: success() || failure()
+        run: >-
+          pytest tests/test_recall_drops_orphans.py tests/test_vec_orphan_count.py
+          tests/test_vec_orphan_prune.py -v --timeout=180 --timeout-method=thread
+          --deselect tests/test_vec_orphan_count.py::test_count_orphans_checks_each_miss_against_the_disk
 
   # Every MCP client talks to Mnemo through this bridge. Its unit tests need no
   # Mnemo server; test.js is the live integration test and is NOT run here
