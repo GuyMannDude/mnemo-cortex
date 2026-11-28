@@ -34,7 +34,7 @@ from typing import Awaitable, Callable, Iterable, Optional
 import httpx
 import sqlite_vec
 
-from agentb.fsutil import atomic_write_text, record_lock
+from agentb.fsutil import atomic_write_text, locked_record
 
 log = logging.getLogger("agentb.vec")
 
@@ -1178,7 +1178,7 @@ def write_unless_superseded(path: Path, entry: dict) -> Optional[str]:
     the record's lock. Returns the record's superseded_by (nothing written)
     or None (written). Unreadable reads as live and is overwritten, as the
     item 16 check did. Blocking: call it from a worker."""
-    with record_lock(path):
+    with locked_record(path):
         prior = superseded_by(path)
         if prior:
             return prior

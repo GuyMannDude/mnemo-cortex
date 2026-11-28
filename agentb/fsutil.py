@@ -1,9 +1,19 @@
 """Shared filesystem helpers."""
+import contextlib
+import errno
 import json
 import os
+import sys
 import threading
+import time
+import zlib
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 
 def _fsync_path(p: Path) -> None:
@@ -71,28 +81,138 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
 # archived sessions, demote, supersede marks, lens markers, reclassify, the
 # proposal applier) reads, changes and writes it under the record's lock, so
 # no writer can land between another's read and write. A FIXED set of 64
-# locks (no growth, nothing to clean up); a record picks one by its canonical
-# key, so two spellings of one file share a lock. Two records sharing a
-# stripe cost a wait, never a wrong answer. Another PROCESS (the stick, the
-# migrate CLI) is not covered: snag-mnemo-cross-process-record-writers.
-_RECORD_STRIPES = tuple(threading.Lock() for _ in range(64))
+# stripes (no growth, nothing to clean up); a record picks one by a STABLE
+# hash of its canonical key (crc32: Python's hash() is salted per process),
+# so two spellings of one file, and two processes, pick the same stripe. Two
+# records sharing a stripe cost a wait, never a wrong answer.
+#
+# Cross-process (snag-mnemo-cross-process-record-writers): each stripe also
+# has a lock FILE, <tenant>/.record-locks/NN.lock (beside memory/ and
+# trajectories/, inside neither, so no record or channel glob sees it),
+# locked with flock (POSIX) or msvcrt.locking (Windows) for the time of the
+# read-change-write. The stick and the migrate CLI take the same lock, so a
+# second process can no longer land between the server's read and write, or
+# the server between theirs. Order is always thread stripe, then file lock.
+_STRIPES = 64
+_RECORD_STRIPES = tuple(threading.Lock() for _ in range(_STRIPES))
 _REAL_DIRS: dict[str, str] = {}
+LOCK_DIRNAME = ".record-locks"
+LOCK_DEADLINE_S = 30.0
+
+
+class RecordLockTimeout(OSError):
+    """Another process held a record's lock file past the deadline."""
+
+
+def _real_dir(parent: str) -> str:
+    real = _REAL_DIRS.get(parent)
+    if real is None:
+        real = _REAL_DIRS.setdefault(parent, os.path.normcase(os.path.realpath(parent)))
+    return real
 
 
 def _record_key(path: Path) -> str:
     """The record's folder resolved once (symlinks, '..'; case folded on
     Windows only: macOS keeps case, so two casings there are two keys) plus
     its file name."""
-    parent = str(path.parent)
-    real = _REAL_DIRS.get(parent)
-    if real is None:
-        real = _REAL_DIRS.setdefault(parent, os.path.normcase(os.path.realpath(parent)))
-    return os.path.join(real, os.path.normcase(path.name))
+    return os.path.join(_real_dir(str(path.parent)), os.path.normcase(path.name))
+
+
+def _stripe(path: Path) -> int:
+    return zlib.crc32(_record_key(Path(path)).encode("utf-8")) % _STRIPES
 
 
 def record_lock(path: Path) -> threading.Lock:
-    """The lock guarding the memory record at `path`. Not reentrant."""
-    return _RECORD_STRIPES[hash(_record_key(Path(path))) % len(_RECORD_STRIPES)]
+    """The in-process lock guarding the memory record at `path` (the thread
+    half of locked_record). Not reentrant."""
+    return _RECORD_STRIPES[_stripe(path)]
+
+
+def lock_file_path(path: Path) -> Path:
+    """The stripe's lock file for the record at `path`: in the record's
+    tenant folder (its folder's parent, resolved), never beside the record."""
+    real_parent = Path(_real_dir(str(Path(path).parent)))
+    return real_parent.parent / LOCK_DIRNAME / f"{_stripe(path):02d}.lock"
+
+
+# One open handle per lock file per process, opened once and kept: a fresh
+# open per write costs on Windows (antivirus), and on POSIX closing ANY fd
+# of a file would drop an fcntl lock (we use flock, which is per open file,
+# but one handle is simpler still). os.open handles are not inheritable.
+_LOCK_FDS: dict[str, int] = {}
+_LOCK_FDS_GUARD = threading.Lock()
+
+
+def _lock_fd(lock_path: Path) -> int:
+    key = str(lock_path)
+    with _LOCK_FDS_GUARD:
+        fd = _LOCK_FDS.get(key)
+        if fd is None:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(key, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+            _LOCK_FDS[key] = fd
+        return fd
+
+
+def _try_lock(fd: int) -> bool:
+    if sys.platform == "win32":
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as e:
+            # held by another process: EACCES (or EDEADLOCK); anything else
+            # (a bad handle) is a real error and stays loud
+            if e.errno in (errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK)):
+                return False
+            raise
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if sys.platform == "win32":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def file_lock(lock_path: Path, deadline_s: Optional[float] = None) -> Iterator[None]:
+    """Hold an exclusive OS lock on `lock_path` (created if missing).
+    Non-blocking tries in a loop until the deadline, then RecordLockTimeout
+    naming the file: never a silent wait forever. The OS drops the lock if
+    the process dies, so a crash leaves no stale lock. Callers in one process
+    must serialise on a thread lock first (locked_record does)."""
+    fd = _lock_fd(Path(lock_path))
+    limit = time.monotonic() + (LOCK_DEADLINE_S if deadline_s is None else deadline_s)
+    pause = 0.005
+    while not _try_lock(fd):
+        if time.monotonic() >= limit:
+            raise RecordLockTimeout(
+                f"record lock {lock_path} held by another process for more than "
+                f"{LOCK_DEADLINE_S if deadline_s is None else deadline_s:g} s")
+        time.sleep(pause)
+        pause = min(pause * 2, 0.1)
+    try:
+        yield
+    finally:
+        _unlock(fd)
+
+
+@contextlib.contextmanager
+def locked_record(path: Path) -> Iterator[None]:
+    """The record's full lock: its thread stripe, then its stripe's lock
+    file. Not reentrant: never nest two (a second stripe while holding one
+    could deadlock against another process taking them the other way).
+    Blocking: call it from a worker, never on the loop."""
+    with record_lock(path):
+        with file_lock(lock_file_path(path)):
+            yield
 
 
 def update_record(path: Path, mutate: Callable[[Optional[dict]], Optional[dict]],
@@ -111,7 +231,7 @@ def update_record(path: Path, mutate: Callable[[Optional[dict]], Optional[dict]]
 
     Blocking: call it from a worker (asyncio.to_thread), never on the loop."""
     path = Path(path)
-    with record_lock(path):
+    with locked_record(path):
         try:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:

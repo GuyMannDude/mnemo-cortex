@@ -26,6 +26,7 @@ own under its agent data dir.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from agentb.vec import VecStore, MAX_EMBED_INPUT_CHARS
+from agentb.fsutil import locked_record
 
 log = logging.getLogger("agentb.trajectory")
 
@@ -122,23 +124,7 @@ class TrajectoryStore:
 
     # ── Write ──
 
-    def save(
-        self,
-        *,
-        agent_id: Optional[str],
-        task_type: str,
-        task_description: str,
-        steps: list[dict],
-        outcome: str,
-        rating: int,
-        embedding: list[float],
-        token_cost: Optional[int] = None,
-        model: Optional[str] = None,
-        duration_seconds: Optional[int] = None,
-        derived_from: Optional[str] = None,
-        source: str = "agent",
-        evidence_source: Optional[str] = None,
-    ) -> dict:
+    def save(self, *, embedding: list[float], **fields) -> dict:
         """Append a trajectory to its JSONL and index its embedding.
 
         JSONL append happens FIRST and is the durable record; the vec upsert is
@@ -147,12 +133,40 @@ class TrajectoryStore:
         reindex/backfill path for trajectories. The caller (endpoint) surfaces
         that failure rather than returning a false success (Vapor Truth). A
         reindex that re-embeds orphaned JSONL rows is a Phase-2 follow-up.
-        Returns the stored record.
+        Returns the stored record. Blocking (the append waits on the file's
+        record lock): the server uses save_off_loop.
         """
-        traj_id = uuid.uuid4().hex
+        record = self._record(**fields)
+        self._append(record)
+        return self._index(record, embedding)
+
+    async def save_off_loop(self, *, embedding: list[float], **fields) -> dict:
+        """save() for the event loop: the locked append runs in a worker (a
+        Cortex Stick sync may hold the file's lock), the vec upsert stays on
+        the loop (the store has one shared connection)."""
+        record = self._record(**fields)
+        await asyncio.to_thread(self._append, record)
+        return self._index(record, embedding)
+
+    def _record(
+        self,
+        *,
+        agent_id: Optional[str],
+        task_type: str,
+        task_description: str,
+        steps: list[dict],
+        outcome: str,
+        rating: int,
+        token_cost: Optional[int] = None,
+        model: Optional[str] = None,
+        duration_seconds: Optional[int] = None,
+        derived_from: Optional[str] = None,
+        source: str = "agent",
+        evidence_source: Optional[str] = None,
+    ) -> dict:
         ts = time.time()
-        record = {
-            "id": traj_id,
+        return {
+            "id": uuid.uuid4().hex,
             "agent_id": agent_id,
             "task_type": task_type,
             "task_description": task_description,
@@ -173,10 +187,19 @@ class TrajectoryStore:
             "created_at": ts,
         }
 
-        path = self._jsonl_path(task_type)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    def _append(self, record: dict) -> None:
+        """Under the file's record lock: the Cortex Stick rewrites this file
+        (pull, union-merge) from its own process, and an append landing
+        between its read and its replace would be lost. Blocking: it waits
+        for as long as a stick write of this file takes (to the deadline)."""
+        path = self._jsonl_path(record["task_type"])
+        with locked_record(path):
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
+    def _index(self, record: dict, embedding: list[float]) -> dict:
+        task_type = record["task_type"]
+        path = self._jsonl_path(task_type)
         # Invalidate this file's parsed cache. The cache keys on st_mtime, but a
         # second save landing in the same coarse-mtime tick would leave the
         # cached record set stale — recall would then silently drop the new
@@ -187,16 +210,16 @@ class TrajectoryStore:
         # category = the ORIGINAL task_type, so include_category filtering in
         # recall is exact (the filename is sanitized; the category is not).
         self.vec.upsert(
-            traj_id,
-            embedding_text(task_description, outcome, steps),
+            record["id"],
+            embedding_text(record["task_description"], record["outcome"], record["steps"]),
             embedding,
             source_file=path.as_posix(),
-            created_at=ts,
+            created_at=record["created_at"],
             category=task_type,
         )
         log.info(
-            f"Trajectory saved: {traj_id} (agent={agent_id or 'default'}, "
-            f"task_type={task_type!r}, rating={rating})"
+            f"Trajectory saved: {record['id']} (agent={record['agent_id'] or 'default'}, "
+            f"task_type={task_type!r}, rating={record['rating']})"
         )
         return record
 

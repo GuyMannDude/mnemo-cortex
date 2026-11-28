@@ -1618,7 +1618,10 @@ def _stick_report(report) -> None:
         console.print(f"  [yellow]⚠ {w}[/]")
     for c in report.conflicts:
         console.print(f"  [bold red]⚡ CONFLICT[/] {c}")
-    if not report.changed and not report.warnings:
+    for k in report.skipped:
+        console.print(f"  [yellow]⏭ skipped[/] {k}: the host file changed during this sync "
+                      "(the server wrote it); nothing done, the next sync carries it")
+    if not report.changed and not report.warnings and not report.skipped:
         console.print("  [dim]nothing to carry — already in sync[/]")
 
 
@@ -2003,6 +2006,10 @@ def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
             console.print("  [bold yellow]⚠ conflicts preserved on the stick[/] — "
                           "left mounted, see state/conflicts/ before pulling")
             title = "Cortex Stick — synced, CONFLICTS: left mounted, see state/conflicts/"
+        elif eject and report.skipped:
+            console.print("  [bold yellow]⏭ files skipped[/] (the server wrote them during "
+                          "the sync) — left mounted: sync again before pulling")
+            title = "Cortex Stick — synced, FILES SKIPPED: left mounted, sync again"
         elif eject:
             console.print("  [green]✓ verified[/] (hashes readback-verified) — ejecting…")
             eject_ok, eject_detail = _eject_stick(
@@ -2028,6 +2035,8 @@ def _stick_run_sync(mount, tenants, brain, force, dry_run, notify=False,
                 bits.append(f"brain {report.brain}")
             if report.conflicts:
                 bits.append(f"⚠ {len(report.conflicts)} conflict(s)")
+            if report.skipped:
+                bits.append(f"⏭ {len(report.skipped)} skipped, sync again")
             if eject_ok is False:
                 bits.append(f"eject: {eject_detail[:120]}")
             _notify_desktop(title, "; ".join(bits))

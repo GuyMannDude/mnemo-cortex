@@ -58,6 +58,10 @@ jobs:
           pip install -e ".[dev]"
       - name: Run git-sync tests
         run: pytest tests/test_dream_git_sync.py -v --timeout=180 --timeout-method=thread
+      # msvcrt.locking, two real processes (snag-mnemo-cross-process-record-writers).
+      - name: Run cross-process record lock tests
+        if: success() || failure()
+        run: pytest tests/test_cross_process_lock.py -v --timeout=180 --timeout-method=thread
 
   # Every MCP client talks to Mnemo through this bridge. Its unit tests need no
   # Mnemo server; test.js is the live integration test and is NOT run here

@@ -51,7 +51,7 @@ from agentb.config import (
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding, probe_embedding_dim
 from agentb.cache import l3_scan, ContextChunk
-from agentb.fsutil import update_record
+from agentb.fsutil import RecordLockTimeout, update_record
 from agentb.ledger import get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.transcripts import (
@@ -2439,7 +2439,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             raise HTTPException(503, f"Embedder unavailable, trajectory not saved: {e}")
 
         try:
-            record = traj.save(
+            record = await traj.save_off_loop(
                 agent_id=req.agent_id,
                 task_type=req.task_type,
                 task_description=task_description,
@@ -2457,6 +2457,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         except VecDimMismatch as e:
             log.error(f"Trajectory vec dim mismatch (agent={req.agent_id}): {e}")
             raise HTTPException(500, f"vec index dim mismatch: {e}")
+        except RecordLockTimeout as e:
+            log.error(f"Trajectory not saved (agent={req.agent_id}): {e}")
+            raise HTTPException(503, f"trajectory file locked by another process "
+                                     f"(a Cortex Stick sync?), not saved: {e}")
 
         return TrajectorySaveResponse(
             status="saved",

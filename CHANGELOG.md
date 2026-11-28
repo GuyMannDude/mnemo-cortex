@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — a second process can no longer lose the server's update to a memory record or trajectory file (2026-11-27)
+
+**Problem.** Item 17's record lock covered threads inside the server only.
+The Cortex Stick sync and `mnemo migrate reclassify` write the same
+`memory/<id>.json` records from their own process, and the stick also
+rewrites trajectory JSONLs. A demote (or any change) the running server made
+between that process's read and its write was overwritten. The stick's
+one-sided pull and one-sided delete were the worst of it: they overwrote or
+DELETED the host file with no re-check and no copy in `state/conflicts/`. A
+server trajectory append landing during a stick rewrite was lost the same
+way. And the 64 lock stripes were picked with Python's `hash()`, which is
+salted per process, so two processes would not even agree on a stripe.
+
+**Fix (`agentb/fsutil.py`, `agentb/stick.py`, `agentb/trajectory.py`, `agentb/vec.py`, `agentb/cli.py`).**
+- Stripes are picked by `zlib.crc32` of the record's canonical key: the same
+  in every process, for the thread stripes and the lock files alike.
+- `locked_record(path)`: the record's thread stripe, then its stripe's lock
+  file `<tenant>/.record-locks/NN.lock` (beside `memory/` and
+  `trajectories/`, inside neither), locked with `flock` (POSIX) or
+  `msvcrt.locking` (Windows). Non-blocking tries until a 30 s deadline, then
+  `RecordLockTimeout` naming the file. One handle per lock file per process,
+  not inherited by children; the OS drops the lock if the process dies.
+- `update_record` and the fixed-id writers' `write_unless_superseded` take
+  it, so every in-server record writer and `migrate reclassify` (which goes
+  through `update_record`) are covered with no change of their own.
+- The server's trajectory append takes the same lock on its JSONL, in a
+  worker thread (`save_off_loop`), so a stick write of that file never stalls
+  the event loop; the vec upsert stays on the loop. A lock still held at the
+  deadline answers 503, trajectory not saved.
+- The stick, on the memory and trajectory channels, takes the lock for every
+  host-side write or copy (one-sided pull, one-sided push, one-sided delete,
+  every conflict branch) and re-hashes the host file first. If it changed since the scan, the file
+  is **skipped**: nothing written or deleted, base not advanced, listed as
+  `⏭ skipped` in the report. The next sync sees a both-edit and resolves it
+  with the loser saved to `state/conflicts/`. A skipped delete never unlinks.
+  A sync with skips is not ejected (`--eject`), and its desktop note says
+  `⏭ N skipped, sync again`. Before, a server write during a push made the
+  readback check fail mid-pass and tore the stick's generation.
+- The Windows CI job runs the new two-process tests.
+
 ## Unreleased — a session shipped without a trusted clock gets a text-free transcript pointer instead of none (2026-11-27)
 
 **Problem.** The transcript archive writes one recall "pointer" memory per

@@ -23,6 +23,7 @@ changes, works against any existing install.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -37,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from agentb.fsutil import atomic_write_bytes, atomic_write_text
+from agentb.fsutil import atomic_write_bytes, atomic_write_text, locked_record
 
 log = logging.getLogger("agentb.stick")
 
@@ -555,6 +556,10 @@ class Channel:
     stick_dir: Path      # absolute, under the stick
     glob: str
     unit: str = "file"   # "file" | "jsonl"
+    # The running server writes this channel's host files (memory records,
+    # trajectory appends): every host-side write takes the record lock and
+    # re-hashes the host file first (snag-mnemo-cross-process-record-writers).
+    locked: bool = False
 
 
 @dataclass
@@ -565,6 +570,9 @@ class SyncReport:
     deleted_on_host: list[str] = field(default_factory=list)
     merged_jsonl: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
+    # Host file changed between the scan and its write (the server wrote
+    # it): nothing done, base not advanced; the next sync resolves it.
+    skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     brain: str = "not configured"   # no brain_repo on this host
     facts_to_host: int = 0
@@ -753,34 +761,62 @@ def sync_channel(
         hp, sp = ch.host_dir / rel, stick_root / rel
         entry = None
 
-        if h and s and h == s:                              # agree
-            entry = {"sha256": h,
-                     "version": manifest_files.get(_mkey(ch, rel), {}).get(
-                         "version", max(ver, 1))}
-        elif h == b and s and s != b:                       # stick changed → host
-            if not dry_run:
-                _transfer(sp, hp, s, codec, encrypting=False)
-            report.to_host.append(f"{ch.name}/{rel}")
-            entry = {"sha256": s,
-                     "version": manifest_files.get(_mkey(ch, rel), {}).get("version", ver + 1)}
-        elif s == b and h and h != b:                       # host changed → stick
-            if not dry_run:
-                _transfer(hp, sp, h, codec, encrypting=True)
-            report.to_stick.append(f"{ch.name}/{rel}")
-            entry = {"sha256": h, "version": ver + 1}
-        elif h is None and s == b and b is not None:        # host deleted → stick
-            if not dry_run:
-                sp.unlink(missing_ok=True)
-            report.deleted_on_stick.append(f"{ch.name}/{rel}")
-        elif s is None and h == b and b is not None:        # stick deleted → host
-            if not dry_run:
-                hp.unlink(missing_ok=True)
-            report.deleted_on_host.append(f"{ch.name}/{rel}")
-        elif h is None and s is None:                       # gone both sides
-            pass
-        else:                                               # CONFLICT
-            entry = _resolve_conflict(ch, rel, h, s, ver, manifest_files,
-                                      report, codec=codec, dry_run=dry_run)
+        if h and s and h == s:
+            kind = "agree"
+        elif h == b and s and s != b:
+            kind = "to_host"
+        elif s == b and h and h != b:
+            kind = "to_stick"
+        elif h is None and s == b and b is not None:
+            kind = "del_stick"
+        elif s is None and h == b and b is not None:
+            kind = "del_host"
+        elif h is None and s is None:
+            kind = "gone"
+        else:
+            kind = "conflict"
+
+        # Every branch that writes, deletes or copies FROM the host file runs
+        # under the record lock, after checking the host file is still what
+        # the scan saw. Changed = the server wrote it since: skip, keep the
+        # old base, touch neither side; the next sync sees it and resolves
+        # it. (to_stick too: a copy of a file that changed mid-sync fails its
+        # readback check and would abort the pass, tearing the generation.)
+        guarded = (ch.locked and not dry_run
+                   and kind in ("to_host", "to_stick", "del_host", "conflict"))
+        with (_host_unchanged(hp, h, codec) if guarded
+              else contextlib.nullcontext(True)) as unchanged:
+            if not unchanged:
+                report.skipped.append(f"{ch.name}/{rel}")
+                if rel in base:
+                    new_base[rel] = base[rel]
+                continue
+            if kind == "agree":
+                entry = {"sha256": h,
+                         "version": manifest_files.get(_mkey(ch, rel), {}).get(
+                             "version", max(ver, 1))}
+            elif kind == "to_host":                         # stick changed → host
+                if not dry_run:
+                    _transfer(sp, hp, s, codec, encrypting=False)
+                report.to_host.append(f"{ch.name}/{rel}")
+                entry = {"sha256": s,
+                         "version": manifest_files.get(_mkey(ch, rel), {}).get("version", ver + 1)}
+            elif kind == "to_stick":                        # host changed → stick
+                if not dry_run:
+                    _transfer(hp, sp, h, codec, encrypting=True)
+                report.to_stick.append(f"{ch.name}/{rel}")
+                entry = {"sha256": h, "version": ver + 1}
+            elif kind == "del_stick":                       # host deleted → stick
+                if not dry_run:
+                    sp.unlink(missing_ok=True)
+                report.deleted_on_stick.append(f"{ch.name}/{rel}")
+            elif kind == "del_host":                        # stick deleted → host
+                if not dry_run:
+                    hp.unlink(missing_ok=True)
+                report.deleted_on_host.append(f"{ch.name}/{rel}")
+            elif kind == "conflict":
+                entry = _resolve_conflict(ch, rel, h, s, ver, manifest_files,
+                                          report, codec=codec, dry_run=dry_run)
 
         if entry:
             new_base[rel] = entry
@@ -788,6 +824,22 @@ def sync_channel(
         else:
             manifest_files.pop(_mkey(ch, rel), None)
     return new_base
+
+
+@contextlib.contextmanager
+def _host_unchanged(hp: Path, expect: Optional[str], codec):
+    """Hold the host file's record lock (the server's lock, cross-process)
+    and yield whether its hash still equals what the scan saw (`expect`;
+    None = absent), in the same space the scan hashed it (ciphertext on an
+    encrypted stick)."""
+    with locked_record(hp):
+        if not hp.is_file():
+            now = None
+        elif codec.encrypted:
+            now = hashlib.sha256(codec.encode(hp.read_bytes())).hexdigest()
+        else:
+            now = sha256_file(hp)
+        yield now == expect
 
 
 def _mkey(ch: Channel, rel: str) -> str:
@@ -1113,6 +1165,7 @@ def build_channels(data_dir: Path, stick: Path, tenants: list[str],
             host_dir=data_dir / "agents" / t / "memory",
             stick_dir=stick / "memories" / t / "memory",
             glob=MEMORY_GLOB,
+            locked=True,
         ))
         chans.append(Channel(
             name=f"memories/{t}/trajectories",
@@ -1120,6 +1173,7 @@ def build_channels(data_dir: Path, stick: Path, tenants: list[str],
             stick_dir=stick / "memories" / t / "trajectories",
             glob=TRAJECTORY_GLOB,
             unit="jsonl",
+            locked=True,
         ))
     if pad:
         chans.append(Channel(
