@@ -53,7 +53,7 @@ from agentb.config import (
 )
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding, probe_embedding_dim
 from agentb.cache import l3_scan, ContextChunk
-from agentb.fsutil import RecordLockTimeout, update_record
+from agentb.fsutil import RecordLockTimeout, release_lock_files, update_record
 from agentb.ledger import forget_ledger, get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.transcripts import (
@@ -510,6 +510,7 @@ class TenantManager:
             tenant["trajectories"].close()
             tenant["vec"].close()
             forget_ledger(tenant["memory_dir"])
+            release_lock_files(tmp)
             try:
                 shutil.rmtree(tmp)
             except OSError as e:
@@ -577,10 +578,13 @@ class TenantManager:
         return list(self._tenants.keys())
 
     def close(self) -> None:
-        """Release persistent SQLite handles owned by initialized tenants."""
+        """Release the persistent SQLite and record-lock handles owned by
+        initialized tenants (Windows refuses to move a folder with any file
+        in it open)."""
         for tenant in self._tenants.values():
             tenant["trajectories"].close()
             tenant["vec"].close()
+            release_lock_files(tenant["data_dir"])
 
 
 # ─────────────────────────────────────────────
