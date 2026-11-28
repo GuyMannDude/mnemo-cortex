@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased — a read naming an unknown agent creates nothing on disk (2026-11-27)
+
+**Problem.** Every endpoint, reads included, took its tenant from
+`TenantManager.get`, which is get-or-create: one `GET /transcripts?agent_id=x`
+for a name the server had never seen made `agents/x/` with its `memory/`,
+`sessions/hot|warm|cold/`, `vec_index.sqlite` and `trajectories/`, and put
+`x` in the registry (and in `/health` `agents_configured`) for the life of
+the process. A probe by name, a typo, or a client asking "is this agent
+here?" left an empty tenant behind (snag mnemo-read-creates-tenant).
+
+**Fix (`agentb/server.py`, `agentb/ledger.py`).**
+- `TenantManager.peek(agent_id)` serves the 11 read endpoints (`/context`,
+  `/preflight`, `/trajectory/recall`, `/sessions`,
+  `/sessions/{id}/transcript`, `/sessions/recent`, `GET /transcripts`,
+  `/transcripts/{id}`, `/transcripts/{id}/turns`, `/vec/status`,
+  `/ledger/verify`). A KNOWN tenant (cached, in `config.agents`, or its data
+  dir already on disk) is the real one, as before. An unknown one is a
+  throwaway: built by the same code as a real tenant (`_build`), in a fresh
+  `mnemo-peek-*` dir under the system temp dir (never the data dir), never
+  registered, never shared, and closed and removed when the request ends,
+  also when it raises. The answer is today's empty answer by construction.
+- `/vec/status` `db_path` and `/ledger/verify` `ledger` name the path the
+  real tenant WOULD have, so the temp dir never leaves the server.
+- Writes keep get-or-create: a write after an unknown read lands in a real
+  tenant. `/chat` (it can save) keeps get-or-create for its recall leg too.
+- `agent_id` validation is unchanged and runs before the lookup.
+
+**Behaviour change.** The reply to an unknown-id read is unchanged. Across
+requests: an unknown agent's reads no longer create its folder (it appears
+on its first write), so a probe by name no longer adds the name to `/health`
+`agents_configured`, and no longer turns a single-tenant install into a
+multi-tenant one (where a later read without `agent_id` answered 400).
+Cost: each unknown-id read now builds and removes a temp tenant (two small
+sqlite files); measured on IGOR, one `/context` 166 ms on ext4 (master's
+first call: 193 ms, paid once) and 3.9 ms on tmpfs.
+
 ## Unreleased — a second process can no longer lose the server's update to a memory record or trajectory file (2026-11-27)
 
 **Problem.** Item 17's record lock covered threads inside the server only.

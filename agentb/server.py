@@ -28,6 +28,8 @@ import logging
 import asyncio
 from functools import partial
 import statistics
+import shutil
+import tempfile
 import uuid
 import zlib
 import httpx
@@ -35,10 +37,10 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Literal, Optional, Union
+from typing import Callable, Literal, Optional, Union
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -52,7 +54,7 @@ from agentb.config import (
 from agentb.providers import create_resilient_reasoning, create_resilient_embedding, probe_embedding_dim
 from agentb.cache import l3_scan, ContextChunk
 from agentb.fsutil import RecordLockTimeout, update_record
-from agentb.ledger import get_ledger, LedgerBroken
+from agentb.ledger import forget_ledger, get_ledger, LedgerBroken
 from agentb.sessions import SessionManager, SessionConfig
 from agentb.transcripts import (
     TranscriptArchive, TranscriptConflict, TranscriptCorrupt, validate_transcript_id,
@@ -464,25 +466,73 @@ class TenantManager:
         if key in self._tenants:
             return self._tenants[key]
 
-        data_dir = get_agent_data_dir(self.config, agent_id)
+        tenant = self._build(key, get_agent_data_dir(self.config, agent_id))
+        self._tenants[key] = tenant
+        log.info(f"Tenant '{key}' initialized at {tenant['data_dir']}")
+        return tenant
+
+    def is_known(self, agent_id: Optional[str]) -> bool:
+        """Cached, configured, or its data dir already exists on disk."""
+        if (agent_id or "default") in self._tenants:
+            return True
+        if agent_id and agent_id in self.config.agents:
+            return True
+        return get_agent_data_dir(self.config, agent_id).is_dir()
+
+    def peek(self, agent_id: Optional[str] = None) -> tuple[dict, Optional[Callable[[], None]]]:
+        """(tenant, close) for a READ. A known tenant is the real one and
+        close is None. An unknown one is a throwaway, built by the same code
+        as a real tenant but in a fresh temp dir outside the data dir: nothing
+        under agents/, no registry entry, never shared between requests. The
+        caller MUST call close() when the request ends (snag
+        mnemo-read-creates-tenant: a read used to create the tenant)."""
+        if agent_id is not None:
+            try:
+                validate_agent_id(agent_id)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        if self.is_known(agent_id):
+            return self.get(agent_id), None
+        key = agent_id or "default"
+        tmp = Path(tempfile.mkdtemp(prefix="mnemo-peek-"))
+        try:
+            tenant = self._build(key, tmp / key, quiet=True)
+            tenant["would_be_dir"] = get_agent_data_dir(self.config, agent_id)
+        except BaseException:
+            # a half-built tenant may hold an open sqlite handle; Windows then
+            # refuses the delete, so a leftover is said out loud, never silent
+            shutil.rmtree(tmp, ignore_errors=True)
+            if tmp.exists():
+                log.error(f"Throwaway tenant '{key}' build failed; temp dir left: {tmp}")
+            raise
+
+        def close() -> None:
+            tenant["trajectories"].close()
+            tenant["vec"].close()
+            forget_ledger(tenant["memory_dir"])
+            try:
+                shutil.rmtree(tmp)
+            except OSError as e:
+                log.error(f"Throwaway tenant '{key}' temp dir not removed: {tmp} ({e!r})")
+        return tenant, close
+
+    def _build(self, key: str, data_dir: Path, quiet: bool = False) -> dict:
         memory_dir = data_dir / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
 
-        # Session config from agent settings or defaults
+        # Session config: defaults (AgentConfig has no session settings yet)
         session_cfg = SessionConfig()
-        if agent_id and agent_id in self.config.agents:
-            # Could extend AgentConfig with session settings later
-            pass
 
         vec_mode = vec_detect_mode(memory_dir)
         vec_store = VecStore(data_dir / "vec_index.sqlite")
-        log.info(f"Tenant '{key}' vec index ({vec_mode} mode, {vec_store.count()} embedded)")
+        if not quiet:
+            log.info(f"Tenant '{key}' vec index ({vec_mode} mode, {vec_store.count()} embedded)")
 
         # v4.5: trajectory learning — proven task recipes, isolated under the
         # tenant's own trajectories/ dir (JSONL truth + its own vec index).
         traj_store = TrajectoryStore(data_dir / "trajectories")
 
-        tenant = {
+        return {
             "data_dir": data_dir,
             "memory_dir": memory_dir,
             "sessions": SessionManager(data_dir, session_cfg),
@@ -494,9 +544,6 @@ class TenantManager:
             # v4.25: full client transcripts (never embedded; see transcripts.py)
             "transcripts": TranscriptArchive(data_dir, key),
         }
-        self._tenants[key] = tenant
-        log.info(f"Tenant '{key}' initialized at {data_dir}")
-        return tenant
 
     def has_named_tenants(self) -> bool:
         """Whether this installation contains any non-default tenant.
@@ -978,6 +1025,41 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     embedder = create_resilient_embedding(config.embedding)
     tenants = TenantManager(config)
 
+    async def _tenant_reader():
+        """A read endpoint's tenant lookup: tenants.peek, so a read naming an
+        unknown agent creates nothing. Any throwaway it handed out is closed
+        when the request ends. Write endpoints keep tenants.get."""
+        closers: list[Callable[[], None]] = []
+
+        def read_tenant(agent_id: Optional[str]) -> dict:
+            tenant, close = tenants.peek(agent_id)
+            if close is not None:
+                closers.append(close)
+            return tenant
+        try:
+            yield read_tenant
+        finally:
+            for close in closers:
+                close()
+
+    ReadTenant = Depends(_tenant_reader)
+
+    def _reported_path(tenant: dict, path: Path) -> Path:
+        """The path a reply names. A throwaway tenant (peek) names the path
+        its REAL tenant would have, so an unknown agent gets today's answer
+        and the temp dir never leaves the server. Used by /vec/status db_path
+        and /ledger/verify ledger only."""
+        would_be = tenant.get("would_be_dir")
+        if would_be is None:
+            return path
+        tmp = Path(tenant["data_dir"])
+        for base, target in ((tmp, Path(would_be)), (tmp.resolve(), Path(would_be).resolve())):
+            try:
+                return target / Path(path).relative_to(base)
+            except ValueError:
+                continue
+        raise ValueError(f"{path} is not inside the throwaway tenant dir {tmp}")
+
     # Thesaurus Loop credentials: reuse whatever OpenRouter key the reasoning
     # chain already carries (zero new config), unless expansion overrides it.
     expand_or_key, expand_or_base = _resolve_openrouter_creds(config.reasoning)
@@ -1309,7 +1391,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Context ──
     @app.post("/context", response_model=ContextResponse)
-    async def context(req: ContextRequest, request: Request):
+    async def context(req: ContextRequest, request: Request, read_tenant=ReadTenant):
         """Recall one tenant's context.
 
         ``agent_id`` may be omitted only on a legacy/default-only install.  On
@@ -1329,7 +1411,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         # v4.17: the lens is the caller's if named, else the persona's
         # (strict/default -> focus, creative -> explore). Reported back as `mode`.
         mode = req.mode or persona_recall_mode(persona)
-        tenant = tenants.get(req.agent_id)
+        tenant = read_tenant(req.agent_id)
         memory_dir = tenant["memory_dir"]
         vec_store: VecStore = tenant["vec"]
         orphans: list[str] = []     # 14 A: rows with no record, reported once below
@@ -1845,11 +1927,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Preflight ──
     @app.post("/preflight", response_model=PreflightResponse)
-    async def preflight(req: PreflightRequest, request: Request):
+    async def preflight(req: PreflightRequest, request: Request, read_tenant=ReadTenant):
         _enforce_scope(request, req.agent_id)
         start = time.time()
         persona = get_persona(config, req.persona, req.agent_id)
-        tenant = tenants.get(req.agent_id)
+        tenant = read_tenant(req.agent_id)
         vec_store: VecStore = tenant["vec"]
 
         # Same redaction choke point as /writeback + /ingest: the prompt and
@@ -2334,7 +2416,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             # have (review, 2026-09-05).
             ctx = await context(ContextRequest(
                 prompt=message, agent_id=agent_id, persona=req.persona,
-                max_results=req.max_memories, exclude_categories=[]), request)
+                max_results=req.max_memories, exclude_categories=[]), request,
+                read_tenant=tenants.get)  # /chat saves: it keeps get-or-create
             memories = [
                 ChatMemory(memory_id=c.memory_id, content=c.content[:POCKET_MEMORY_CHARS],
                            category=c.category, age_days=c.age_days, relevance=c.relevance)
@@ -2475,10 +2558,11 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         )
 
     @app.post("/trajectory/recall", response_model=TrajectoryRecallResponse)
-    async def trajectory_recall(req: TrajectoryRecallRequest, request: Request):
+    async def trajectory_recall(req: TrajectoryRecallRequest, request: Request,
+                                read_tenant=ReadTenant):
         """Recall proven task recipes BEFORE a similar task."""
         _enforce_scope(request, req.agent_id)
-        tenant = tenants.get(req.agent_id)
+        tenant = read_tenant(req.agent_id)
         traj: TrajectoryStore = tenant["trajectories"]
 
         try:
@@ -2690,9 +2774,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Session Info ──
     @app.get("/sessions")
-    async def list_sessions(agent_id: Optional[str] = None):
+    async def list_sessions(agent_id: Optional[str] = None, read_tenant=ReadTenant):
         """List all sessions across tiers for an agent."""
-        tenant = tenants.get(agent_id)
+        tenant = read_tenant(agent_id)
         sessions = tenant["sessions"]
         return {
             "agent_id": agent_id or "default",
@@ -2702,9 +2786,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         }
 
     @app.get("/sessions/{session_id}/transcript")
-    async def get_transcript(session_id: str, agent_id: Optional[str] = None):
+    async def get_transcript(session_id: str, agent_id: Optional[str] = None,
+                             read_tenant=ReadTenant):
         """Get full transcript of a specific session."""
-        tenant = tenants.get(agent_id)
+        tenant = read_tenant(agent_id)
         sessions = tenant["sessions"]
         try:
             entries = sessions.get_session_transcript(session_id)
@@ -2721,9 +2806,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         }
 
     @app.get("/sessions/recent")
-    async def recent_context(agent_id: Optional[str] = None, n: int = 20):
+    async def recent_context(agent_id: Optional[str] = None, n: int = 20,
+                             read_tenant=ReadTenant):
         """Get most recent exchanges as plain text (for bootstrap injection)."""
-        tenant = tenants.get(agent_id)
+        tenant = read_tenant(agent_id)
         sessions = tenant["sessions"]
         return {
             "agent_id": agent_id or "default",
@@ -2736,12 +2822,13 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     # embedded. The one thing recall learns is a pointer memory written on a
     # session's first upload.
 
-    def _transcript_tenant(request: Request, agent_id: Optional[str]) -> dict:
+    def _transcript_tenant(request: Request, agent_id: Optional[str],
+                           lookup: Callable[[Optional[str]], dict] = tenants.get) -> dict:
         _enforce_scope(request, agent_id)
         if agent_id is None and tenants.has_named_tenants():
             raise HTTPException(
                 400, "agent_id is required on a multi-tenant installation")
-        return tenants.get(agent_id)
+        return lookup(agent_id)
 
     def _check_transcript_id(session_id: str) -> None:
         try:
@@ -2926,9 +3013,10 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     @app.get("/transcripts")
     async def search_transcripts(request: Request, agent_id: Optional[str] = None,
                                  q: Optional[str] = None,
-                                 limit: int = Query(20, ge=1, le=200)):
+                                 limit: int = Query(20, ge=1, le=200),
+                                 read_tenant=ReadTenant):
         """FTS search over archived turns (q given), else the newest sessions."""
-        tenant = _transcript_tenant(request, agent_id)
+        tenant = _transcript_tenant(request, agent_id, read_tenant)
         archive: TranscriptArchive = tenant["transcripts"]
         if q is None or not q.strip():
             sessions = await asyncio.to_thread(archive.list_sessions, limit)
@@ -2942,8 +3030,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
     @app.get("/transcripts/{session_id}")
     async def get_transcript_archive(request: Request, session_id: str,
                                      agent_id: Optional[str] = None,
-                                     format: Literal["manifest", "turns", "raw"] = "manifest"):
-        tenant = _transcript_tenant(request, agent_id)
+                                     format: Literal["manifest", "turns", "raw"] = "manifest",
+                                     read_tenant=ReadTenant):
+        tenant = _transcript_tenant(request, agent_id, read_tenant)
         _check_transcript_id(session_id)
         archive: TranscriptArchive = tenant["transcripts"]
         if format == "raw":
@@ -2970,8 +3059,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
                                    agent_id: Optional[str] = None,
                                    from_seq: int = Query(0, alias="from", ge=0),
                                    to_seq: Optional[int] = Query(None, alias="to", ge=0),
-                                   limit: int = Query(200, ge=1, le=2000)):
-        tenant = _transcript_tenant(request, agent_id)
+                                   limit: int = Query(200, ge=1, le=2000),
+                                   read_tenant=ReadTenant):
+        tenant = _transcript_tenant(request, agent_id, read_tenant)
         _check_transcript_id(session_id)
         archive: TranscriptArchive = tenant["transcripts"]
         turns = await asyncio.to_thread(archive.turns, session_id, from_seq, to_seq, limit)
@@ -2983,8 +3073,8 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
 
     # ── Vec index management ──
     @app.get("/vec/status")
-    async def vec_status(agent_id: Optional[str] = None):
-        tenant = tenants.get(agent_id)
+    async def vec_status(agent_id: Optional[str] = None, read_tenant=ReadTenant):
+        tenant = read_tenant(agent_id)
         vec_store: VecStore = tenant["vec"]
         memory_dir = tenant["memory_dir"]
         on_disk = sum(1 for _ in memory_dir.glob("*.json"))
@@ -3001,7 +3091,7 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
             "memory_entries_on_disk": on_disk,
             "orphans": len(orphans),
             "source_unknown": len(unknown),
-            "db_path": vec_store.db_path.as_posix(),
+            "db_path": _reported_path(tenant, vec_store.db_path).as_posix(),
         }
 
     @app.post("/vec/backfill")
@@ -3044,7 +3134,9 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         agent_id: Optional[str] = Field(
             None, description="Memory tenant. A scoped token may omit it — the pin decides.")
 
-    def _ledger_tenant(request: Request, agent_id: Optional[str]) -> tuple[Optional[str], dict]:
+    def _ledger_tenant(request: Request, agent_id: Optional[str],
+                       lookup: Callable[[Optional[str]], dict] = tenants.get,
+                       ) -> tuple[Optional[str], dict]:
         """(resolved agent_id, tenant). A scoped token may omit agent_id —
         the pin fills it — and the report names the resolved tenant."""
         pinned = getattr(request.state, "scoped_agent_id", None)
@@ -3054,16 +3146,18 @@ def create_app(config: Optional[AgentBConfig] = None) -> FastAPI:
         if agent_id is None and tenants.has_named_tenants():
             raise HTTPException(
                 400, "agent_id is required on a multi-tenant installation")
-        return agent_id, tenants.get(agent_id)
+        return agent_id, lookup(agent_id)
 
     @app.get("/ledger/verify")
-    async def ledger_verify(request: Request, agent_id: Optional[str] = None):
+    async def ledger_verify(request: Request, agent_id: Optional[str] = None,
+                            read_tenant=ReadTenant):
         """Walk the tenant's ledger chain and check every sealed record
         against disk. Read-only; safe at any time."""
-        agent_id, tenant = _ledger_tenant(request, agent_id)
+        agent_id, tenant = _ledger_tenant(request, agent_id, read_tenant)
         memory_dir = tenant["memory_dir"]
         report = await asyncio.to_thread(get_ledger(memory_dir).verify, memory_dir)
-        return {"agent_id": agent_id, "ledger": get_ledger(memory_dir).path.as_posix(),
+        return {"agent_id": agent_id,
+                "ledger": _reported_path(tenant, get_ledger(memory_dir).path).as_posix(),
                 **report.to_dict()}
 
     @app.post("/ledger/seal")

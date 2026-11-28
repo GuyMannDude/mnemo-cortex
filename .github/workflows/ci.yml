@@ -62,6 +62,11 @@ jobs:
       - name: Run cross-process record lock tests
         if: success() || failure()
         run: pytest tests/test_cross_process_lock.py -v --timeout=180 --timeout-method=thread
+      # Throwaway read tenants: sqlite handles closed before the temp dir is
+      # removed (Windows refuses to delete an open file; snag-mnemo-read-creates-tenant).
+      - name: Run read-never-creates-tenant tests
+        if: success() || failure()
+        run: pytest tests/test_read_never_creates_tenant.py -v --timeout=180 --timeout-method=thread
 
   # Every MCP client talks to Mnemo through this bridge. Its unit tests need no
   # Mnemo server; test.js is the live integration test and is NOT run here

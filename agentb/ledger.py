@@ -428,3 +428,11 @@ def get_ledger(memory_dir: Path) -> Ledger:
         if ledger is None:
             ledger = _REGISTRY[path] = Ledger(path)
         return ledger
+
+
+def forget_ledger(memory_dir: Path) -> None:
+    """Drop a ledger from the registry. Only for a tenant whose folder is
+    about to vanish (the server's throwaway read tenant); a live tenant's
+    ledger must stay registered, or two instances fork its chain."""
+    with _REGISTRY_LOCK:
+        _REGISTRY.pop(ledger_path_for(memory_dir), None)
