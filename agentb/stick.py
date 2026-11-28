@@ -666,20 +666,7 @@ def _scan(root: Path, pattern: str, transform=None,
         if p.name.endswith(".tmp"):
             continue
         try:
-            # stat, not is_file(): is_file() reads ANY stat error as False
-            # (Python 3.14 swallows every OSError there), so a listed file
-            # whose stat is denied would drop out as absent = a delete.
-            # Only "no such path" is absent: it really is gone, and a
-            # dangling symlink (or a loop) must not become a permanent skip.
-            try:
-                mode = p.stat().st_mode
-            except (FileNotFoundError, NotADirectoryError):
-                continue
-            except OSError as e:
-                if e.errno == errno.ELOOP:
-                    continue
-                raise
-            if not stat.S_ISREG(mode):
+            if not _is_regular(p):
                 continue
             if transform is None:
                 sha = sha256_file(p)
@@ -692,6 +679,31 @@ def _scan(root: Path, pattern: str, transform=None,
             continue
         out[p.relative_to(root).as_posix()] = sha
     return out
+
+
+_WINERROR_LOOP = 1921        # ERROR_CANT_RESOLVE_FILENAME: a symlink loop
+
+
+def _is_regular(p: Path) -> bool:
+    """True for a regular file; False when absent (no such path, a dangling
+    symlink, a loop) or not a file. Any other stat error RAISES: the caller
+    must treat that path as unknown, never as absent.
+
+    stat, not is_file(): is_file() reads ANY stat error as False (Python
+    3.14 swallows every OSError there), so a file whose stat is denied would
+    read as absent = a delete. Only "no such path" is absent: it really is
+    gone, and a dangling symlink (or a loop) must not become a permanent skip.
+    A loop is ELOOP on POSIX, winerror 1921 (ERROR_CANT_RESOLVE_FILENAME,
+    errno EINVAL) on Windows: pathlib before 3.14 ignored that code too."""
+    try:
+        mode = p.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as e:
+        if e.errno == errno.ELOOP or getattr(e, "winerror", None) == _WINERROR_LOOP:
+            return False
+        raise
+    return stat.S_ISREG(mode)
 
 
 def _os_reason(e: OSError) -> str:
@@ -930,7 +942,7 @@ def _host_unchanged(hp: Path, expect: Optional[str], codec):
     changed since the scan, or unreadable now."""
     with locked_record(hp):
         try:
-            if not hp.is_file():
+            if not _is_regular(hp):
                 now = None
             elif codec.encrypted:
                 now = hashlib.sha256(codec.encode(hp.read_bytes())).hexdigest()

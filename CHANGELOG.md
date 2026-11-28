@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — the stick watcher lets go of its lock files between passes; the guarded re-read never reads a stat error as absent (2026-11-27)
+
+**Problem.** `mnemo stick watch` runs for days and takes host record locks
+on every pass (`_host_unchanged`). fsutil keeps one handle per lock file, so
+after the first pass that moved a memory or trajectory file the watcher held
+`<tenant>/.record-locks/NN.lock` open for good, and on Windows a tenant dir
+could not be moved even with the server stopped. Separately, the guarded
+re-read under the record lock still used `is_file()`, which on Python 3.14
+reads ANY stat error as False: with nothing on the host at the scan
+(`expect=None`) a file the server wrote after the scan whose stat was denied
+read as still absent, and a pull from the stick overwrote it.
+
+**Fix (`agentb/cli.py`, `agentb/stick.py`).**
+- The watch loop calls `release_lock_files(<host data dir>)` after every
+  pass, also when the pass raised (a Ctrl-C mid-pass included). One call on the data dir covers every
+  tenant, including one first seen this pass; the watcher holds no lock it
+  needs to keep between passes. Not `for_good`: the next pass locks there
+  again and keeps its handles for the length of that pass.
+- One rule for "is this a file", `_is_regular`, shared by `_scan` and the
+  guarded re-read: no such path, not a dir, a symlink loop (ELOOP on POSIX,
+  winerror 1921 on Windows, whose errno is EINVAL) = absent; a directory =
+  not a file; any other stat error = `unreadable on the host
+  (...)`, skipped with base and manifest entry carried.
+- A one-shot `mnemo stick sync` needs nothing: the process exits and the OS
+  closes its handles.
+
+**What still holds.** During a pass the watcher holds its lock handles, so a
+move then still fails on Windows; stop the watcher (and the server) first. A
+`memory/` symlinked outside the data dir is not released (as for the server).
+
+**Tests** (`tests/test_cross_process_lock.py`, 8 new): after each watch pass
+no lock handle under the host data dir (fsutil's books, and `/proc/self/fd`
+on Linux) and the tenant dir renames, while the next pass still locks and
+syncs; a pass that raises after taking a lock lets go too, for a logged
+error and for a Ctrl-C; the guarded re-read with a stat error is skipped as
+unreadable for both `expect=hash` and `expect=None` (host, stick, base and
+manifest entry untouched); a real symlink loop, a faked Windows loop error
+(on every OS) and a directory named like a memory file are absent, not
+skipped. The six for the fixes fail on 9760ab0; eleven mutants each turn the
+file red.
+
 ## Unreleased — a closed server lets go of its record-lock files (2026-11-27)
 
 **Problem.** The cross-process record lock (1d58995) keeps one open handle

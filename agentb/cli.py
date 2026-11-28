@@ -2302,8 +2302,10 @@ def stick_watch_cmd(poll, interval, notify, eject):
     --no-eject (an ejected stick is no longer found until re-plugged).
     """
     from agentb.config import load_config
+    from agentb.fsutil import release_lock_files
     from agentb.stick import find_stick, load_host_config
-    host_cfg = load_host_config(Path(load_config().data_dir))
+    data_dir = Path(load_config().data_dir)
+    host_cfg = load_host_config(data_dir)
     console.print(f"[bold]Cortex Stick watch[/] — probing every {poll}s "
                   f"(Ctrl-C to stop)")
     present = False
@@ -2329,6 +2331,11 @@ def stick_watch_cmd(poll, interval, notify, eject):
                 if notify:
                     _notify_desktop("Cortex Stick — sync FAILED, nothing moved",
                                     f"{type(e).__name__}: {str(e)[:160]}")
+            finally:
+                # The pass took host record locks, and fsutil keeps their
+                # handles: let go, so Windows lets an operator move a tenant
+                # dir between passes. Not for_good: the next pass locks again.
+                release_lock_files(data_dir)
             last_sync = time.time()
         if not stick_dir and present:
             console.print(f"[dim]{time.strftime('%H:%M:%S')}[/] "

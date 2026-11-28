@@ -675,16 +675,17 @@ def test_host_file_unreadable_at_the_guarded_reread_is_skipped_and_carried(tmp_p
     verify_manifest(stick)
 
 
-def _stat_denied(monkeypatch, *paths):
+def _stat_denied(monkeypatch, *paths, when=lambda: True):
     """Python 3.14's Path.is_file() reads ANY stat error as False. Simulate
     that on every Python: for these paths is_file() is False and stat()
-    raises PermissionError, as a listed-but-unstattable file does."""
+    raises PermissionError, as a listed-but-unstattable file does (only
+    while when() is true)."""
     import pathlib
     targets = {os.path.normcase(os.path.abspath(p)) for p in paths}
     real_stat, real_is_file = pathlib.Path.stat, pathlib.Path.is_file
 
     def hit(p):
-        return os.path.normcase(os.path.abspath(p)) in targets
+        return when() and os.path.normcase(os.path.abspath(p)) in targets
 
     def fake_stat(self, *a, **kw):
         if hit(self):
@@ -734,6 +735,107 @@ def test_dangling_symlink_on_the_host_is_absent_not_a_permanent_partial(tmp_path
         pytest.skip("cannot create a symlink here (Windows without Developer Mode)")
     r = sync(b, stick, host_id="host-b", pad=False)
     assert r.skipped == [] and r.to_stick == [] and r.deleted_on_stick == [], r
+
+
+def test_symlink_loop_on_the_host_is_absent_not_a_permanent_partial(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    link = _mem(b, "m5")
+    try:
+        link.symlink_to(link.name)                  # m5.json -> m5.json: a loop
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a symlink here (Windows without Developer Mode)")
+    with pytest.raises(OSError):                    # control: its stat really fails
+        link.stat()
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [] and r.to_stick == [] and r.deleted_on_stick == [], r
+
+
+def test_windows_symlink_loop_error_is_absent_on_every_os(tmp_path, monkeypatch):
+    """Windows reports a loop as winerror 1921 with errno EINVAL, not ELOOP.
+    Faked here so every runner checks it, real symlinks or not."""
+    import errno
+    import pathlib
+    a, b, stick = _two_hosts(tmp_path)
+    loop = _mem(b, "m5")
+    loop.write_text("{}")                           # listed by the glob
+    real_stat = pathlib.Path.stat
+
+    def fake_stat(self, *a, **kw):
+        if os.path.normcase(os.path.abspath(self)) == os.path.normcase(os.path.abspath(loop)):
+            e = OSError(errno.EINVAL, "The name of the file cannot be resolved by the system")
+            e.winerror = 1921
+            raise e
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "stat", fake_stat)
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [] and r.to_stick == [] and r.deleted_on_stick == [], r
+
+
+def test_a_directory_named_like_a_memory_file_is_not_a_file(tmp_path):
+    a, b, stick = _two_hosts(tmp_path)
+    _mem(b, "m6").mkdir()                           # matches the channel glob
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [] and r.to_stick == [] and r.deleted_on_stick == [], r
+
+
+def test_reread_stat_error_on_a_changed_file_is_unreadable_not_changed(tmp_path, monkeypatch):
+    """expect=hash: the guarded re-read of a file the scan hashed. A stat
+    error there is 'unreadable', not 'changed since the scan'."""
+    from agentb.stick import verify_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    _mem(a, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from A"}))
+    sync(a, stick, host_id="host-a", pad=False)                     # B pulls v2: guarded
+    base_before = _inv(stick)["memories/cc/memory"]["m1.json"]
+    entry_before = _manifest_files(stick)[M1]
+    state = _unreadable_after_scan(monkeypatch, _mem(b, "m1").parent)   # arms only
+    _stat_denied(monkeypatch, _mem(b, "m1"), when=lambda: state["armed"])
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert state["armed"]                                           # the scan stat'ed it fine
+    assert r.skipped == [M1] and r.to_host == [] and r.deleted_on_stick == [], r
+    assert r.skip_reasons[M1].startswith("unreadable on the host (PermissionError errno 13"), r
+    monkeypatch.undo()
+    assert json.loads(_mem(b, "m1").read_text())["summary"] == "v1"           # host untouched
+    assert json.loads((stick / M1).read_text())["summary"] == "v2 from A"     # stick intact
+    assert _inv(stick)["memories/cc/memory"]["m1.json"] == base_before        # base carried
+    assert _manifest_files(stick)[M1] == entry_before                         # entry carried
+    verify_manifest(stick)
+
+
+def test_reread_stat_error_on_an_absent_file_never_overwrites_it(tmp_path, monkeypatch):
+    """expect=None: the scan saw no host file, the stick has a new one to
+    pull. The server writes the host file after the scan and its stat is
+    denied at the re-read. Read as absent, the pull would overwrite it."""
+    import agentb.stick as st
+    from agentb.stick import verify_manifest
+    a, b, stick = _two_hosts(tmp_path)
+    m8 = "memories/cc/memory/m8.json"
+    _mem(a, "m8").write_text(json.dumps({"id": "m8", "summary": "from A"}))
+    sync(a, stick, host_id="host-a", pad=False)
+    entry_before = _manifest_files(stick)[m8]
+    host_dir = _mem(b, "m8").parent
+    state = _unreadable_after_scan(monkeypatch, host_dir)          # arms only
+    armed_scan = st._scan
+    wrote = []
+
+    def scan_then_server_writes(root, pattern, transform=None, **kw):
+        out = armed_scan(root, pattern, transform, **kw)
+        if state["armed"] and not wrote:
+            _mem(b, "m8").write_text(json.dumps({"id": "m8", "summary": "server's"}))
+            wrote.append(1)
+        return out
+
+    monkeypatch.setattr(st, "_scan", scan_then_server_writes)
+    _stat_denied(monkeypatch, _mem(b, "m8"), when=lambda: state["armed"])
+    r = sync(b, stick, host_id="host-b", pad=False)
+    assert r.skipped == [m8] and r.to_host == [], r
+    assert r.skip_reasons[m8].startswith("unreadable on the host (PermissionError errno 13"), r
+    monkeypatch.undo()
+    assert json.loads(_mem(b, "m8").read_text())["summary"] == "server's"     # not overwritten
+    assert json.loads((stick / m8).read_text())["summary"] == "from A"        # stick intact
+    assert "m8.json" not in _inv(stick)["memories/cc/memory"]                 # no base: none carried
+    assert _manifest_files(stick)[m8] == entry_before                         # entry carried
+    verify_manifest(stick)
 
 
 @contextlib.contextmanager
@@ -827,3 +929,143 @@ def test_stick_sync_dry_run_with_skips_exits_0(monkeypatch, tmp_path):
     res = _cli_sync(monkeypatch, tmp_path, rep, ("stick", "sync", "--dry-run"))
     assert res.exit_code == 0, res.output                           # a plan is not a partial sync
     assert "unreadable on the host (x)" in " ".join(res.output.split())
+
+
+# ── the long-lived watcher lets go of its lock handles between passes ──
+# `mnemo stick watch` takes host record locks every pass (_host_unchanged), and
+# fsutil keeps one handle per lock file. Windows refuses to move a folder with
+# any file under it open, so a watcher that kept them blocked an operator
+# moving a tenant dir even with the server stopped.
+
+def _lock_handles_under(root: Path) -> dict:
+    """This process's open record-lock handles under root: fsutil's books
+    and, on Linux, the kernel's own fd table."""
+    from agentb import fsutil
+    real = os.path.join(os.path.normcase(os.path.realpath(root)), "")
+    books = sorted(k for k in fsutil._LOCK_FDS
+                   if os.path.normcase(os.path.realpath(k)).startswith(real))
+    fds = []
+    if sys.platform.startswith("linux"):
+        for fd in os.listdir("/proc/self/fd"):
+            try:
+                target = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                continue
+            if target.startswith(real) and LOCK_DIRNAME in target:
+                fds.append(target)
+    return {"books": books, "fds": sorted(fds)}
+
+
+NO_HANDLES = {"books": [], "fds": []}
+POLL = 7                                            # marks the watch loop's own sleep
+
+
+class _StopWatch(Exception):
+    pass
+
+
+def _watch(monkeypatch, host: Path, stick: Path, between_passes):
+    """Run `stick watch` on `host` in this process; between_passes(n) runs
+    at the loop's sleep after pass n (raise _StopWatch to end it)."""
+    import agentb.config
+    import agentb.stick
+    from click.testing import CliRunner
+    from agentb import cli
+
+    class Cfg:
+        data_dir = str(host)
+
+    monkeypatch.setattr(agentb.config, "load_config", lambda: Cfg())
+    monkeypatch.setattr(agentb.stick, "load_host_config",
+                        lambda d: {"host_id": "host-b", "pad": False, "facts": False})
+    monkeypatch.setattr(agentb.stick, "find_stick", lambda roots=None: stick)
+    real_sleep, passes = time.sleep, []
+
+    def sleep(s):
+        if s != POLL:
+            return real_sleep(s)
+        passes.append(1)
+        between_passes(len(passes))
+
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    return CliRunner().invoke(cli.main, ["stick", "watch", "--poll", str(POLL),
+                                         "--interval", "0", "--no-eject"])
+
+
+def _no_handles_to_start(b: Path):
+    from agentb import fsutil
+    held = _lock_handles_under(b)                    # control: the probe sees the
+    assert held["books"], held                       # handles setup's syncs left open
+    if sys.platform.startswith("linux"):
+        assert held["fds"], held
+    fsutil.release_lock_files(b)
+    assert _lock_handles_under(b) == NO_HANDLES
+
+
+def test_stick_watch_lets_go_of_its_lock_handles_after_each_pass(tmp_path, monkeypatch):
+    from agentb import fsutil
+    a, b, stick = _two_hosts(tmp_path)
+    _no_handles_to_start(b)
+    _mem(a, "m1").write_text(json.dumps({"id": "m1", "summary": "v2 from A"}))
+    sync(a, stick, host_id="host-a", pad=False)     # pass 1 pulls v2: a locked write
+    real_lock_fd, opened, seen = fsutil._lock_fd, [], []
+
+    def lock_fd(p):
+        opened.append(str(p))
+        return real_lock_fd(p)
+
+    monkeypatch.setattr(fsutil, "_lock_fd", lock_fd)
+
+    def between_passes(n):
+        seen.append({"handles": _lock_handles_under(b), "locked": list(opened)})
+        opened.clear()
+        if n == 1:
+            # what Windows refuses while any handle under the tenant is open
+            tenant, moved = b / "agents" / "cc", b / "agents" / "cc-moved"
+            tenant.rename(moved)
+            moved.rename(tenant)
+            _mem(b, "m2").write_text(json.dumps({"id": "m2"}))   # pass 2 pushes m2
+            return
+        raise _StopWatch
+
+    res = _watch(monkeypatch, b, stick, between_passes)
+    assert isinstance(res.exception, _StopWatch), (res.exception, res.output)
+    p1, p2 = seen
+    assert p1["locked"] and p2["locked"], seen     # every pass still takes the lock
+    assert p1["handles"] == NO_HANDLES, p1         # ...and lets go of it
+    assert p2["handles"] == NO_HANDLES, p2
+    assert json.loads(_mem(b, "m1").read_text())["summary"] == "v2 from A"
+    assert (stick / "memories/cc/memory/m2.json").is_file()
+    root = os.path.join(os.path.normcase(os.path.realpath(b)), "")
+    assert not any(r.startswith(root) for r in fsutil._CLOSED_FOLDERS)  # not for_good
+
+
+@pytest.mark.parametrize("exc", [RuntimeError, KeyboardInterrupt])
+def test_stick_watch_lets_go_even_when_a_pass_fails(tmp_path, monkeypatch, exc):
+    """RuntimeError: the loop logs it and goes on. KeyboardInterrupt (Ctrl-C
+    mid-pass): it ends the watcher, and the handles still go first."""
+    import agentb.stick
+    from agentb.fsutil import locked_record
+    a, b, stick = _two_hosts(tmp_path)
+    _no_handles_to_start(b)
+
+    def failing_sync(*a, **kw):
+        with locked_record(_mem(b, "m1")):
+            pass
+        raise exc("boom after a lock")
+
+    monkeypatch.setattr(agentb.stick, "sync", failing_sync)
+    seen = []
+
+    def between_passes(n):
+        seen.append(_lock_handles_under(b))
+        raise _StopWatch
+
+    res = _watch(monkeypatch, b, stick, between_passes)
+    if exc is KeyboardInterrupt:
+        assert seen == [] and res.exit_code != 0, res.output       # the loop ended
+        seen.append(_lock_handles_under(b))
+    else:
+        assert isinstance(res.exception, _StopWatch), (res.exception, res.output)
+        assert "sync FAILED" in res.output and "boom after a lock" in res.output
+    assert seen == [NO_HANDLES], seen
